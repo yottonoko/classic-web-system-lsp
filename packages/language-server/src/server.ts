@@ -345,6 +345,12 @@ const latestSemanticTokenResultByUri = new Map<string, string>();
 const retainedSemanticTokenResults = new Map<string, SemanticTokenResultEntry>();
 const latestRetainedSemanticTokenResultByUri = new Map<string, string>();
 const maxRetainedSemanticTokenResults = 128;
+interface PendingVbProjectSummaryGraph {
+  allowReadMissing: boolean;
+  promise: Promise<VbProjectSummaryGraph>;
+}
+
+const pendingVbProjectSummaryGraphs = new Map<string, PendingVbProjectSummaryGraph>();
 const pendingSemanticJavascriptTokenBuilds = new Map<string, Promise<void>>();
 const interactiveVbProjectContextSnapshots = new Map<string, InteractiveVbProjectContextSnapshot>();
 const pendingInteractiveVbProjectContextRefreshes = new Map<string, Promise<void>>();
@@ -12081,7 +12087,38 @@ async function collectCachedVbProjectSummaryGraphAsync(
     );
     return existing.graph;
   }
-  const graph = await collectVbProjectSummaryGraphAsync(cached, settings, options);
+  const pending = pendingVbProjectSummaryGraphs.get(collectionKey);
+  if (pending && (pending.allowReadMissing || !options.allowReadMissing)) {
+    const graph = await pending.promise;
+    analysisFor(cached).vbProjectSummaryGraph = { collectionKey, graph };
+    analysisFor(cached).vbProjectDocuments = {
+      collectionKey,
+      documents: graph.documents,
+    };
+    logDebugSummary(
+      settings,
+      `[asp-lsp] vbProject.summaryGraph.pendingReuse: complete=${graph.complete}, summaries=${graph.summaries.length}`,
+    );
+    return graph;
+  }
+  const promise = measureDebugStepAsync(
+    settings,
+    cached.source.uri,
+    "vbProject.summaryGraph.collect",
+    () => collectVbProjectSummaryGraphAsync(cached, settings, options),
+  );
+  pendingVbProjectSummaryGraphs.set(collectionKey, {
+    allowReadMissing: options.allowReadMissing,
+    promise,
+  });
+  let graph: VbProjectSummaryGraph;
+  try {
+    graph = await promise;
+  } finally {
+    if (pendingVbProjectSummaryGraphs.get(collectionKey)?.promise === promise) {
+      pendingVbProjectSummaryGraphs.delete(collectionKey);
+    }
+  }
   analysisFor(cached).vbProjectSummaryGraph = { collectionKey, graph };
   analysisFor(cached).vbProjectDocuments = {
     collectionKey,
@@ -12867,50 +12904,76 @@ async function includeDiagnosticsAsync(
   const owner = uriToFileName(cached.source.uri);
   const localizer = localizerForSettings(settings);
   resetIncludeDependencies(cached.source.uri);
-  for (const include of cached.parsed.includes) {
-    if (cancellation.isCancellationRequested()) {
-      return [];
-    }
-    const resolved = await resolveIncludePathDetailsAsync(
-      cached.source.uri,
-      include.path,
-      include.mode,
+  const resolvedIncludes = await measureDebugStepAsync(
+    settings,
+    cached.source.uri,
+    "includeDiagnostics.directIncludes",
+    async () => {
+      const items: Array<{
+        include: (typeof cached.parsed.includes)[number];
+        resolved: Awaited<ReturnType<typeof resolveIncludePathDetailsAsync>>;
+      }> = [];
+      for (const include of cached.parsed.includes) {
+        if (cancellation.isCancellationRequested()) {
+          return [];
+        }
+        const resolved = await resolveIncludePathDetailsAsync(
+          cached.source.uri,
+          include.path,
+          include.mode,
+          settings,
+        );
+        recordIncludeDependency(cached.source.uri, pathToFileUri(resolved.fileName));
+        if (!resolved.exists) {
+          diagnostics.push({
+            severity: DiagnosticSeverity.Warning,
+            range: include.range,
+            message: localizer.t("server.include.unresolved", { path: include.path }),
+            code: "include.missing",
+            source: "asp-lsp-include",
+          });
+          continue;
+        }
+        if (settings.windowsPathResolution !== false && !resolved.pathCaseMatches) {
+          diagnostics.push({
+            severity: DiagnosticSeverity.Warning,
+            range: include.pathRange,
+            message: localizer.t("server.include.caseMismatch", {
+              path: include.path,
+              actualPath: resolved.actualIncludePath ?? resolved.actualPath ?? resolved.fileName,
+            }),
+            code: "include.pathCaseMismatch",
+            source: "asp-lsp-include",
+          });
+        }
+        if (sameFile(resolved.fileName, owner)) {
+          diagnostics.push({
+            severity: DiagnosticSeverity.Warning,
+            range: include.range,
+            message: localizer.t("server.include.currentDocument"),
+            code: "include.currentDocument",
+            source: "asp-lsp-include",
+          });
+          continue;
+        }
+        items.push({ include, resolved });
+      }
+      return items;
+    },
+  );
+  let cycleGraph: IncludeCycleSummaryGraph | undefined;
+  for (const { include, resolved } of resolvedIncludes) {
+    const cycle = await measureDebugStepAsync(
       settings,
+      cached.source.uri,
+      "includeDiagnostics.cycleGraph",
+      async () => {
+        cycleGraph ??= await includeCycleSummaryGraphAsync(cached, settings);
+        return cycleGraph
+          ? findIncludeCycleInSummaryGraph(cycleGraph, owner, resolved.fileName)
+          : await findIncludeCycleAsync(owner, resolved.fileName, settings, cancellation);
+      },
     );
-    recordIncludeDependency(cached.source.uri, pathToFileUri(resolved.fileName));
-    if (!resolved.exists) {
-      diagnostics.push({
-        severity: DiagnosticSeverity.Warning,
-        range: include.range,
-        message: localizer.t("server.include.unresolved", { path: include.path }),
-        code: "include.missing",
-        source: "asp-lsp-include",
-      });
-      continue;
-    }
-    if (settings.windowsPathResolution !== false && !resolved.pathCaseMatches) {
-      diagnostics.push({
-        severity: DiagnosticSeverity.Warning,
-        range: include.pathRange,
-        message: localizer.t("server.include.caseMismatch", {
-          path: include.path,
-          actualPath: resolved.actualIncludePath ?? resolved.actualPath ?? resolved.fileName,
-        }),
-        code: "include.pathCaseMismatch",
-        source: "asp-lsp-include",
-      });
-    }
-    if (sameFile(resolved.fileName, owner)) {
-      diagnostics.push({
-        severity: DiagnosticSeverity.Warning,
-        range: include.range,
-        message: localizer.t("server.include.currentDocument"),
-        code: "include.currentDocument",
-        source: "asp-lsp-include",
-      });
-      continue;
-    }
-    const cycle = await findIncludeCycleAsync(owner, resolved.fileName, settings, cancellation);
     if (cancellation.isCancellationRequested()) {
       return [];
     }
@@ -12928,6 +12991,88 @@ async function includeDiagnosticsAsync(
     await yieldToEventLoop();
   }
   return diagnostics;
+}
+
+interface IncludeCycleSummaryGraph {
+  adjacency: Map<string, string[]>;
+  fileNamesByKey: Map<string, string>;
+}
+
+async function includeCycleSummaryGraphAsync(
+  cached: CachedDocument,
+  settings: AspSettings,
+): Promise<IncludeCycleSummaryGraph | undefined> {
+  const graph = await collectCachedVbProjectSummaryGraphAsync(cached, settings, {
+    allowReadMissing: true,
+  });
+  if (!graph.complete) {
+    return undefined;
+  }
+  const fileNamesByKey = new Map<string, string>();
+  for (const summary of graph.summaries) {
+    fileNamesByKey.set(fileIdentityKeyFromUri(summary.uri), uriToFileName(summary.uri));
+  }
+  const adjacency = new Map<string, string[]>();
+  for (const summary of graph.summaries) {
+    const ownerKey = fileIdentityKeyFromUri(summary.uri);
+    const targets: string[] = [];
+    for (const include of summary.includeRefs) {
+      const resolved = await resolveIncludePathDetailsAsync(
+        summary.uri,
+        include.path,
+        include.mode,
+        settings,
+      );
+      if (!resolved.exists) {
+        continue;
+      }
+      const targetKey = fileIdentityKeyFromFileName(resolved.fileName);
+      if (fileNamesByKey.has(targetKey)) {
+        targets.push(targetKey);
+      }
+    }
+    adjacency.set(ownerKey, targets);
+  }
+  return { adjacency, fileNamesByKey };
+}
+
+function findIncludeCycleInSummaryGraph(
+  graph: IncludeCycleSummaryGraph,
+  owner: string,
+  start: string,
+): string[] | undefined {
+  const ownerKey = fileIdentityKeyFromFileName(owner);
+  const startKey = fileIdentityKeyFromFileName(start);
+  const visited = new Set<string>();
+  const stack: string[] = [];
+  const stackIndexes = new Map<string, number>();
+
+  const search = (fileKey: string): string[] | undefined => {
+    if (fileKey === ownerKey && stack.length > 0) {
+      return [...stack, ownerKey].map((key) => graph.fileNamesByKey.get(key) ?? key);
+    }
+    const stackIndex = stackIndexes.get(fileKey);
+    if (stackIndex !== undefined) {
+      return stack.slice(stackIndex).map((key) => graph.fileNamesByKey.get(key) ?? key);
+    }
+    if (visited.has(fileKey)) {
+      return undefined;
+    }
+    visited.add(fileKey);
+    stackIndexes.set(fileKey, stack.length);
+    stack.push(fileKey);
+    for (const next of graph.adjacency.get(fileKey) ?? []) {
+      const cycle = search(next);
+      if (cycle) {
+        return cycle;
+      }
+    }
+    stack.pop();
+    stackIndexes.delete(fileKey);
+    return undefined;
+  };
+
+  return search(startKey);
 }
 
 async function includeRenameWorkspaceEditAsync(

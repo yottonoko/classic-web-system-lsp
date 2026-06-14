@@ -12274,7 +12274,7 @@ End Function
       }
     });
 
-    it("restores include refs from disk cache after server restart", async () => {
+    it("restores include summary refs from disk cache after server restart", async () => {
       const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "asp-lsp-include-refs-cache-"));
       const cacheDir = path.join(tempDir, ".cache");
       const owner = path.join(tempDir, "default.asp");
@@ -12307,7 +12307,7 @@ End Function
           },
         });
         await waitForDiagnosticsContaining(server, "Include cycle detected");
-        await waitForLogContaining(server, "diskIncludeRefs.write");
+        await waitForLogContaining(server, "diskSummary.write");
         await server.request("shutdown", null);
         server.notify("exit", undefined);
         server.stop();
@@ -12329,7 +12329,7 @@ End Function
           },
         });
         await waitForDiagnosticsContaining(server, "Include cycle detected");
-        await waitForLogContaining(server, "diskIncludeRefs.hit");
+        await waitForLogContaining(server, "diskSummary.hit");
 
         await server.request("shutdown", null);
         server.notify("exit", undefined);
@@ -17269,6 +17269,62 @@ Response.Write Shared▮Thing()
 
         const diagnostics = await waitForDiagnosticsContaining(server, "Include cycle detected");
         expect(JSON.stringify(diagnostics.params)).toContain("Include cycle detected");
+
+        await server.request("shutdown", null);
+        server.notify("exit", undefined);
+      } finally {
+        server.stop();
+        fs.rmSync(tempDir, { recursive: true, force: true });
+      }
+    });
+
+    it("reuses the VB summary graph while reporting include cycles", async () => {
+      const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "asp-lsp-summary-cycle-"));
+      const owner = path.join(tempDir, "default.asp");
+      const first = path.join(tempDir, "first.inc");
+      const second = path.join(tempDir, "second.inc");
+      fs.writeFileSync(owner, '<!-- #include file="first.inc" -->\n<% Response.Write 1 %>', "utf8");
+      fs.writeFileSync(first, '<!-- #include file="second.inc" -->', "utf8");
+      fs.writeFileSync(second, '<!-- #include file="first.inc" -->', "utf8");
+
+      const server = new RpcServer();
+      try {
+        await server.start();
+        await server.request("initialize", {
+          processId: process.pid,
+          rootUri: `file://${tempDir}`,
+          capabilities: {},
+        });
+        server.notify("workspace/didChangeConfiguration", {
+          settings: {
+            aspLsp: {
+              debug: { output: "verbose" },
+              diagnostics: { debounceMs: 0 },
+            },
+          },
+        });
+        server.notify("textDocument/didOpen", {
+          textDocument: {
+            uri: `file://${owner}`,
+            languageId: "classic-asp",
+            version: 1,
+            text: fs.readFileSync(owner, "utf8"),
+          },
+        });
+
+        const diagnostics = await waitForDiagnosticsContaining(server, "Include cycle detected");
+        expect(JSON.stringify(diagnostics.params)).toContain("Include cycle detected");
+        const logs = [await waitForLogContaining(server, "LSP check completed")];
+        logs.push(...server.takePendingNotifications("window/logMessage"));
+        const logText = JSON.stringify(logs);
+        expect(logText).toContain("includeDiagnostics.directIncludes");
+        expect(logText).toContain("includeDiagnostics.cycleGraph");
+        expect(logText).toContain("vbProject.summaryGraph.collect");
+        expect(
+          countOccurrences(logText, "vbProject.summaryGraph.built") +
+            countOccurrences(logText, "vbProject.summaryGraph.truncated"),
+        ).toBeLessThanOrEqual(1);
+        expect(logText).toMatch(/vbProject\.summaryGraph\.(pendingReuse|reuse)/);
 
         await server.request("shutdown", null);
         server.notify("exit", undefined);
