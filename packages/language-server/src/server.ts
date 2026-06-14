@@ -333,8 +333,18 @@ const workspaceIndex = new Map<string, WorkspaceIndexedDocument>();
 const workspaceIncludeGraph = new WorkspaceIncludeGraph();
 let workspaceIncludeGraphDirty = true;
 let workspaceIncludeGraphRestoreAllowed = true;
-const semanticTokenResults = new Map<string, { uri: string; data: number[] }>();
+interface SemanticTokenResultEntry {
+  uri: string;
+  data: number[];
+  reuseKey?: string;
+  version?: number;
+}
+
+const semanticTokenResults = new Map<string, SemanticTokenResultEntry>();
 const latestSemanticTokenResultByUri = new Map<string, string>();
+const retainedSemanticTokenResults = new Map<string, SemanticTokenResultEntry>();
+const latestRetainedSemanticTokenResultByUri = new Map<string, string>();
+const maxRetainedSemanticTokenResults = 128;
 const pendingSemanticJavascriptTokenBuilds = new Map<string, Promise<void>>();
 const interactiveVbProjectContextSnapshots = new Map<string, InteractiveVbProjectContextSnapshot>();
 const pendingInteractiveVbProjectContextRefreshes = new Map<string, Promise<void>>();
@@ -3104,7 +3114,13 @@ connection.languages.semanticTokens.on(async (params): Promise<SemanticTokens> =
   if (!cached) {
     return { data: [] };
   }
-  return cacheSemanticTokens(cached.source.uri, (await buildSemanticTokensAsync(cached)).data);
+  const previous = latestSemanticTokenEntryForUri(cached.source.uri);
+  const data = await buildFullSemanticTokenDataAsync(cached, previous);
+  return cacheSemanticTokens(
+    cached.source.uri,
+    data,
+    semanticTokenResultMetadata(cached, cachedSettings(cached.source.uri)),
+  );
 });
 
 connection.languages.semanticTokens.onRange(async (params): Promise<SemanticTokens> => {
@@ -3121,15 +3137,30 @@ connection.languages.semanticTokens.onDelta(
     if (!cached) {
       return { data: [] };
     }
-    const previous = semanticTokenResults.get(params.previousResultId);
-    const next = (await buildSemanticTokensAsync(cached)).data;
+    const previous = semanticTokenEntryById(params.previousResultId);
+    const next = await buildFullSemanticTokenDataAsync(cached, previous);
     if (!previous || !sameFileIdentityUri(previous.uri, cached.source.uri)) {
-      return cacheSemanticTokens(cached.source.uri, next);
+      return cacheSemanticTokens(
+        cached.source.uri,
+        next,
+        semanticTokenResultMetadata(cached, cachedSettings(cached.source.uri)),
+      );
     }
     const resultId = nextSemanticTokenResultId();
-    semanticTokenResults.set(resultId, { uri: cached.source.uri, data: next });
+    semanticTokenResults.set(resultId, {
+      uri: cached.source.uri,
+      data: next,
+      ...semanticTokenResultMetadata(cached, cachedSettings(cached.source.uri)),
+    });
     latestSemanticTokenResultByUri.set(semanticTokenUriKey(cached.source.uri), resultId);
     semanticTokenResults.delete(params.previousResultId);
+    retainedSemanticTokenResults.delete(params.previousResultId);
+    if (
+      latestRetainedSemanticTokenResultByUri.get(semanticTokenUriKey(cached.source.uri)) ===
+      params.previousResultId
+    ) {
+      latestRetainedSemanticTokenResultByUri.delete(semanticTokenUriKey(cached.source.uri));
+    }
     return {
       resultId,
       edits: [semanticTokenDeltaEdit(previous.data, next)],
@@ -23786,6 +23817,71 @@ async function buildSemanticTokensAsync(
   return buildSemanticTokensWithContextAsync(cached, context, range, settings);
 }
 
+async function buildFullSemanticTokenDataAsync(
+  cached: CachedDocument,
+  previous: SemanticTokenResultEntry | undefined,
+): Promise<number[]> {
+  const reused = await buildIncrementalFullSemanticTokenDataAsync(cached, previous);
+  if (reused) {
+    return reused;
+  }
+  return (await buildSemanticTokensAsync(cached)).data;
+}
+
+async function buildIncrementalFullSemanticTokenDataAsync(
+  cached: CachedDocument,
+  previous: SemanticTokenResultEntry | undefined,
+): Promise<number[] | undefined> {
+  const settings = cachedSettings(cached.source.uri);
+  if (!canReuseSemanticTokenResult(cached, settings, previous)) {
+    return undefined;
+  }
+  const change = cached.lastIncrementalChange;
+  if (!change) {
+    return undefined;
+  }
+  const startedAt = process.hrtime.bigint();
+  const dirty = semanticTokenDirtyRanges(cached, change);
+  const context = await measureDebugStepAsync(
+    settings,
+    cached.source.uri,
+    "semanticTokens.context",
+    () => semanticTokensVbProjectContextAsync(cached, settings),
+  );
+  const rangeTokens = await buildSemanticTokensWithContextAsync(
+    cached,
+    context,
+    dirty.current,
+    settings,
+  );
+  const merged = mergeIncrementalSemanticTokenData(previous!.data, rangeTokens.data, dirty, change);
+  const result = semanticTokensFromData(merged).data;
+  const jsVirtuals = jsVirtualDocuments(cached);
+  const fullCacheKey = semanticTokensFullCacheKey(cached, settings, jsVirtuals);
+  analysisFor(cached).semanticTokensFull = {
+    key: fullCacheKey,
+    data: [...result],
+  };
+  finishDebugStep(settings, cached.source.uri, "semanticTokens.full.incrementalReuse", startedAt);
+  return result;
+}
+
+function canReuseSemanticTokenResult(
+  cached: CachedDocument,
+  settings: AspSettings,
+  previous: SemanticTokenResultEntry | undefined,
+): previous is SemanticTokenResultEntry & { version: number; reuseKey: string } {
+  return (
+    previous !== undefined &&
+    sameFileIdentityUri(previous.uri, cached.source.uri) &&
+    previous.version !== undefined &&
+    previous.version + 1 === cached.identity.version &&
+    previous.reuseKey === semanticTokensReuseKey(cached, settings) &&
+    cached.lastEditImpact?.kind === "incremental" &&
+    cached.lastIncrementalChange !== undefined
+  );
+}
+
 async function buildSemanticTokensWithContextAsync(
   cached: CachedDocument,
   vbContext: VbProjectContext,
@@ -24160,6 +24256,106 @@ function semanticTokensFromData(tokens: readonly NormalizedSemanticTokenData[]):
   return builder.build();
 }
 
+function decodeSemanticTokenData(data: readonly number[]): NormalizedSemanticTokenData[] {
+  const tokens: NormalizedSemanticTokenData[] = [];
+  let line = 0;
+  let character = 0;
+  for (let index = 0; index + 4 < data.length; index += 5) {
+    line += data[index];
+    character = data[index] === 0 ? character + data[index + 1] : data[index + 1];
+    tokens.push({
+      line,
+      character,
+      length: data[index + 2],
+      tokenType: data[index + 3],
+      tokenModifiers: data[index + 4],
+    });
+  }
+  return tokens;
+}
+
+function sortAndDedupeNormalizedSemanticTokens(
+  tokens: readonly NormalizedSemanticTokenData[],
+): NormalizedSemanticTokenData[] {
+  const sorted = [...tokens].sort(compareNormalizedSemanticTokens);
+  const unique: NormalizedSemanticTokenData[] = [];
+  let previous: NormalizedSemanticTokenData | undefined;
+  for (const token of sorted) {
+    if (!previous || compareNormalizedSemanticTokens(previous, token) !== 0) {
+      unique.push(token);
+      previous = token;
+    }
+  }
+  return unique;
+}
+
+interface SemanticTokenDirtyRanges {
+  previousStartLine: number;
+  previousEndLine: number;
+  currentStartLine: number;
+  currentEndLine: number;
+  current: Range;
+}
+
+function semanticTokenDirtyRanges(
+  cached: CachedDocument,
+  change: AspIncrementalChange,
+): SemanticTokenDirtyRanges {
+  const insertedLineCount = countNewlines(change.text);
+  const previousStartLine = Math.max(0, change.range.start.line - 1);
+  const previousEndLine = change.range.end.line + 1;
+  const currentStartLine = previousStartLine;
+  const currentEndLine = Math.min(
+    cached.source.lineCount - 1,
+    change.range.start.line + insertedLineCount + 1,
+  );
+  return {
+    previousStartLine,
+    previousEndLine,
+    currentStartLine,
+    currentEndLine,
+    current: {
+      start: { line: currentStartLine, character: 0 },
+      end: {
+        line: currentEndLine,
+        character: lineText(cached.source, currentEndLine).length,
+      },
+    },
+  };
+}
+
+function mergeIncrementalSemanticTokenData(
+  previousData: readonly number[],
+  rangeData: readonly number[],
+  dirty: SemanticTokenDirtyRanges,
+  change: AspIncrementalChange,
+): NormalizedSemanticTokenData[] {
+  const lineDelta = countNewlines(change.text) - (change.range.end.line - change.range.start.line);
+  const retained = decodeSemanticTokenData(previousData).flatMap((token) => {
+    if (token.line >= dirty.previousStartLine && token.line <= dirty.previousEndLine) {
+      return [];
+    }
+    if (token.line > dirty.previousEndLine) {
+      return [{ ...token, line: token.line + lineDelta }];
+    }
+    return [token];
+  });
+  const currentRangeTokens = decodeSemanticTokenData(rangeData).filter(
+    (token) => token.line >= dirty.currentStartLine && token.line <= dirty.currentEndLine,
+  );
+  return sortAndDedupeNormalizedSemanticTokens([...retained, ...currentRangeTokens]);
+}
+
+function countNewlines(text: string): number {
+  let count = 0;
+  for (const character of text) {
+    if (character === "\n") {
+      count += 1;
+    }
+  }
+  return count;
+}
+
 function semanticTokenModifierBitset(modifiers: readonly string[] | undefined): number {
   let bitset = 0;
   for (const modifier of modifiers ?? []) {
@@ -24171,16 +24367,58 @@ function semanticTokenModifierBitset(modifiers: readonly string[] | undefined): 
   return bitset;
 }
 
-function cacheSemanticTokens(uri: string, data: number[]): SemanticTokens {
+function cacheSemanticTokens(
+  uri: string,
+  data: number[],
+  metadata: Omit<SemanticTokenResultEntry, "uri" | "data"> = {},
+): SemanticTokens {
   const uriKey = semanticTokenUriKey(uri);
   const previous = latestSemanticTokenResultByUri.get(uriKey);
   if (previous) {
     semanticTokenResults.delete(previous);
   }
+  const retained = latestRetainedSemanticTokenResultByUri.get(uriKey);
+  if (retained) {
+    retainedSemanticTokenResults.delete(retained);
+    latestRetainedSemanticTokenResultByUri.delete(uriKey);
+  }
   const resultId = nextSemanticTokenResultId();
-  semanticTokenResults.set(resultId, { uri, data });
+  semanticTokenResults.set(resultId, { uri, data, ...metadata });
   latestSemanticTokenResultByUri.set(uriKey, resultId);
   return { data, resultId };
+}
+
+function semanticTokenEntryById(resultId: string): SemanticTokenResultEntry | undefined {
+  return semanticTokenResults.get(resultId) ?? retainedSemanticTokenResults.get(resultId);
+}
+
+function latestSemanticTokenEntryForUri(uri: string): SemanticTokenResultEntry | undefined {
+  const uriKey = semanticTokenUriKey(uri);
+  const resultId = latestSemanticTokenResultByUri.get(uriKey);
+  if (resultId) {
+    return semanticTokenResults.get(resultId);
+  }
+  const retainedResultId = latestRetainedSemanticTokenResultByUri.get(uriKey);
+  return retainedResultId ? retainedSemanticTokenResults.get(retainedResultId) : undefined;
+}
+
+function semanticTokenResultMetadata(
+  cached: CachedDocument,
+  settings: AspSettings,
+): Omit<SemanticTokenResultEntry, "uri" | "data"> {
+  return {
+    reuseKey: semanticTokensReuseKey(cached, settings),
+    version: cached.identity.version,
+  };
+}
+
+function semanticTokensReuseKey(cached: CachedDocument, settings: AspSettings): string {
+  return JSON.stringify({
+    parseSettings: cached.parseSettingsIdentity,
+    includeResolution: includeResolutionSettingsIdentity(settings),
+    jsProject: jsProjectSettingsIdentity(settings),
+    diagnostics: diagnosticsIdentity(settings),
+  });
 }
 
 function nextSemanticTokenResultId(): string {
@@ -24214,8 +24452,36 @@ function clearSemanticTokensForUri(uri: string): void {
   const uriKey = semanticTokenUriKey(uri);
   const resultId = latestSemanticTokenResultByUri.get(uriKey);
   if (resultId) {
+    const entry = semanticTokenResults.get(resultId);
+    if (entry) {
+      retainSemanticTokenResult(resultId, entry);
+    }
     semanticTokenResults.delete(resultId);
     latestSemanticTokenResultByUri.delete(uriKey);
+  }
+}
+
+function retainSemanticTokenResult(resultId: string, entry: SemanticTokenResultEntry): void {
+  const uriKey = semanticTokenUriKey(entry.uri);
+  const previous = latestRetainedSemanticTokenResultByUri.get(uriKey);
+  if (previous && previous !== resultId) {
+    retainedSemanticTokenResults.delete(previous);
+  }
+  retainedSemanticTokenResults.set(resultId, entry);
+  latestRetainedSemanticTokenResultByUri.set(uriKey, resultId);
+  while (retainedSemanticTokenResults.size > maxRetainedSemanticTokenResults) {
+    const oldestResultId = retainedSemanticTokenResults.keys().next().value;
+    if (!oldestResultId) {
+      break;
+    }
+    const oldest = retainedSemanticTokenResults.get(oldestResultId);
+    retainedSemanticTokenResults.delete(oldestResultId);
+    if (
+      oldest &&
+      latestRetainedSemanticTokenResultByUri.get(semanticTokenUriKey(oldest.uri)) === oldestResultId
+    ) {
+      latestRetainedSemanticTokenResultByUri.delete(semanticTokenUriKey(oldest.uri));
+    }
   }
 }
 

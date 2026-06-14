@@ -5177,6 +5177,111 @@ End If
       }
     });
 
+    it("reuses semantic token full data across single embedded language edits", async () => {
+      let source = `<div class="box"><span data-name="before">Title</span></div>
+<style>
+.box { color: red; }
+</style>
+<script>
+const button = document.querySelector(".box");
+button.dataset.name = "before";
+</script>
+<%
+Function SharedToken()
+End Function
+Dim localValue
+Response.Write SharedToken()
+%>`;
+      let version = 1;
+      const uri = "file:///tmp/semantic-dirty-range-reuse.asp";
+      const server = new RpcServer();
+      try {
+        await server.start();
+        await server.request("initialize", {
+          processId: process.pid,
+          rootUri: "file:///tmp",
+          capabilities: {},
+        });
+        server.notify("workspace/didChangeConfiguration", {
+          settings: {
+            aspLsp: {
+              debug: { output: "verbose" },
+              diagnostics: { debounceMs: 0 },
+            },
+          },
+        });
+        server.notify("textDocument/didOpen", {
+          textDocument: {
+            uri,
+            languageId: "classic-asp",
+            version,
+            text: source,
+          },
+        });
+        await server.waitForNotification("textDocument/publishDiagnostics");
+
+        let full = await server.request("textDocument/semanticTokens/full", {
+          textDocument: { uri },
+        });
+        const editAndAssert = async (
+          needle: string,
+          replacement: string,
+          expectedNeedle: string,
+          expectedType: number,
+        ) => {
+          version += 1;
+          source = notifyRangedReplacement(server, uri, source, version, needle, replacement);
+          const delta = await server.request("textDocument/semanticTokens/full/delta", {
+            textDocument: { uri },
+            previousResultId: semanticTokenResultId(full),
+          });
+          const applied = applySemanticTokenDeltaEdits(semanticTokenData(full), delta);
+          const fresh = await server.request("textDocument/semanticTokens/full", {
+            textDocument: { uri },
+          });
+          expect(applied).toEqual(semanticTokenData(fresh));
+          const decoded = decodeSemanticTokens(applied);
+          expect(
+            decoded.some((token) =>
+              tokenMatches(source, token, "querySelector", semanticTokenType.method),
+            ),
+          ).toBe(true);
+          expect(
+            decoded.some((token) =>
+              tokenMatches(source, token, "color", semanticTokenType.property),
+            ),
+          ).toBe(true);
+          expect(
+            decoded.some((token) =>
+              tokenMatches(source, token, "SharedToken", semanticTokenType.function),
+            ),
+          ).toBe(true);
+          expect(
+            decoded.some((token) => tokenMatches(source, token, expectedNeedle, expectedType)),
+          ).toBe(true);
+          full = fresh;
+        };
+
+        await editAndAssert("before", "after", "SharedToken", semanticTokenType.function);
+        await editAndAssert("red", "blue", "color", semanticTokenType.property);
+        await editAndAssert(
+          "button.dataset.name",
+          "button.dataset.value",
+          "querySelector",
+          semanticTokenType.method,
+        );
+        await editAndAssert("localValue", "otherValue", "otherValue", semanticTokenType.variable);
+        expect(JSON.stringify(server.takePendingNotifications("window/logMessage"))).toContain(
+          "semanticTokens.full.incrementalReuse",
+        );
+
+        await server.request("shutdown", null);
+        server.notify("exit", undefined);
+      } finally {
+        server.stop();
+      }
+    });
+
     it("marks VBScript parentheses and comparison operators on initial semantic token requests", async () => {
       const source = `<%
 If (count <> 0) And (count <= 10) Then

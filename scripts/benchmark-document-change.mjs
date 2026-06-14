@@ -91,6 +91,19 @@ const selectedStepNames = [
   "analysis.identity",
   "analysis.parse.incremental",
   "analysis.parse.full",
+  "semanticTokens.context",
+  "semanticTokens.aspRegions",
+  "semanticTokens.vbscript.raw",
+  "semanticTokens.vbscript.map",
+  "semanticTokens.fallback.group",
+  "semanticTokens.includes",
+  "semanticTokens.embedded",
+  "semanticTokens.embedded.css",
+  "semanticTokens.embedded.deferDecision",
+  "semanticTokens.embedded.javascript",
+  "semanticTokens.dedupe",
+  "semanticTokens.encode",
+  "semanticTokens.full.incrementalReuse",
   "check.parserDiagnostics",
   "check.includeDiagnostics",
   "check.htmlDiagnostics",
@@ -258,12 +271,13 @@ async function runScenario(changeKind, changeMode, backgroundAnalysis, editTarge
     const openLogs = [];
     await waitForFinalCheckLog(server, uri, openLogs);
     const openFinalDiagnosticsMs = performance.now() - openStartedAt;
-    const openFeatureMetrics = await measureOpenLanguageFeatures(
+    const openLanguageFeatures = await measureOpenLanguageFeatures(
       server,
       uri,
       state.text,
       editTarget,
     );
+    state.semanticTokensFull = openLanguageFeatures.semanticTokensFull;
     drainBenchmarkNotifications(server);
 
     for (let index = 0; index < warmupIterations; index += 1) {
@@ -311,7 +325,7 @@ async function runScenario(changeKind, changeMode, backgroundAnalysis, editTarge
       openMetrics: {
         firstDiagnosticsMs: openFirstDiagnosticsMs,
         finalDiagnosticsMs: openFinalDiagnosticsMs,
-        ...openFeatureMetrics,
+        ...openLanguageFeatures.metrics,
       },
       samples,
       debugStepTotals,
@@ -428,12 +442,13 @@ async function measureColdScenarioIteration(
     const openLogs = [];
     await waitForFinalCheckLog(server, uri, openLogs);
     const openFinalDiagnosticsMs = performance.now() - openStartedAt;
-    const openFeatureMetrics = await measureOpenLanguageFeatures(
+    const openLanguageFeatures = await measureOpenLanguageFeatures(
       server,
       uri,
       state.text,
       editTarget,
     );
+    state.semanticTokensFull = openLanguageFeatures.semanticTokensFull;
     drainBenchmarkNotifications(server);
     const sample = await measureDocumentChange(
       server,
@@ -450,7 +465,7 @@ async function measureColdScenarioIteration(
       openMetrics: {
         firstDiagnosticsMs: openFirstDiagnosticsMs,
         finalDiagnosticsMs: openFinalDiagnosticsMs,
-        ...openFeatureMetrics,
+        ...openLanguageFeatures.metrics,
       },
       sample,
     };
@@ -505,6 +520,7 @@ async function measureDocumentChange(
   const logs = [];
   await waitForFinalCheckLog(server, uri, logs);
   const finalDiagnosticsMs = performance.now() - startedAt;
+  const semanticTokenMetrics = await measurePostChangeSemanticTokens(server, uri, state);
   logs.push(...server.takePendingNotifications("window/logMessage"));
   server.takePendingNotifications("textDocument/publishDiagnostics");
 
@@ -512,6 +528,7 @@ async function measureDocumentChange(
     firstDiagnosticsMs,
     finalDiagnosticsMs,
     interactiveHoverMs,
+    ...semanticTokenMetrics,
     analysisStarts: countLogsContaining(logs, `LSP analysis started: ${uri}`),
     stepTimings: collectLogTimings(logs),
     eventCounts: collectDebugEventCounts(logs),
@@ -564,9 +581,8 @@ async function measureOpenLanguageFeatures(server, uri, text, editTarget) {
       context: { triggerKind: 1 },
     });
   }
-  metrics.semanticTokensFullMs = await timedRequest(server, "textDocument/semanticTokens/full", {
-    textDocument: { uri },
-  });
+  const semanticTokensFull = await timedSemanticTokensFull(server, uri);
+  metrics.semanticTokensFullMs = semanticTokensFull.elapsedMs;
   if (range) {
     metrics.semanticTokensRangeMs = await timedRequest(
       server,
@@ -586,13 +602,82 @@ async function measureOpenLanguageFeatures(server, uri, text, editTarget) {
   if (resolvableLens) {
     metrics.codeLensResolveMs = await timedRequest(server, "codeLens/resolve", resolvableLens);
   }
-  return metrics;
+  return { metrics, semanticTokensFull: semanticTokensFull.result };
 }
 
 async function timedRequest(server, method, params) {
   const startedAt = performance.now();
   await server.request(method, params);
   return performance.now() - startedAt;
+}
+
+async function timedSemanticTokensFull(server, uri) {
+  const startedAt = performance.now();
+  const result = await server.request("textDocument/semanticTokens/full", {
+    textDocument: { uri },
+  });
+  return {
+    elapsedMs: performance.now() - startedAt,
+    result: semanticTokensResult(result),
+  };
+}
+
+async function measurePostChangeSemanticTokens(server, uri, state) {
+  if (!state.semanticTokensFull?.resultId) {
+    return {};
+  }
+  const deltaStartedAt = performance.now();
+  const delta = await server.request("textDocument/semanticTokens/full/delta", {
+    textDocument: { uri },
+    previousResultId: state.semanticTokensFull.resultId,
+  });
+  const semanticTokensDeltaMs = performance.now() - deltaStartedAt;
+  const deltaResult = semanticTokensFromDelta(state.semanticTokensFull, delta);
+  if (deltaResult) {
+    state.semanticTokensFull = deltaResult;
+  }
+  const full = await timedSemanticTokensFull(server, uri);
+  state.semanticTokensFull = full.result;
+  return {
+    semanticTokensDeltaMs,
+    semanticTokensPostChangeFullMs: full.elapsedMs,
+  };
+}
+
+function semanticTokensResult(result) {
+  if (
+    result &&
+    typeof result === "object" &&
+    typeof result.resultId === "string" &&
+    Array.isArray(result.data)
+  ) {
+    return { resultId: result.resultId, data: result.data };
+  }
+  return undefined;
+}
+
+function semanticTokensFromDelta(previous, delta) {
+  if (!delta || typeof delta !== "object" || typeof delta.resultId !== "string") {
+    return undefined;
+  }
+  if (Array.isArray(delta.data)) {
+    return { resultId: delta.resultId, data: delta.data };
+  }
+  if (!Array.isArray(delta.edits)) {
+    return undefined;
+  }
+  return {
+    resultId: delta.resultId,
+    data: applySemanticTokenDeltaEdits(previous.data, delta.edits),
+  };
+}
+
+function applySemanticTokenDeltaEdits(previousData, edits) {
+  const data = [...previousData];
+  for (const edit of [...edits].sort((left, right) => right.start - left.start)) {
+    data.splice(edit.start, edit.deleteCount ?? 0, ...(Array.isArray(edit.data) ? edit.data : []));
+  }
+  return data;
 }
 
 function semanticTokenRange(text, position) {
@@ -1070,6 +1155,28 @@ function printScenarioTable(scenarioResults) {
         ...statsCells(
           scenario.samples
             .map((sample) => sample.interactiveHoverMs)
+            .filter((value) => value !== undefined),
+        ),
+      ]);
+    }
+    if (scenario.samples.some((sample) => sample.semanticTokensDeltaMs !== undefined)) {
+      rows.push([
+        scenarioName,
+        "post-change semanticTokens/full/delta",
+        ...statsCells(
+          scenario.samples
+            .map((sample) => sample.semanticTokensDeltaMs)
+            .filter((value) => value !== undefined),
+        ),
+      ]);
+    }
+    if (scenario.samples.some((sample) => sample.semanticTokensPostChangeFullMs !== undefined)) {
+      rows.push([
+        scenarioName,
+        "post-change semanticTokens/full",
+        ...statsCells(
+          scenario.samples
+            .map((sample) => sample.semanticTokensPostChangeFullMs)
             .filter((value) => value !== undefined),
         ),
       ]);
