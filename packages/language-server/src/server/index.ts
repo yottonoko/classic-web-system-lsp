@@ -2341,13 +2341,17 @@ connection.onCompletion((params) =>
         params.position,
         htmlService.parseHTMLDocument(virtualDocument),
       ).items;
+      const baseItems = [
+        ...aspIncludeCompletions(cached, params.position, settings),
+        ...directiveOpenCompletions,
+        ...htmlItems,
+      ];
       return remember(
         withCompletionData(
-          [
-            ...aspIncludeCompletions(cached, params.position, settings),
-            ...directiveOpenCompletions,
-            ...htmlItems,
-          ],
+          withAdditionalCompletionItems(
+            baseItems,
+            htmlClassIdAttributeCompletions(cached, params.position),
+          ),
           {
             kind: "html",
             uri: cached.source.uri,
@@ -6721,9 +6725,14 @@ function cssCompletion(
     .doComplete(document, position, stylesheet)
     .items.map((item) => remapCompletionItem(virtual, item))
     .filter((item): item is CompletionItem => Boolean(item));
-  return items.length > 0
-    ? items
-    : cssStyleAttributeSemicolonCompletions(cached, params, virtual, position);
+  const baseItems =
+    items.length > 0
+      ? items
+      : cssStyleAttributeSemicolonCompletions(cached, params, virtual, position);
+  return withAdditionalCompletionItems(
+    baseItems,
+    cssSelectorCompletionsFromHtml(cached, params.position),
+  );
 }
 
 function cssStyleAttributeSemicolonCompletions(
@@ -6749,6 +6758,274 @@ function cssStyleAttributeSemicolonCompletions(
   return cssService
     .doComplete(syntheticDocument, syntheticPosition, cssService.parseStylesheet(syntheticDocument))
     .items.map((item) => completionItemAtSourceRange(item, sourceRange, " "));
+}
+
+function withAdditionalCompletionItems(
+  items: CompletionItem[],
+  additions: CompletionItem[],
+): CompletionItem[] {
+  if (additions.length === 0) {
+    return items;
+  }
+  const labels = new Set(items.map((item) => completionLabelKey(item.label)));
+  const filtered = additions.filter((item) => {
+    const key = completionLabelKey(item.label);
+    if (labels.has(key)) {
+      return false;
+    }
+    labels.add(key);
+    return true;
+  });
+  return filtered.length > 0 ? [...items, ...filtered] : items;
+}
+
+function completionLabelKey(label: CompletionItem["label"]): string {
+  return (typeof label === "string" ? label : String(label)).toLowerCase();
+}
+
+interface CssSelectorCompletionContext {
+  kind: "class" | "id";
+  range: Range;
+}
+
+function cssSelectorCompletionsFromHtml(
+  cached: CachedDocument,
+  position: Position,
+): CompletionItem[] {
+  const context = cssSelectorCompletionContextAt(cached, position);
+  if (!context) {
+    return [];
+  }
+  const names = htmlAttributeNameValues(
+    cached.source.getText(),
+    context.kind === "class" ? "class" : "id",
+  );
+  const localizer = localizerForUri(cached.source.uri);
+  return names.map((name, index) => ({
+    label: name,
+    kind: CompletionItemKind.Value,
+    detail: localizer.t("server.completion.cssSelectorFromHtml.detail"),
+    documentation: localizer.t("server.completion.cssSelectorFromHtml.documentation"),
+    filterText: `${context.kind === "class" ? "." : "#"}${name} ${name}`,
+    textEdit: { range: context.range, newText: name },
+    sortText: `9_html-selector-${String(index).padStart(4, "0")}-${name.toLowerCase()}`,
+  }));
+}
+
+function cssSelectorCompletionContextAt(
+  cached: CachedDocument,
+  position: Position,
+): CssSelectorCompletionContext | undefined {
+  const offset = cached.source.offsetAt(position);
+  const region = findRegionAt(cached.parsed, offset);
+  if (!region || region.language !== "css" || region.kind === "style-attribute") {
+    return undefined;
+  }
+  const text = cached.source.getText();
+  const before = text.slice(region.contentStart, offset);
+  if (before.lastIndexOf("{") > before.lastIndexOf("}")) {
+    return undefined;
+  }
+  let nameStart = offset;
+  while (nameStart > region.contentStart && isHtmlCssNamePartCode(text.charCodeAt(nameStart - 1))) {
+    nameStart -= 1;
+  }
+  const marker = text[nameStart - 1];
+  if ((marker !== "." && marker !== "#") || nameStart <= region.contentStart) {
+    return undefined;
+  }
+  return {
+    kind: marker === "." ? "class" : "id",
+    range: {
+      start: cached.source.positionAt(nameStart),
+      end: position,
+    },
+  };
+}
+
+interface HtmlClassIdAttributeCompletionContext {
+  kind: "class" | "id";
+  range: Range;
+  existingClassNames: Set<string>;
+}
+
+function htmlClassIdAttributeCompletions(
+  cached: CachedDocument,
+  position: Position,
+): CompletionItem[] {
+  const context = htmlClassIdAttributeCompletionContextAt(cached, position);
+  if (!context) {
+    return [];
+  }
+  const cssNames = cssSelectorNameIndex(cached);
+  const names =
+    context.kind === "class"
+      ? uniqueCompletionNames([
+          ...cssNames.classes,
+          ...htmlAttributeNameValues(cached.source.getText(), "class"),
+        ]).filter((name) => !context.existingClassNames.has(name.toLowerCase()))
+      : cssNames.ids;
+  const localizer = localizerForUri(cached.source.uri);
+  const detailKey =
+    context.kind === "class"
+      ? "server.completion.htmlClassValue.detail"
+      : "server.completion.htmlIdValue.detail";
+  const documentationKey =
+    context.kind === "class"
+      ? "server.completion.htmlClassValue.documentation"
+      : "server.completion.htmlIdValue.documentation";
+  return names.map((name, index) => ({
+    label: name,
+    kind: CompletionItemKind.Value,
+    detail: localizer.t(detailKey),
+    documentation: localizer.t(documentationKey),
+    textEdit: { range: context.range, newText: name },
+    sortText: `9_html-attribute-${context.kind}-${String(index).padStart(4, "0")}-${name.toLowerCase()}`,
+  }));
+}
+
+function htmlClassIdAttributeCompletionContextAt(
+  cached: CachedDocument,
+  position: Position,
+): HtmlClassIdAttributeCompletionContext | undefined {
+  const offset = cached.source.offsetAt(position);
+  const region = findRegionAt(cached.parsed, offset);
+  if (!region || region.language !== "html") {
+    return undefined;
+  }
+  const text = cached.source.getText();
+  for (const tag of htmlStartTags(text)) {
+    if (offset < tag.start || offset > tag.end) {
+      continue;
+    }
+    for (const attribute of tag.attributes) {
+      const name = attribute.name.toLowerCase();
+      if (
+        (name !== "class" && name !== "id") ||
+        attribute.value === true ||
+        offset < attribute.valueStart ||
+        offset > attribute.valueEnd
+      ) {
+        continue;
+      }
+      if (name === "id") {
+        return {
+          kind: "id",
+          range: {
+            start: cached.source.positionAt(attribute.valueStart),
+            end: cached.source.positionAt(attribute.valueEnd),
+          },
+          existingClassNames: new Set(),
+        };
+      }
+      const tokenRange = htmlClassAttributeTokenRange(text, attribute, offset);
+      return {
+        kind: "class",
+        range: {
+          start: cached.source.positionAt(tokenRange.start),
+          end: cached.source.positionAt(tokenRange.end),
+        },
+        existingClassNames: new Set(
+          htmlClassAttributeNames(attribute.value).map((value) => value.toLowerCase()),
+        ),
+      };
+    }
+  }
+  return undefined;
+}
+
+function htmlClassAttributeTokenRange(
+  text: string,
+  attribute: HtmlAttributeSpan,
+  offset: number,
+): { start: number; end: number } {
+  let start = offset;
+  while (start > attribute.valueStart && !isHtmlWhitespaceCode(text.charCodeAt(start - 1))) {
+    start -= 1;
+  }
+  let end = offset;
+  while (end < attribute.valueEnd && !isHtmlWhitespaceCode(text.charCodeAt(end))) {
+    end += 1;
+  }
+  return { start, end };
+}
+
+interface CssSelectorNameIndex {
+  classes: string[];
+  ids: string[];
+}
+
+function cssSelectorNameIndex(cached: CachedDocument): CssSelectorNameIndex {
+  const context = cssContext(cached);
+  if (!context) {
+    return { classes: [], ids: [] };
+  }
+  const classes: string[] = [];
+  const ids: string[] = [];
+  const seenClasses = new Set<string>();
+  const seenIds = new Set<string>();
+  for (const symbol of cssService.findDocumentSymbols(context.document, context.stylesheet)) {
+    for (const match of symbol.name.matchAll(/([#.])([A-Za-z_][A-Za-z0-9_-]*)/g)) {
+      const name = match[2] ?? "";
+      if (!isHtmlCssCompletionName(name)) {
+        continue;
+      }
+      const seen = match[1] === "." ? seenClasses : seenIds;
+      const values = match[1] === "." ? classes : ids;
+      addUniqueCompletionName(values, seen, name);
+    }
+  }
+  return { classes, ids };
+}
+
+function htmlAttributeNameValues(text: string, attributeName: "class" | "id"): string[] {
+  const values: string[] = [];
+  const seen = new Set<string>();
+  for (const tag of htmlStartTags(text)) {
+    const attribute = htmlAttributeByName(tag, attributeName);
+    if (!attribute || attribute.value === true) {
+      continue;
+    }
+    const names =
+      attributeName === "class" ? htmlClassAttributeNames(attribute.value) : [attribute.value];
+    for (const name of names) {
+      addUniqueCompletionName(values, seen, name);
+    }
+  }
+  return values;
+}
+
+function htmlClassAttributeNames(value: string): string[] {
+  return value.split(/\s+/).filter(isHtmlCssCompletionName);
+}
+
+function uniqueCompletionNames(names: string[]): string[] {
+  const values: string[] = [];
+  const seen = new Set<string>();
+  for (const name of names) {
+    addUniqueCompletionName(values, seen, name);
+  }
+  return values;
+}
+
+function addUniqueCompletionName(values: string[], seen: Set<string>, name: string): void {
+  if (!isHtmlCssCompletionName(name)) {
+    return;
+  }
+  const key = name.toLowerCase();
+  if (seen.has(key)) {
+    return;
+  }
+  seen.add(key);
+  values.push(name);
+}
+
+function isHtmlCssCompletionName(value: string): boolean {
+  return /^[A-Za-z_][A-Za-z0-9_-]*$/.test(value);
+}
+
+function isHtmlCssNamePartCode(code: number): boolean {
+  return isAsciiAlphaCode(code) || isAsciiDigitCode(code) || code === 45 || code === 95;
 }
 
 function withUnresolvedVbscriptCompletionItems(

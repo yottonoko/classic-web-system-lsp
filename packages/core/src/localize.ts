@@ -87,6 +87,12 @@ export type LocalizeKey =
   | "server.completion.html.documentation"
   | "server.completion.css.detail"
   | "server.completion.css.documentation"
+  | "server.completion.cssSelectorFromHtml.detail"
+  | "server.completion.cssSelectorFromHtml.documentation"
+  | "server.completion.htmlClassValue.detail"
+  | "server.completion.htmlClassValue.documentation"
+  | "server.completion.htmlIdValue.detail"
+  | "server.completion.htmlIdValue.documentation"
   | "server.completion.include.detail"
   | "server.completion.include.documentation"
   | "server.quickfix.declareDim"
@@ -205,6 +211,14 @@ const en: Record<LocalizeKey, string> = {
   "server.completion.html.documentation": "Completion provided by vscode-html-languageservice.",
   "server.completion.css.detail": "CSS completion",
   "server.completion.css.documentation": "Completion provided by vscode-css-languageservice.",
+  "server.completion.cssSelectorFromHtml.detail": "HTML selector",
+  "server.completion.cssSelectorFromHtml.documentation":
+    "Selector name found in HTML class or id attributes in this file.",
+  "server.completion.htmlClassValue.detail": "HTML class value",
+  "server.completion.htmlClassValue.documentation":
+    "Class name found in CSS selectors or class attributes in this file.",
+  "server.completion.htmlIdValue.detail": "HTML id value",
+  "server.completion.htmlIdValue.documentation": "ID name found in CSS selectors in this file.",
   "server.completion.include.detail": "Classic ASP include completion",
   "server.completion.include.documentation": "Inserts a Classic ASP server-side include directive.",
   "server.quickfix.declareDim": "Declare {name} with Dim",
@@ -326,6 +340,15 @@ const ja: Record<LocalizeKey, string> = {
   "server.completion.html.documentation": "vscode-html-languageservice による補完です。",
   "server.completion.css.detail": "CSS 補完",
   "server.completion.css.documentation": "vscode-css-languageservice による補完です。",
+  "server.completion.cssSelectorFromHtml.detail": "HTML selector",
+  "server.completion.cssSelectorFromHtml.documentation":
+    "このファイルの HTML class または id 属性で使われている selector 名です。",
+  "server.completion.htmlClassValue.detail": "HTML class 値",
+  "server.completion.htmlClassValue.documentation":
+    "このファイルの CSS selector または class 属性で使われている class 名です。",
+  "server.completion.htmlIdValue.detail": "HTML id 値",
+  "server.completion.htmlIdValue.documentation":
+    "このファイルの CSS selector で使われている id 名です。",
   "server.completion.include.detail": "Classic ASP include 補完",
   "server.completion.include.documentation":
     "Classic ASP の server-side include directive を挿入します。",

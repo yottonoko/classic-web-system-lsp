@@ -640,6 +640,120 @@ Server.HTMLEe▮
       }
     });
 
+    it("adds same-file HTML and CSS class/id names to embedded completions", async () => {
+      const cases = [
+        {
+          uri: "file:///tmp/css-class-from-html.asp",
+          markedSource: '<div class="card lead" id="hero"></div>\n<style>.▮</style>',
+          includes: ["card", "lead"],
+          excludes: ["hero"],
+        },
+        {
+          uri: "file:///tmp/css-id-from-html.asp",
+          markedSource: '<div class="card" id="hero"></div>\n<style>#▮</style>',
+          includes: ["hero"],
+          excludes: ["card"],
+        },
+        {
+          uri: "file:///tmp/css-property-kept.asp",
+          markedSource: "<style>.card { colo▮ }</style>",
+          includes: ["color"],
+          excludes: [],
+        },
+        {
+          uri: "file:///tmp/html-class-from-css.asp",
+          markedSource: '<style>.card { color: red; }</style>\n<div class="▮"></div>',
+          includes: ["card"],
+          excludes: [],
+        },
+        {
+          uri: "file:///tmp/html-class-from-html.asp",
+          markedSource: '<div class="used elsewhere"></div>\n<section class="▮"></section>',
+          includes: ["used", "elsewhere"],
+          excludes: [],
+        },
+        {
+          uri: "file:///tmp/html-id-from-css.asp",
+          markedSource: '<style>#hero { color: red; }</style>\n<div id="▮"></div>',
+          includes: ["hero"],
+          excludes: [],
+        },
+        {
+          uri: "file:///tmp/html-tag-selector-excluded.asp",
+          markedSource: '<style>section { color: red; }</style>\n<div class="▮" id=""></div>',
+          includes: [],
+          excludes: ["section"],
+        },
+      ];
+
+      const server = new RpcServer();
+      try {
+        await server.start();
+        await server.request("initialize", {
+          processId: process.pid,
+          rootUri: "file:///tmp",
+          capabilities: {},
+        });
+        for (const testCase of cases) {
+          const document = markedDocument(testCase.markedSource);
+          server.notify("textDocument/didOpen", {
+            textDocument: {
+              uri: testCase.uri,
+              languageId: "classic-asp",
+              version: 1,
+              text: document.text,
+            },
+          });
+          await server.waitForNotification("textDocument/publishDiagnostics");
+          const completions = await server.request("textDocument/completion", {
+            textDocument: { uri: testCase.uri },
+            position: document.position,
+          });
+          const labels = completionLabels(completions);
+          for (const label of testCase.includes) {
+            expect(labels, testCase.markedSource).toContain(label);
+          }
+          for (const label of testCase.excludes) {
+            expect(labels, testCase.markedSource).not.toContain(label);
+          }
+        }
+
+        const multipleClass = markedDocument(
+          '<style>.lead { color: red; }</style>\n<div class="card le▮"></div>',
+        );
+        const multipleClassUri = "file:///tmp/html-class-token-range.asp";
+        server.notify("textDocument/didOpen", {
+          textDocument: {
+            uri: multipleClassUri,
+            languageId: "classic-asp",
+            version: 1,
+            text: multipleClass.text,
+          },
+        });
+        await server.waitForNotification("textDocument/publishDiagnostics");
+        const multipleClassCompletions = await server.request("textDocument/completion", {
+          textDocument: { uri: multipleClassUri },
+          position: multipleClass.position,
+        });
+        const labels = completionLabels(multipleClassCompletions);
+        expect(labels).toContain("lead");
+        expect(labels).not.toContain("card");
+        const leadItem = completionItems(multipleClassCompletions).find(
+          (item) => item.label === "lead",
+        );
+        expect(completionEditNewText(leadItem)).toBe("lead");
+        expect(completionEditRange(leadItem)).toEqual({
+          start: positionAt(multipleClass.text, multipleClass.text.lastIndexOf("le")),
+          end: multipleClass.position,
+        });
+
+        await server.request("shutdown", null);
+        server.notify("exit", undefined);
+      } finally {
+        server.stop();
+      }
+    });
+
     it("returns CSS completions and colors inside HTML style attributes", async () => {
       const server = new RpcServer();
       try {
