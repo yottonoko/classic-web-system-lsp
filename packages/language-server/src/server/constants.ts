@@ -1,0 +1,15 @@
+export const reindexWorkspaceCommand = "aspLsp.reindexWorkspace";
+export const clearCacheCommand = "aspLsp.clearCache";
+export const clearDiskCacheCommand = "aspLsp.clearDiskCache";
+export const clearProcessCacheCommand = "aspLsp.clearProcessCache";
+export const reindexWorkspaceServerCommand = "aspLsp.server.reindexWorkspace";
+export const clearCacheServerCommand = "aspLsp.server.clearCache";
+export const clearDiskCacheServerCommand = "aspLsp.server.clearDiskCache";
+export const clearProcessCacheServerCommand = "aspLsp.server.clearProcessCache";
+export const buildGraphServerCommand = "aspLsp.server.buildGraph";
+export const buildFlowchartServerCommand = "aspLsp.server.buildFlowchart";
+export const exportAnalysisExcelServerCommand = "aspLsp.server.exportAnalysisExcel";
+export const cancelProgressTaskServerCommand = "aspLsp.server.cancelProgressTask";
+export const statusNotificationMethod = "aspLsp/status";
+export const graphUpdatedNotificationMethod = "aspLsp/graphUpdated";
+export const languageServerVersion = "0.7.5";

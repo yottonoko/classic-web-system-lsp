@@ -10,8 +10,37 @@ import React, {
 import { createRoot } from "react-dom/client";
 import ForceGraph2D from "react-force-graph-2d";
 import ForceGraph3D from "react-force-graph-3d";
-import SpriteText from "three-spritetext";
 import { INITIAL, Registry, parseRawGrammar } from "vscode-textmate";
+import { graphMessages } from "./include-graph-i18n";
+import { graphThemePalettes } from "./include-graph-theme";
+import { isFileLikeGraphNode } from "./include-graph-types";
+import type { GraphTextKey, GraphTextParams } from "./include-graph-i18n";
+import type {
+  GraphData,
+  GraphLink,
+  GraphLocale,
+  GraphNode,
+  GraphStatsListItem,
+  GraphStatsMetric,
+  GraphStatsTarget,
+  GraphThemePalette,
+  HighlightOffsets,
+  InfoPanelPosition,
+  LinkFilterCategory,
+  NodeColorCategory,
+  OpenFlowchartMessage,
+  PendingPositionSync,
+  PositionSyncEntry,
+  Selection,
+  SnippetHighlighter,
+  SnippetHighlightState,
+  SnippetLanguage,
+  SourceRangesMessage,
+  GraphUpdatedMessage,
+  ViewMode,
+  WebviewTheme,
+  WebviewThemeSetting,
+} from "./include-graph-types";
 import { createOnigScanner, createOnigString, loadWASM } from "vscode-oniguruma";
 import onigWasmUrl from "vscode-oniguruma/release/onig.wasm?url";
 import classicAspGrammarJson from "../../syntaxes/classic-asp.tmLanguage.json";
@@ -60,9 +89,6 @@ import {
 } from "./include-graph-model";
 import type {
   AspGraphLink,
-  AspGraphLinkFilterCategory,
-  AspGraphNode,
-  AspGraphNodeCategory,
   AspGraphPayload,
   AspGraphRange,
   AspGraphSourceRangeRequestItem,
@@ -70,7 +96,7 @@ import type {
 } from "../include-graph-webview";
 import type { ForceGraphMethods as ForceGraph2DMethods } from "react-force-graph-2d";
 import type { ForceGraphMethods as ForceGraph3DMethods } from "react-force-graph-3d";
-import type { IGrammar, IOnigLib, IRawGrammar, StateStack } from "vscode-textmate";
+import type { IOnigLib, IRawGrammar, StateStack } from "vscode-textmate";
 
 declare const acquireVsCodeApi: () => {
   postMessage(message: unknown): void;
@@ -83,549 +109,11 @@ declare global {
   }
 }
 
-type ViewMode = "3d" | "2d";
-
-type NodeColorCategory = AspGraphNodeCategory;
-
-type GraphNode = AspGraphNode & {
-  color: string;
-  category: NodeColorCategory;
-  referenceCount: number;
-  value: number;
-  x?: number;
-  y?: number;
-  z?: number;
-  vx?: number;
-  vy?: number;
-  vz?: number;
-  fx?: number;
-  fy?: number;
-  fz?: number;
-};
-
-type GraphLink = Omit<AspGraphLink, "source" | "target"> & {
-  source: string | GraphNode;
-  target: string | GraphNode;
-  color: string;
-};
-
-type GraphData = {
-  nodes: GraphNode[];
-  links: GraphLink[];
-};
-
-type LegacyImplicitGlobalNodeFields = {
-  implicitLocal?: boolean;
-  unresolvedGlobal?: boolean;
-};
-
-interface OpenFlowchartMessage {
-  type: "openFlowchart";
-  uri: string;
-  range?: AspGraphRange;
-}
-
-type WebviewTheme = "light" | "dark";
-type WebviewThemeSetting = WebviewTheme | "auto";
-type InfoPanelPosition = "left" | "right";
-
-interface GraphThemePalette {
-  canvasBackground: string;
-  mutedLink: string;
-  mutedNode: string;
-  nodeColors: Record<NodeColorCategory, string>;
-  linkFilterColors: Record<LinkFilterCategory, string>;
-}
-
-function isFileLikeGraphNode(node: Pick<AspGraphNode, "kind">): boolean {
-  return node.kind === "file" || node.kind === "missingInclude";
-}
-
-type Selection = { type: "node"; item: GraphNode } | { type: "link"; item: GraphLink } | undefined;
-
-type GraphStatsMetric = "files" | "declarations" | "links" | "missingIncludes";
-
-type GraphStatsTarget = { type: "node"; id: string } | { type: "link"; id: string };
-
-interface GraphStatsListItem {
-  id: string;
-  title: string;
-  target: GraphStatsTarget;
-  detail?: string;
-  status?: string;
-  color?: string;
-  lineWidth?: number;
-}
-
-type HighlightState = {
-  activeNodeIds: Set<string>;
-  activeLinkIds: Set<string>;
-};
-
-type LinkFilterCategory = AspGraphLinkFilterCategory;
-
-type CenteredSpriteText = SpriteText & {
-  center: {
-    y: number;
-  };
-};
-
-interface PositionSyncEntry {
-  id: string;
-  sourceMode: ViewMode;
-  x?: number;
-  y?: number;
-  z?: number;
-  screenX?: number;
-  screenY?: number;
-  cameraDistance?: number;
-}
-
-interface PendingPositionSync {
-  from: ViewMode;
-  to: ViewMode;
-  generation: number;
-  entries: Map<string, PositionSyncEntry>;
-}
-
-interface PositionSyncTransform {
-  centerX: number;
-  centerY: number;
-  scale: number;
-}
-
-interface SourceRangesMessage {
-  type: "sourceRanges";
-  requestId: string;
-  items: AspGraphSourceRangeResponseItem[];
-}
-
-interface GraphUpdatedMessage {
-  type: "graphUpdated";
-  payload?: AspGraphPayload;
-  final?: boolean;
-  error?: string;
-}
-
-type SnippetLanguage = "classic-asp" | "vbscript";
-
-type SnippetHighlightState =
-  | { status: "loading" }
-  | { status: "ready"; highlighter: SnippetHighlighter }
-  | { status: "failed" };
-
-interface SnippetHighlighter {
-  classicAsp: IGrammar;
-  vbscript: IGrammar;
-}
-
-interface HighlightOffsets {
-  start: number;
-  end: number;
-}
-
 const vscode = acquireVsCodeApi();
 const initialGraph = window.__ASP_LSP_GRAPH__;
 const initialGraphTargetRange = isGraphRange(window.__ASP_LSP_GRAPH_TARGET_RANGE__)
   ? window.__ASP_LSP_GRAPH_TARGET_RANGE__
   : undefined;
-
-type GraphLocale = "en" | "ja";
-
-const graphMessageEn = {
-  "action.fit": "Fit",
-  "action.fitGraph": "Fit graph to canvas",
-  "action.open": "Open",
-  "action.openDirective": "Open directive",
-  "action.openFile": "Open file",
-  "action.openFirst": "Open first",
-  "action.openFlowchart": "Open flowchart",
-  "action.selectSource": "Select source",
-  "action.selectTarget": "Select target",
-  "direction.from": "from",
-  "direction.to": "to",
-  "detail.actualPath": "Actual path",
-  "detail.actualPathHint":
-    "Filesystem path VS Code resolved for the include target, when it differs from the directive text.",
-  "detail.count": "count",
-  "detail.countHint": "Number of source occurrences represented by this graph link.",
-  "detail.declaration": "Declaration",
-  "detail.directive": "Directive {source}",
-  "detail.exists": "Exists",
-  "detail.existsHint": "Whether the include target resolved to an existing file.",
-  "detail.file": "File",
-  "detail.fileHint": "Source file that owns or contains the selected graph node.",
-  "detail.include": "Include",
-  "detail.includeHint": "Include path written in the Classic ASP directive.",
-  "detail.label": "Label",
-  "detail.labelHint": "Raw graph label when it differs from the displayed link type.",
-  "detail.line": "Line {line}",
-  "detail.memberOf": "Member of",
-  "detail.memberOfHint": "Class, object, or container that owns the selected declaration.",
-  "detail.mode": "Mode",
-  "detail.modeHint": "Include resolution mode used for this link.",
-  "detail.nodeReferencesHint":
-    "Number of visible include, assignment, reference, call, or unresolved-reference links targeting this node.",
-  "detail.nodeStatusHint":
-    "Additional node state such as root file, built-in symbol, or configured symbol.",
-  "detail.nodeTypeHint": "Graph category assigned to the selected node.",
-  "detail.references": "References",
-  "detail.role": "Role",
-  "detail.roleHint":
-    "Extra graph role used to distinguish member links or other specialized relationships.",
-  "detail.scope": "Scope",
-  "detail.scopeHint": "VBScript binding scope for the selected declaration.",
-  "detail.source": "Source",
-  "detail.sourceHint": "Node where the selected graph link starts.",
-  "detail.status": "Status",
-  "detail.target": "Target",
-  "detail.targetHint": "Node where the selected graph link ends.",
-  "detail.type": "Type",
-  "detail.linkTypeHint": "Graph category assigned to the selected link.",
-  "empty.declarationSource": "Declaration source is unavailable.",
-  "empty.graphData": "Graph data is unavailable.",
-  "empty.includeSources": "No include sources found.",
-  "empty.incomingLinks": "No incoming links found in the current graph.",
-  "empty.includedFiles": "No included files found.",
-  "empty.matchingItems": "No matching items in the current graph view.",
-  "empty.outgoingLinks": "No outgoing links found in the current graph.",
-  "empty.referencesOrCalls": "No assignments, references, or calls found in this graph.",
-  "empty.sourceRanges": "No source ranges found for this link.",
-  "empty.sourceUnavailable": "Source is unavailable.",
-  "inspector.close": "Close inspector",
-  "inspector.selectPrompt": "Select a node or link.",
-  "label.class": "Class",
-  "label.builtin": "Built-in",
-  "label.classConstant": "Class constant",
-  "label.classMethod": "Class method",
-  "label.configured": "Configured",
-  "label.event": "Event",
-  "label.field": "Field",
-  "label.file": "File",
-  "label.function": "Function",
-  "label.functionMethod": "Function method",
-  "label.global": "Global",
-  "label.globalConstant": "Global constant",
-  "label.globalVariable": "Global variable",
-  "label.implicitGlobalVariable": "Implicit global variable",
-  "label.local": "Local",
-  "label.localConstant": "Local constant",
-  "label.localVariable": "Local variable",
-  "label.member": "Member",
-  "label.method": "Method",
-  "label.missing": "Missing",
-  "label.missingFile": "Missing file",
-  "label.missingInclude": "Missing include",
-  "label.no": "No",
-  "label.object": "Object",
-  "label.parameter": "Parameter",
-  "label.property": "Property",
-  "label.root": "Root",
-  "label.sub": "Sub",
-  "label.subMethod": "Sub method",
-  "label.unknown": "Unknown",
-  "label.unresolved": "Unresolved",
-  "label.unresolvedFunction": "Unresolved Function/Sub",
-  "label.unresolvedMember": "Unresolved member",
-  "label.virtual": "Virtual",
-  "label.yes": "Yes",
-  "legend.heading": "Legend",
-  "legend.hideSingleNodes": "Hide single nodes",
-  "legend.hideSingleNodesDescription": "Hide non-root nodes that have no visible links.",
-  "legend.hideUnreferencedGlobalSymbols": "Hide unreferenced globals",
-  "legend.hideUnreferencedGlobalSymbolsDescription":
-    "Hide source functions, subs, classes, global variables, and global constants that are not tied to the root and have no references from other files.",
-  "legend.linkFilters": "Link filters",
-  "legend.nodeFilters": "Node filters",
-  "legend.outgoingLinks": "Outgoing links",
-  "legend.outgoingLinksDescription": "Also highlight links that start from the selected node.",
-  "legend.selection": "Selection",
-  "legend.unresolvedNodeFilters": "Unresolved nodes",
-  "legend.visibilityFilters": "Visibility",
-  "link.assignments.description":
-    "VBScript assigns to a resolved variable, parameter, field, or property.",
-  "link.assignments.label": "Assignment",
-  "link.calls.description": "VBScript calls a procedure, function, method, constructor, or member.",
-  "link.calls.label": "Call",
-  "link.declares.description": "A file or containing scope declares a VBScript symbol.",
-  "link.declares.label": "Declares",
-  "link.include.description": "A Classic ASP file includes another file.",
-  "link.include.label": "Include",
-  "link.member.description": "VBScript references or calls an object member.",
-  "link.member.label": "Member",
-  "link.memberType": "Member {label}",
-  "link.references.description": "VBScript reads or otherwise uses a resolved symbol.",
-  "link.references.label": "Reference",
-  "link.unresolvedReference.description":
-    "VBScript references a symbol that could not be resolved.",
-  "link.unresolvedReference.label": "Unresolved",
-  "node.class.description": "VBScript class declarations.",
-  "node.file.description": "Classic ASP source files and include files.",
-  "node.missingInclude.description":
-    "Include directives whose target file does not exist or could not be resolved.",
-  "node.function.description": "Top-level VBScript Function declarations.",
-  "node.globalConstant.description": "Top-level VBScript Const declarations.",
-  "node.globalVariable.description": "Top-level VBScript variables and global object variables.",
-  "node.implicitGlobalVariable.description":
-    "Global variables inferred from VBScript names used without a Dim declaration.",
-  "node.localConstant.description": "Procedure-local Const declarations and class constants.",
-  "node.localVariable.description": "Procedure-local variables and class fields.",
-  "node.member.description": "Built-in, configured, or unresolved object members.",
-  "node.method.description": "Class methods whose procedure kind is unknown.",
-  "node.methodFunction.description": "Class methods declared with Function.",
-  "node.methodSub.description": "Class methods declared with Sub.",
-  "node.parameter.description": "Function, Sub, method, and property parameters.",
-  "node.property.description": "Class Property Get, Let, and Set declarations.",
-  "node.root.description": "The graph root file or selected root context.",
-  "node.sub.description": "Top-level VBScript Sub declarations.",
-  "node.unresolvedFunction.description":
-    "Calls to Function or Sub symbols that could not be resolved.",
-  "node.unresolved.description": "Names that could not be resolved to a visible declaration.",
-  "occurrence.includeDirective": "Include directive",
-  "occurrence.one": "1 occurrence",
-  "occurrence.other": "{count} occurrences",
-  "section.declaration": "Declaration",
-  "section.declarationHint": "Source snippet for the selected declaration.",
-  "section.includedBy": "Included By",
-  "section.includedByHint": "Files that include the selected file.",
-  "section.includes": "Includes",
-  "section.includesHint": "Files included by the selected file.",
-  "section.incomingLinks": "Incoming links",
-  "section.incomingLinksHint": "Visible graph links that target the selected node.",
-  "section.occurrences": "Occurrences",
-  "section.occurrencesHint": "Source occurrences represented by the selected graph link.",
-  "section.outgoingLinks": "Outgoing links",
-  "section.outgoingLinksHint": "Visible graph links that start from the selected node.",
-  "section.referencesCalls": "Assignments / References / Calls",
-  "section.referencesCallsHint": "Source snippets for assignments, references, and calls.",
-  "section.sourceFileHint": "Source ranges grouped by file.",
-  "snippet.loadingSource": "Loading source...",
-  "stats.heading": "Graph list",
-  "stats.metric.files": "Files",
-  "stats.metric.links": "Links",
-  "stats.metric.missing": "Missing",
-  "stats.metric.vb": "VB",
-  "stats.show": "Show graph list",
-  "stats.title": "Graph list",
-  "toolbar.graphMode": "Graph mode",
-  "toolbar.graphModeDescription": "Switch between the 3D force graph and the 2D graph view.",
-  "toolbar.matchCase": "Match case",
-  "toolbar.matchCaseDescription":
-    "Only match node names with the same uppercase and lowercase letters.",
-  "toolbar.searchNodes": "Search nodes",
-  "toolbar.stats": "List",
-  "toolbar.truncated":
-    "truncated: {reason} ({shownNodes}/{totalNodes} nodes, {shownLinks}/{totalLinks} links)",
-  "toolbar.truncatedHint":
-    "The graph was capped before rendering. Increase {setting} to include more nodes.",
-  "toolbar.truncatedSetting": "Raise limit",
-  "toolbar.updateFailed": "Update failed: {error}",
-  "toolbar.updating": "Updating graph...",
-  "view.currentFileGraph": "Current File Graph",
-  "view.folderGraph": "Folder Graph",
-  "view.inspector": "Inspector",
-  "view.resizeInspector": "Resize inspector pane",
-  "view.workspaceGraph": "Workspace Graph",
-} as const;
-
-type GraphTextKey = keyof typeof graphMessageEn;
-type GraphTextParams = Record<string, string | number>;
-
-const graphMessages: Record<GraphLocale, Record<GraphTextKey, string>> = {
-  en: graphMessageEn,
-  ja: {
-    "action.fit": "フィット",
-    "action.fitGraph": "グラフをキャンバスに合わせる",
-    "action.open": "開く",
-    "action.openDirective": "directive を開く",
-    "action.openFile": "ファイルを開く",
-    "action.openFirst": "最初を開く",
-    "action.openFlowchart": "フローチャートを開く",
-    "action.selectSource": "元を選択",
-    "action.selectTarget": "先を選択",
-    "direction.from": "元",
-    "direction.to": "先",
-    "detail.actualPath": "実際の path",
-    "detail.actualPathHint":
-      "include 先として VS Code が解決した file system path です。directive の文字列と異なる時に出ます。",
-    "detail.count": "件数",
-    "detail.countHint": "この graph link が表す source 上の出現数です。",
-    "detail.declaration": "宣言",
-    "detail.directive": "Directive {source}",
-    "detail.exists": "存在",
-    "detail.existsHint": "include 先が実在する file に解決できたかどうかです。",
-    "detail.file": "ファイル",
-    "detail.fileHint": "選択した graph node を所有、または含んでいる source file です。",
-    "detail.include": "include",
-    "detail.includeHint": "Classic ASP directive に書かれている include path です。",
-    "detail.label": "ラベル",
-    "detail.labelHint": "表示中の link type と異なる場合の、生の graph label です。",
-    "detail.line": "{line} 行目",
-    "detail.memberOf": "所属",
-    "detail.memberOfHint": "選択した declaration を所有する class、object、container です。",
-    "detail.mode": "モード",
-    "detail.modeHint": "この link で使われた include 解決 mode です。",
-    "detail.nodeReferencesHint":
-      "この node を target にする visible な include、代入、参照、呼び出し、未解決参照 link の数です。",
-    "detail.nodeStatusHint": "root file、built-in symbol、configured symbol などの追加状態です。",
-    "detail.nodeTypeHint": "選択した node に割り当てられた graph category です。",
-    "detail.references": "参照",
-    "detail.role": "役割",
-    "detail.roleHint": "member link など、特別な関係を区別するための追加 role です。",
-    "detail.scope": "スコープ",
-    "detail.scopeHint": "選択した declaration の VBScript binding scope です。",
-    "detail.source": "元",
-    "detail.sourceHint": "選択した graph link が始まる node です。",
-    "detail.status": "状態",
-    "detail.target": "先",
-    "detail.targetHint": "選択した graph link が終わる node です。",
-    "detail.type": "種別",
-    "detail.linkTypeHint": "選択した link に割り当てられた graph category です。",
-    "empty.declarationSource": "宣言 source は利用できません。",
-    "empty.graphData": "graph data は利用できません。",
-    "empty.includeSources": "include 元は見つかりません。",
-    "empty.incomingLinks": "現在の graph に incoming link はありません。",
-    "empty.includedFiles": "include file は見つかりません。",
-    "empty.matchingItems": "現在の graph view に一致する項目はありません。",
-    "empty.outgoingLinks": "現在の graph に outgoing link はありません。",
-    "empty.referencesOrCalls": "この graph に代入、参照、呼び出しはありません。",
-    "empty.sourceRanges": "この link の source range は見つかりません。",
-    "empty.sourceUnavailable": "source は利用できません。",
-    "inspector.close": "inspector を閉じる",
-    "inspector.selectPrompt": "node または link を選択してください。",
-    "label.class": "クラス",
-    "label.builtin": "組み込み",
-    "label.classConstant": "クラス定数",
-    "label.classMethod": "クラスメソッド",
-    "label.configured": "設定済み",
-    "label.event": "イベント",
-    "label.field": "フィールド",
-    "label.file": "ファイル",
-    "label.function": "関数",
-    "label.functionMethod": "関数メソッド",
-    "label.global": "グローバル",
-    "label.globalConstant": "グローバル定数",
-    "label.globalVariable": "グローバル変数",
-    "label.implicitGlobalVariable": "暗黙global変数",
-    "label.local": "ローカル",
-    "label.localConstant": "ローカル定数",
-    "label.localVariable": "ローカル変数",
-    "label.member": "メンバー",
-    "label.method": "メソッド",
-    "label.missing": "存在なし",
-    "label.missingFile": "存在しないファイル",
-    "label.missingInclude": "存在しない include",
-    "label.no": "なし",
-    "label.object": "オブジェクト",
-    "label.parameter": "パラメーター",
-    "label.property": "プロパティ",
-    "label.root": "ルート",
-    "label.sub": "Sub",
-    "label.subMethod": "Sub メソッド",
-    "label.unknown": "不明",
-    "label.unresolved": "未解決",
-    "label.unresolvedFunction": "未解決Function/Sub",
-    "label.unresolvedMember": "未解決メンバー",
-    "label.virtual": "仮想",
-    "label.yes": "あり",
-    "legend.heading": "凡例",
-    "legend.hideSingleNodes": "単独 node を隠す",
-    "legend.hideSingleNodesDescription": "visible link を持たない root 以外の node を隠します。",
-    "legend.hideUnreferencedGlobalSymbols": "未外部参照を隠す",
-    "legend.hideUnreferencedGlobalSymbolsDescription":
-      "root に紐付かず、他のファイルから参照されていない source の function、sub、class、global variable、global constant node を隠します。",
-    "legend.linkFilters": "リンクフィルター",
-    "legend.nodeFilters": "ノードフィルター",
-    "legend.outgoingLinks": "出力リンク",
-    "legend.outgoingLinksDescription": "選択 node から出る link も highlight します。",
-    "legend.selection": "選択",
-    "legend.unresolvedNodeFilters": "未解決系",
-    "legend.visibilityFilters": "非表示系",
-    "link.assignments.description":
-      "VBScript が解決済みの variable、parameter、field、property に代入します。",
-    "link.assignments.label": "代入",
-    "link.calls.description":
-      "VBScript の procedure、function、method、constructor、member 呼び出しです。",
-    "link.calls.label": "呼び出し",
-    "link.declares.description": "file または包含 scope が VBScript symbol を宣言します。",
-    "link.declares.label": "宣言",
-    "link.include.description": "Classic ASP file が別の file を include します。",
-    "link.include.label": "include",
-    "link.member.description": "VBScript が object member を参照または呼び出します。",
-    "link.member.label": "メンバー",
-    "link.memberType": "メンバー {label}",
-    "link.references.description": "VBScript が解決済み symbol を読み取り、または利用します。",
-    "link.references.label": "参照",
-    "link.unresolvedReference.description": "VBScript が解決できなかった symbol を参照します。",
-    "link.unresolvedReference.label": "未解決",
-    "node.class.description": "VBScript class declaration です。",
-    "node.file.description": "Classic ASP source file と include file です。",
-    "node.missingInclude.description":
-      "include directive の target file が存在しない、または解決できなかった node です。",
-    "node.function.description": "top-level の VBScript Function declaration です。",
-    "node.globalConstant.description": "top-level の VBScript Const declaration です。",
-    "node.globalVariable.description":
-      "top-level の VBScript variable と global object variable です。",
-    "node.implicitGlobalVariable.description":
-      "Dim 宣言なしで使われた VBScript 名から推論した global 変数です。",
-    "node.localConstant.description": "procedure-local Const declaration と class constant です。",
-    "node.localVariable.description": "procedure-local variable と class field です。",
-    "node.member.description": "built-in、configured、未解決の object member です。",
-    "node.method.description": "procedure kind が不明な class method です。",
-    "node.methodFunction.description": "Function で宣言された class method です。",
-    "node.methodSub.description": "Sub で宣言された class method です。",
-    "node.parameter.description": "Function、Sub、method、property の parameter です。",
-    "node.property.description": "class Property Get、Let、Set declaration です。",
-    "node.root.description": "graph の root file または選択された root context です。",
-    "node.sub.description": "top-level の VBScript Sub declaration です。",
-    "node.unresolvedFunction.description": "解決できなかった Function または Sub の呼び出しです。",
-    "node.unresolved.description": "visible declaration に解決できなかった name です。",
-    "occurrence.includeDirective": "include directive",
-    "occurrence.one": "1 件",
-    "occurrence.other": "{count} 件",
-    "section.declaration": "宣言",
-    "section.declarationHint": "選択した宣言の source snippet です。",
-    "section.includedBy": "include 元",
-    "section.includedByHint": "選択したファイルを include しているファイルです。",
-    "section.includes": "include 先",
-    "section.includesHint": "選択したファイルが include しているファイルです。",
-    "section.incomingLinks": "入力リンク",
-    "section.incomingLinksHint": "選択した node を target にする visible graph link です。",
-    "section.occurrences": "出現箇所",
-    "section.occurrencesHint": "選択した graph link が表す source 上の出現箇所です。",
-    "section.outgoingLinks": "出力リンク",
-    "section.outgoingLinksHint": "選択した node から始まる visible graph link です。",
-    "section.referencesCalls": "代入 / 参照 / 呼び出し",
-    "section.referencesCallsHint": "代入、参照、呼び出しの source snippet です。",
-    "section.sourceFileHint": "source range を file ごとにまとめたものです。",
-    "snippet.loadingSource": "source を読み込み中...",
-    "stats.heading": "一覧",
-    "stats.metric.files": "ファイル",
-    "stats.metric.links": "リンク",
-    "stats.metric.missing": "欠落",
-    "stats.metric.vb": "VB",
-    "stats.show": "graph 一覧を表示",
-    "stats.title": "graph 一覧",
-    "toolbar.graphMode": "グラフ表示",
-    "toolbar.graphModeDescription": "3D force graph と 2D graph view を切り替えます。",
-    "toolbar.matchCase": "大文字小文字を区別",
-    "toolbar.matchCaseDescription": "node name の大文字小文字が一致するものだけを検索します。",
-    "toolbar.searchNodes": "node を検索",
-    "toolbar.stats": "一覧",
-    "toolbar.truncated":
-      "切り詰め: {reason} ({shownNodes}/{totalNodes} nodes, {shownLinks}/{totalLinks} links)",
-    "toolbar.truncatedHint":
-      "表示前に graph が切り詰められました。より多くの node を含めるには {setting} を上げてください。",
-    "toolbar.truncatedSetting": "上限を上げる",
-    "toolbar.updateFailed": "更新失敗: {error}",
-    "toolbar.updating": "graph 更新中...",
-    "view.currentFileGraph": "現在のファイルのグラフ",
-    "view.folderGraph": "フォルダーグラフ",
-    "view.inspector": "情報",
-    "view.resizeInspector": "inspector pane の幅を変更",
-    "view.workspaceGraph": "ワークスペースグラフ",
-  },
-};
 
 const graphLocale: GraphLocale = initialGraph?.locale === "ja" ? "ja" : "en";
 
@@ -636,91 +124,6 @@ function graphText(key: GraphTextKey, params?: GraphTextParams): string {
   }
   return message;
 }
-
-const darkNodeColors: Record<NodeColorCategory, string> = {
-  root: "#ffffff",
-  file: "#67d8ef",
-  missingInclude: "#ff4db8",
-  function: "#c792ea",
-  sub: "#b39ddb",
-  class: "#c3e88d",
-  method: "#a6e3a1",
-  methodFunction: "#7ee787",
-  methodSub: "#b3f27c",
-  property: "#ff9cac",
-  member: "#ffb86c",
-  globalVariable: "#ffcb6b",
-  implicitGlobalVariable: "#f78c6c",
-  globalConstant: "#82aaff",
-  localVariable: "#dcdcaa",
-  localConstant: "#80cbc4",
-  parameter: "#b2ccd6",
-  unresolvedFunction: "#ff9cac",
-  unresolved: "#ff5370",
-};
-
-const lightNodeColors: Record<NodeColorCategory, string> = {
-  root: "#111827",
-  file: "#0369a1",
-  missingInclude: "#be185d",
-  function: "#7e22ce",
-  sub: "#5b21b6",
-  class: "#15803d",
-  method: "#047857",
-  methodFunction: "#15803d",
-  methodSub: "#4d7c0f",
-  property: "#be123c",
-  member: "#b45309",
-  globalVariable: "#b45309",
-  implicitGlobalVariable: "#c2410c",
-  globalConstant: "#1d4ed8",
-  localVariable: "#854d0e",
-  localConstant: "#0f766e",
-  parameter: "#475569",
-  unresolvedFunction: "#be123c",
-  unresolved: "#dc2626",
-};
-
-const darkLinkColors: Record<AspGraphLink["kind"], string> = {
-  include: "#82aaff",
-  declares: "#89ddff",
-  references: "#c3e88d",
-  assignments: "#ffcb6b",
-  calls: "#f78c6c",
-  unresolvedReference: "#ff5370",
-};
-
-const lightLinkColors: Record<AspGraphLink["kind"], string> = {
-  include: "#2563eb",
-  declares: "#0284c7",
-  references: "#16a34a",
-  assignments: "#ca8a04",
-  calls: "#ea580c",
-  unresolvedReference: "#dc2626",
-};
-
-const graphThemePalettes: Record<WebviewTheme, GraphThemePalette> = {
-  dark: {
-    canvasBackground: "#11151c",
-    mutedLink: "#29313d",
-    mutedNode: "#2d3542",
-    nodeColors: darkNodeColors,
-    linkFilterColors: {
-      ...darkLinkColors,
-      member: darkNodeColors.member,
-    },
-  },
-  light: {
-    canvasBackground: "#f8fafc",
-    mutedLink: "#cbd5e1",
-    mutedNode: "#cbd5e1",
-    nodeColors: lightNodeColors,
-    linkFilterColors: {
-      ...lightLinkColors,
-      member: lightNodeColors.member,
-    },
-  },
-};
 
 const linkMeanings: Record<AspGraphLink["kind"], { label: string; description: string }> = {
   include: {
@@ -850,34 +253,15 @@ const linkFilterOrder: LinkFilterCategory[] = [
   "member",
 ];
 
-const minimumNodeValue = 0.6;
-const maximumNodeValue = 16;
-const maximumNodeScaleReferenceCount = 144;
 const graphFitDurationMs = 400;
 const graphFitPadding2d = 100;
 const graphFitPadding3d = 5;
-const graphFocusDurationMs = 900;
-const graph2dMinimumFocusZoom = 2.2;
-const graph2dLinkFocusPadding = 120;
-const graph3dMinimumFocusDistance = 70;
-const graph3dLinkDistanceScale = 1.35;
 const positionSyncPinMs = 600;
-const graph3dSyncSpan = 160;
-const graphInitialNodeSpacing = 28;
-const graphInitialNodeZSpacing = 12;
-const graphGoldenAngle = Math.PI * (3 - Math.sqrt(5));
 const graphForceVelocityDecay = 0.42;
-const graphChargeBaseStrength = 45;
-const graphChargeValueStrength = 8;
-const graphLinkDistanceBase = 36;
-const graphLinkDistanceValueScale = 2.5;
 const sourceHighlightMarkClassName =
   "rounded-sm bg-[#ffcb6b]/45 px-0.5 text-inherit shadow-[0_0_0_1px_rgb(255_203_107_/_75%)]";
 const inspectorDefaultWidth = 320;
 const inspectorMinimumWidth = 260;
-const inspectorMaximumWidth = 560;
-const graphMinimumWidth = 360;
-const paneResizeHandleWidth = 6;
 const paneResizeKeyboardStep = 16;
 
 function positiveModulo(value: number, divisor: number): number {

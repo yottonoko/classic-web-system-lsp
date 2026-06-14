@@ -20,11 +20,25 @@ function readWebviewSources(...files: string[]): string {
 }
 
 function readGraphWebviewSource(): string {
-  return readWebviewSources("src/webview/include-graph.tsx", "src/webview/include-graph-model.ts");
+  return readWebviewSources(
+    "src/webview/include-graph.tsx",
+    "src/webview/include-graph-i18n.ts",
+    "src/webview/include-graph-model.ts",
+    "src/webview/include-graph-theme.ts",
+    "src/webview/include-graph-types.ts",
+  );
 }
 
 function readFlowchartWebviewSource(): string {
-  return readWebviewSources("src/webview/flowchart.tsx", "src/webview/flowchart-model.ts");
+  return readWebviewSources(
+    "src/webview/flowchart.tsx",
+    "src/webview/flowchart-dom.ts",
+    "src/webview/flowchart-i18n.ts",
+    "src/webview/flowchart-model.ts",
+    "src/webview/flowchart-theme.ts",
+    "src/webview/flowchart-toolbar.tsx",
+    "src/webview/flowchart-types.ts",
+  );
 }
 
 describe("VS Code extension package", () => {
@@ -52,14 +66,14 @@ describe("VS Code extension package", () => {
       version?: string;
     };
     const serverSource = fs.readFileSync(
-      "../../packages/language-server/src/server/index.ts",
+      "../../packages/language-server/src/server/constants.ts",
       "utf8",
     );
 
     expect(coreManifest.version).toBe(rootManifest.version);
     expect(serverManifest.version).toBe(rootManifest.version);
     expect(extensionManifest.version).toBe(rootManifest.version);
-    expect(serverSource).toContain(`const languageServerVersion = "${rootManifest.version}";`);
+    expect(serverSource).toContain(`languageServerVersion = "${rootManifest.version}";`);
   });
 
   it("declares a TypeScript-only VSIX packaging script", () => {
@@ -549,7 +563,7 @@ describe("VS Code extension package", () => {
       "utf8",
     );
     const languageServerSource = fs.readFileSync(
-      "../../packages/language-server/src/server/index.ts",
+      "../../packages/language-server/src/server/runtime.ts",
       "utf8",
     );
     const graphBuildSource = fs.readFileSync(

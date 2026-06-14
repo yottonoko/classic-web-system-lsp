@@ -24,4 +24,3 @@ export type {
   VbTypeEnvironment,
   VbTypeRef,
 } from "../vbscript-types";
-export * from "./language-features";
