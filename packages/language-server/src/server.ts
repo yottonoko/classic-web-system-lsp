@@ -5695,6 +5695,20 @@ async function vbFastDiagnosticsAsync(
   cancellation: AnalysisCancellation = neverCancelled,
   mode: AnalysisExecutionMode = "foreground",
 ): Promise<Diagnostic[]> {
+  // Reuse the previous fast result when the VBScript regions are unchanged
+  // (for example while only embedded HTML/CSS/JS is being edited), which skips
+  // the per-keystroke worker dispatch. The fast path keeps its own cache slot so
+  // its locally-scoped diagnostics never satisfy the full project-context path.
+  const diagnosticsKey = vbDiagnosticsCacheKey(cached, settings);
+  const cachedItems = cached.analysis?.vbFastDiagnostics;
+  if (cachedItems?.key === diagnosticsKey) {
+    return measureDebugStep(
+      settings,
+      cached.source.uri,
+      `${stepPrefix}.vbscript.diagnostics.reuse`,
+      () => cachedItems.items,
+    );
+  }
   await hydrateCachedVbscriptCstAsync(cached, settings, stepPrefix);
   const context = await measureDebugStepAsync(
     settings,
@@ -5702,7 +5716,7 @@ async function vbFastDiagnosticsAsync(
     `${stepPrefix}.vbscript.projectContext`,
     () => fastInteractiveVbProjectContextAsync(cached, settings),
   );
-  return measureDebugStepAsync(
+  const items = await measureDebugStepAsync(
     settings,
     cached.source.uri,
     mode === "foreground"
@@ -5710,6 +5724,15 @@ async function vbFastDiagnosticsAsync(
       : `${stepPrefix}.vbscript.diagnostics.worker`,
     () => analyzeVbscriptAsync(cached, context, settings, stepPrefix, cancellation, mode),
   );
+  if (cancellation.isCancellationRequested()) {
+    return [];
+  }
+  analysisFor(cached).vbFastDiagnostics = {
+    key: diagnosticsKey,
+    items,
+    text: cached.parsed.text,
+  };
+  return items;
 }
 
 async function analyzeVbscriptAsync(
@@ -5795,9 +5818,8 @@ async function runVbDiagnosticsWorker(
     {
       id,
       uri: cached.source.uri,
-      text: "",
+      text: cached.parsed.text,
       settings,
-      document: vbDiagnosticsWorkerParsedDocument(cached.parsed),
       context,
     },
     { isCancellationRequested: () => cancellation.isCancellationRequested() },
@@ -5866,24 +5888,6 @@ function vbDiagnosticsWorkerDocument(document: AspParsedDocument): VbDiagnostics
     serverObjects: document.serverObjects,
     defaultLanguage: document.defaultLanguage,
     diagnostics: document.diagnostics,
-  };
-}
-
-function vbDiagnosticsWorkerParsedDocument(
-  document: AspParsedDocument,
-): VbDiagnosticsWorkerDocument & Pick<AspParsedDocument, "cst"> {
-  return {
-    ...vbDiagnosticsWorkerDocument(document),
-    cst: dehydrateVbscriptCst(document.cst),
-  };
-}
-
-function dehydrateVbscriptCst(node: AspCstNode): AspCstNode {
-  const { vbscript: _vbscript, children, ...rest } = node;
-  return {
-    ...rest,
-    tokens: [],
-    children: children.map(dehydrateVbscriptCst),
   };
 }
 
@@ -5999,6 +6003,35 @@ function seedVbProjectDocumentsAfterStableIncludeGraph(
   }
 }
 
+function reuseVbDiagnosticsForIncrementalChange(
+  previousEntry: DiagnosticCacheEntry | undefined,
+  previous: CachedDocument,
+  cached: CachedDocument,
+  settings: AspSettings,
+  change: AspIncrementalChange,
+  impact: AspEditImpact,
+): DiagnosticCacheEntry | undefined {
+  if (!previousEntry) {
+    return undefined;
+  }
+  return {
+    key: vbDiagnosticsCacheKey(cached, settings),
+    text: cached.parsed.text,
+    items:
+      impact.delta === 0
+        ? previousEntry.items
+        : previousEntry.items.map((diagnostic) =>
+            shiftDiagnosticForIncrementalChange(
+              diagnostic,
+              previous.source.uri,
+              previous.parsed.text,
+              cached.parsed.text,
+              change,
+            ),
+          ),
+  };
+}
+
 function seedVbReuseAfterIncrementalChange(
   previous: CachedDocument,
   cached: CachedDocument,
@@ -6021,23 +6054,29 @@ function seedVbReuseAfterIncrementalChange(
   }
   const analysis = analysisFor(cached);
   const previousDiagnostics = previous.analysis?.vbDiagnostics;
-  if (previousDiagnostics) {
-    analysis.vbDiagnostics = {
-      key: vbDiagnosticsCacheKey(cached, settings),
-      text: cached.parsed.text,
-      items:
-        impact.delta === 0
-          ? previousDiagnostics.items
-          : previousDiagnostics.items.map((diagnostic) =>
-              shiftDiagnosticForIncrementalChange(
-                diagnostic,
-                previous.source.uri,
-                previous.parsed.text,
-                cached.parsed.text,
-                change,
-              ),
-            ),
-    };
+  const reusedDiagnostics = reuseVbDiagnosticsForIncrementalChange(
+    previousDiagnostics,
+    previous,
+    cached,
+    settings,
+    change,
+    impact,
+  );
+  if (reusedDiagnostics) {
+    analysis.vbDiagnostics = reusedDiagnostics;
+  }
+  // Seed the interactive (projectFast) slot as well so unchanged-VBScript edits
+  // skip the per-keystroke worker dispatch on the fast diagnostics layer.
+  const reusedFastDiagnostics = reuseVbDiagnosticsForIncrementalChange(
+    previous.analysis?.vbFastDiagnostics,
+    previous,
+    cached,
+    settings,
+    change,
+    impact,
+  );
+  if (reusedFastDiagnostics) {
+    analysis.vbFastDiagnostics = reusedFastDiagnostics;
   }
   const previousContext = previous.analysis?.vbProjectContext;
   if (previousContext) {

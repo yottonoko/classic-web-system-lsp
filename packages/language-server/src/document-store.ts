@@ -66,6 +66,7 @@ export interface CachedAnalysis {
   htmlDiagnostics?: DiagnosticCacheEntry;
   cssDiagnostics?: DiagnosticCacheEntry;
   vbDiagnostics?: DiagnosticCacheEntry;
+  vbFastDiagnostics?: DiagnosticCacheEntry;
   jsSyntaxDiagnostics?: CachedJsDiagnosticsEntry;
   jsSlowDiagnostics?: CachedJsDiagnosticsEntry;
   semanticTokensFull?: CachedSemanticTokensEntry;

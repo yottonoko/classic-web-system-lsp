@@ -4556,7 +4556,7 @@ Response.Write SharedExport29()
           ),
         ).toBe(true);
         await waitForLogContaining(server, "vbProject.context.stale");
-        await waitForLogContaining(server, "vbProject.summaryGraph.built");
+        await waitForLogContaining(server, "vbProject.context.refresh.completed");
 
         await waitForLogContaining(server, "LSP check completed");
         const refreshedCompletions = await server.request("textDocument/completion", {
