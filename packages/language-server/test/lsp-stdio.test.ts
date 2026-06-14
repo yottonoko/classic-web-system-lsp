@@ -3565,6 +3565,88 @@ Response.Write missingName
       }
     });
 
+    it("does not schedule project updates for incremental client JavaScript edits", async () => {
+      const cases = [
+        {
+          checkJs: false,
+          uri: "file:///tmp/client-js-no-project-update.asp",
+          source: `<script>
+const beforeName = 1;
+</script>`,
+          needle: "beforeName",
+          replacement: "afterName",
+        },
+        {
+          checkJs: true,
+          uri: "file:///tmp/client-js-checkjs-no-project-update.asp",
+          source: `<script>
+missingBefore.toFixed();
+</script>`,
+          needle: "missingBefore",
+          replacement: "missingAfter",
+          expectedDiagnostic: "missingAfter",
+        },
+      ];
+
+      for (const testCase of cases) {
+        const server = new RpcServer();
+        try {
+          await server.start();
+          await server.request("initialize", {
+            processId: process.pid,
+            rootUri: "file:///tmp",
+            capabilities: {},
+          });
+          server.notify("workspace/didChangeConfiguration", {
+            settings: {
+              aspLsp: {
+                checkJs: testCase.checkJs,
+                debug: { output: "verbose" },
+                diagnostics: { debounceMs: 0 },
+              },
+            },
+          });
+          let source = testCase.source;
+          server.notify("textDocument/didOpen", {
+            textDocument: {
+              uri: testCase.uri,
+              languageId: "classic-asp",
+              version: 1,
+              text: source,
+            },
+          });
+          await waitForLogContaining(server, "LSP check completed");
+          server.takePendingNotifications("window/logMessage");
+          server.takePendingNotifications("textDocument/publishDiagnostics");
+
+          source = notifyRangedReplacement(
+            server,
+            testCase.uri,
+            source,
+            2,
+            testCase.needle,
+            testCase.replacement,
+          );
+          if (testCase.expectedDiagnostic) {
+            await waitForDiagnosticsContaining(server, testCase.expectedDiagnostic);
+          }
+          const completed = await waitForLogContaining(server, "LSP check completed");
+          const logs = JSON.stringify([
+            completed,
+            ...server.takePendingNotifications("window/logMessage"),
+          ]);
+          expect(logs).toContain("documentChange.scheduleDiagnostics.postScheduleProjectUpdate");
+          expect(logs).not.toContain("projectUpdate.scheduled");
+          expect(source).toContain(testCase.replacement);
+
+          await server.request("shutdown", null);
+          server.notify("exit", undefined);
+        } finally {
+          server.stop();
+        }
+      }
+    });
+
     it("publishes complete diagnostics once for push diagnostics", async () => {
       const server = new RpcServer();
       try {
