@@ -123,9 +123,7 @@ export function registerParserMemoryCaches(
 const hydratedVbscriptDocuments = new WeakSet<AspParsedDocument>();
 
 export function needsVbscriptCstHydration(parsed: AspParsedDocument): boolean {
-  return (
-    parsed.regions.some((region) => region.language === "vbscript") && !cstHasVbscript(parsed.cst)
-  );
+  return cstNeedsVbscriptHydration(parsed.cst);
 }
 
 /**
@@ -146,11 +144,11 @@ export async function hydrateVbscriptCst(
   return parsed;
 }
 
-function cstHasVbscript(node: AspCstNode): boolean {
-  if (node.vbscript) {
+function cstNeedsVbscriptHydration(node: AspCstNode): boolean {
+  if (node.language === "vbscript" && !node.vbscript) {
     return true;
   }
-  return (node.children ?? []).some((child) => cstHasVbscript(child));
+  return (node.children ?? []).some((child) => cstNeedsVbscriptHydration(child));
 }
 
 function attachVbscriptFromTypeScriptParser(node: AspCstNode, sourceText: string): void {
@@ -635,6 +633,13 @@ function tryUpdateAspParsedDocumentFull(
     oldDamage,
     nextDamage,
     damageLanguage(previous, oldDamage),
+    {
+      previous: changeSpan,
+      current: {
+        start: changeSpan.start,
+        end: Math.max(changeSpan.start, changeSpan.end + delta),
+      },
+    },
   );
   const result: IncrementalReparseResult = {
     parsed: reused.parsed,
@@ -804,7 +809,17 @@ function editImpactForDamage(
   oldDamage: DamageSpan,
   nextDamage: DamageSpan,
   language?: AspEditImpact["language"],
+  statementBase?: { previous: DamageSpan; current: DamageSpan },
 ): AspEditImpact {
+  const dirtyScope = editDirtyScope(
+    previousText,
+    nextText,
+    oldDamage,
+    nextDamage,
+    language,
+    reason !== "safe content edit" && !reason.startsWith("range rescan"),
+    statementBase,
+  );
   return {
     kind,
     reason,
@@ -814,7 +829,67 @@ function editImpactForDamage(
     deletedLength: oldDamage.end - oldDamage.start,
     delta: nextText.length - previousText.length,
     language,
+    dirtyScope,
   };
+}
+
+function editDirtyScope(
+  previousText: string,
+  nextText: string,
+  previousDamage: DamageSpan,
+  currentDamage: DamageSpan,
+  language: AspEditImpact["language"] | undefined,
+  structuralRisk: boolean,
+  statementBase = { previous: previousDamage, current: currentDamage },
+): NonNullable<AspEditImpact["dirtyScope"]> {
+  return {
+    previousStartOffset: previousDamage.start,
+    previousEndOffset: previousDamage.end,
+    currentStartOffset: currentDamage.start,
+    currentEndOffset: currentDamage.end,
+    language,
+    structuralRisk,
+    statement:
+      language === "vbscript"
+        ? {
+            ...expandVbscriptStatementDirtyScope(previousText, statementBase.previous, "previous"),
+            ...expandVbscriptStatementDirtyScope(nextText, statementBase.current, "current"),
+          }
+        : undefined,
+  };
+}
+
+function expandVbscriptStatementDirtyScope(
+  text: string,
+  span: DamageSpan,
+  prefix: "previous" | "current",
+): Record<`${typeof prefix}StartOffset` | `${typeof prefix}EndOffset`, number> {
+  const start = Math.max(0, Math.min(text.length, span.start));
+  const end = Math.max(start, Math.min(text.length, span.end));
+  return {
+    [`${prefix}StartOffset`]: scanVbscriptStatementStart(text, start),
+    [`${prefix}EndOffset`]: scanVbscriptStatementEnd(text, end),
+  } as Record<`${typeof prefix}StartOffset` | `${typeof prefix}EndOffset`, number>;
+}
+
+function scanVbscriptStatementStart(text: string, offset: number): number {
+  for (let index = offset - 1; index >= 0; index -= 1) {
+    const character = text[index];
+    if (character === "\n" || character === "\r" || character === ":") {
+      return index + 1;
+    }
+  }
+  return 0;
+}
+
+function scanVbscriptStatementEnd(text: string, offset: number): number {
+  for (let index = offset; index < text.length; index += 1) {
+    const character = text[index];
+    if (character === "\n" || character === "\r" || character === ":") {
+      return index;
+    }
+  }
+  return text.length;
 }
 
 function damageLanguage(
@@ -1409,6 +1484,18 @@ function editImpact(
   const normalized = change ? normalizeIncrementalChange(previousText, change) : undefined;
   const startOffset = normalized?.startOffset ?? 0;
   const endOffset = normalized?.endOffset ?? previousText.length;
+  const currentEndOffset = Math.max(
+    startOffset,
+    endOffset + (nextText.length - previousText.length),
+  );
+  const dirtyScope = editDirtyScope(
+    previousText,
+    nextText,
+    { start: startOffset, end: endOffset },
+    { start: startOffset, end: currentEndOffset },
+    region?.language,
+    kind !== "incremental",
+  );
   return {
     kind,
     reason,
@@ -1418,6 +1505,7 @@ function editImpact(
     deletedLength: endOffset - startOffset,
     delta: nextText.length - previousText.length,
     language: region?.language,
+    dirtyScope,
   };
 }
 

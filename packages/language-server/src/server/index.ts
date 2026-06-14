@@ -248,6 +248,7 @@ import {
   getVbscriptSignatureHelp,
   getVbscriptTypeDefinition,
   hydrateVbscriptCst,
+  needsVbscriptCstHydration,
   parseAspDocument,
   parseAspDocumentAsync,
   parseAspDocumentSkeleton,
@@ -338,6 +339,9 @@ interface SemanticTokenResultEntry {
   data: number[];
   reuseKey?: string;
   version?: number;
+  generation?: number;
+  vbscriptFingerprint?: string;
+  includeRefsKey?: string;
 }
 
 const semanticTokenResults = new Map<string, SemanticTokenResultEntry>();
@@ -5927,7 +5931,7 @@ async function hydrateCachedVbscriptCstAsync(
   settings: AspSettings,
   stepPrefix: string,
 ): Promise<void> {
-  if (cached.parseDepth !== "skeleton" || cstHasVbscript(cached.parsed.cst)) {
+  if (cached.parseDepth !== "skeleton" || !needsVbscriptCstHydration(cached.parsed)) {
     return;
   }
   await measureDebugStepAsync(settings, cached.source.uri, `${stepPrefix}.vbscript.hydrate`, () =>
@@ -9238,24 +9242,36 @@ async function fastInteractiveVbProjectContextAsync(
   );
 }
 
+interface SemanticTokensVbProjectContextState {
+  context: VbProjectContext;
+  cacheFull: boolean;
+}
+
 async function semanticTokensVbProjectContextAsync(
   cached: CachedDocument,
   settings: AspSettings,
-): Promise<VbProjectContext> {
+): Promise<SemanticTokensVbProjectContextState> {
   const exact = cachedVbProjectContextLookup(cached, settings);
   if (exact) {
     rememberInteractiveVbProjectContextSnapshot(cached, settings, exact.key, exact.context);
-    return exact.context;
+    return { context: exact.context, cacheFull: true };
   }
   if (cached.parsed.includes.length > 0) {
     const stale = await staleInteractiveVbProjectContextLookupAsync(cached, settings);
     if (stale) {
       scheduleInteractiveVbProjectContextRefresh(cached, settings, "semanticTokens.context.stale");
-      return stale.context;
+      return { context: stale.context, cacheFull: false };
     }
     scheduleInteractiveVbProjectContextRefresh(cached, settings, "semanticTokens.context.local");
+    return {
+      context: await buildImmediateLocalVbProjectContextAsync(cached, settings),
+      cacheFull: false,
+    };
   }
-  return buildImmediateLocalVbProjectContextAsync(cached, settings);
+  return {
+    context: await buildImmediateLocalVbProjectContextAsync(cached, settings),
+    cacheFull: true,
+  };
 }
 
 async function interactiveVbProjectContextLookupAsync(
@@ -24173,13 +24189,15 @@ async function buildSemanticTokensAsync(
   range?: Range,
 ): Promise<SemanticTokens> {
   const settings = cachedSettings(cached.source.uri);
-  const context = await measureDebugStepAsync(
+  const contextState = await measureDebugStepAsync(
     settings,
     cached.source.uri,
     "semanticTokens.context",
     () => semanticTokensVbProjectContextAsync(cached, settings),
   );
-  return buildSemanticTokensWithContextAsync(cached, context, range, settings);
+  return buildSemanticTokensWithContextAsync(cached, contextState.context, range, settings, {
+    cacheFull: contextState.cacheFull,
+  });
 }
 
 async function buildFullSemanticTokenDataAsync(
@@ -24207,17 +24225,21 @@ async function buildIncrementalFullSemanticTokenDataAsync(
   }
   const startedAt = process.hrtime.bigint();
   const dirty = semanticTokenDirtyRanges(cached, change);
-  const context = await measureDebugStepAsync(
+  const contextState = await measureDebugStepAsync(
     settings,
     cached.source.uri,
     "semanticTokens.context",
     () => semanticTokensVbProjectContextAsync(cached, settings),
   );
+  if (!contextState.cacheFull) {
+    return undefined;
+  }
   const rangeTokens = await buildSemanticTokensWithContextAsync(
     cached,
-    context,
+    contextState.context,
     dirty.current,
     settings,
+    { cacheFull: false },
   );
   const merged = mergeIncrementalSemanticTokenData(previous!.data, rangeTokens.data, dirty, change);
   const result = semanticTokensFromData(merged).data;
@@ -24242,8 +24264,22 @@ function canReuseSemanticTokenResult(
     previous.version !== undefined &&
     previous.version + 1 === cached.identity.version &&
     previous.reuseKey === semanticTokensReuseKey(cached, settings) &&
+    previous.vbscriptFingerprint === vbscriptRegionContentFingerprint(cached.parsed) &&
+    previous.includeRefsKey === semanticIncludeRefsKey(cached.parsed) &&
     cached.lastEditImpact?.kind === "incremental" &&
-    cached.lastIncrementalChange !== undefined
+    cached.lastIncrementalChange !== undefined &&
+    canReuseSemanticTokensAcrossDirtyScope(cached.lastEditImpact)
+  );
+}
+
+function canReuseSemanticTokensAcrossDirtyScope(impact: AspEditImpact): boolean {
+  const language = impact.dirtyScope?.language ?? impact.language;
+  return (
+    impact.dirtyScope?.structuralRisk !== true &&
+    language !== undefined &&
+    language !== "vbscript" &&
+    language !== "mixed" &&
+    language !== "asp-directive"
   );
 }
 
@@ -24252,11 +24288,13 @@ async function buildSemanticTokensWithContextAsync(
   vbContext: VbProjectContext,
   range?: Range,
   settings = cachedSettings(cached.source.uri),
+  options: { cacheFull?: boolean } = {},
 ): Promise<SemanticTokens> {
   const full = !range;
+  const cacheFull = options.cacheFull !== false;
   const jsVirtuals = jsVirtualDocuments(cached);
   const fullCacheKey = full ? semanticTokensFullCacheKey(cached, settings, jsVirtuals) : undefined;
-  const analysis = full ? analysisFor(cached) : undefined;
+  const analysis = full && cacheFull ? analysisFor(cached) : undefined;
   if (fullCacheKey && analysis?.semanticTokensFull?.key === fullCacheKey) {
     logDebugSummary(settings, `[asp-lsp] semanticTokens.full.cacheHit: ${cached.source.uri}`);
     return { data: [...analysis.semanticTokensFull.data] };
@@ -24371,7 +24409,7 @@ async function buildSemanticTokensWithContextAsync(
   const result = measureDebugStep(settings, cached.source.uri, "semanticTokens.encode", () =>
     semanticTokensFromData(uniqueTokens),
   );
-  if (fullCacheKey && !javascriptDeferred) {
+  if (fullCacheKey && !javascriptDeferred && cacheFull) {
     analysisFor(cached).semanticTokensFull = {
       key: fullCacheKey,
       data: [...result.data],
@@ -24774,7 +24812,20 @@ function semanticTokenResultMetadata(
   return {
     reuseKey: semanticTokensReuseKey(cached, settings),
     version: cached.identity.version,
+    generation: cached.generation,
+    vbscriptFingerprint: vbscriptRegionContentFingerprint(cached.parsed),
+    includeRefsKey: semanticIncludeRefsKey(cached.parsed),
   };
+}
+
+function semanticIncludeRefsKey(parsed: AspParsedDocument): string {
+  return JSON.stringify(
+    parsed.includes.map((include) => ({
+      offset: include.offset,
+      path: include.path,
+      mode: include.mode,
+    })),
+  );
 }
 
 function semanticTokensReuseKey(cached: CachedDocument, settings: AspSettings): string {

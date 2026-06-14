@@ -5259,6 +5259,138 @@ End If
       }
     });
 
+    it("isolates dirty VBScript edits from include-aware diagnostics and semantic token cache", async () => {
+      const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "asp-lsp-vb-dirty-scope-"));
+      const includesDir = path.join(tempDir, "includes");
+      fs.mkdirSync(includesDir);
+      fs.writeFileSync(
+        path.join(includesDir, "data.inc"),
+        `<%
+Function ReadDashboardFilter()
+  Set ReadDashboardFilter = Server.CreateObject("Scripting.Dictionary")
+End Function
+
+Function BuildCustomerFixtures()
+  BuildCustomerFixtures = Array("northwind")
+End Function
+
+Function FilterCustomers(ByVal customers, ByVal dashboardFilter)
+  FilterCustomers = customers
+End Function
+
+Function BuildMetrics(ByVal filteredCustomers)
+  Set BuildMetrics = Server.CreateObject("Scripting.Dictionary")
+End Function
+%>`,
+        "utf8",
+      );
+      let source = `<!-- #include file="includes/data.inc" -->
+<%
+Option Explicit
+
+Dim filter
+Set filter = ReadDashboardFilter()
+
+Dim customers
+customers = BuildCustomerFixtures()
+
+Dim filteredCustomers
+filteredCustomers = FilterCustomers(customers, filter)
+
+Dim metrics
+Set metrics = BuildMetrics(filteredCustomers)
+
+Dim selectedCustomerId
+selectedCustomerId = Request.QueryString("customer")
+%>
+<div data-customer="<%= selectedCustomerId %>"></div>
+<script>
+const clientToken = document.querySelector("[data-customer]");
+</script>`;
+      let version = 1;
+      const page = path.join(tempDir, "default.asp");
+      fs.writeFileSync(page, source, "utf8");
+      const uri = pathToFileURL(page).href;
+      const server = new RpcServer();
+      try {
+        await server.start();
+        await server.request("initialize", {
+          processId: process.pid,
+          rootUri: pathToFileURL(tempDir).href,
+          capabilities: {},
+        });
+        server.notify("workspace/didChangeConfiguration", {
+          settings: {
+            aspLsp: {
+              debug: { output: "verbose" },
+              diagnostics: { debounceMs: 0 },
+            },
+          },
+        });
+        server.notify("textDocument/didOpen", {
+          textDocument: {
+            uri,
+            languageId: "classic-asp",
+            version,
+            text: source,
+          },
+        });
+        await waitForLogContaining(server, "LSP check completed");
+        const initialFull = await server.request("textDocument/semanticTokens/full", {
+          textDocument: { uri },
+        });
+        server.takePendingNotifications("window/logMessage");
+
+        const insertOffset =
+          source.indexOf("BuildCustomerFixtures()") + "BuildCustomerFixtures(".length;
+        const inserted = notifyTypedInsertion(server, uri, source, version, insertOffset, " ");
+        source = inserted.text;
+        version = inserted.version;
+        await waitForLogContaining(server, "LSP check completed");
+
+        const diagnostics = await server.request("textDocument/diagnostic", {
+          textDocument: { uri },
+        });
+        const diagnosticText = JSON.stringify(diagnostics);
+        for (const name of ["customers", "filteredCustomers", "metrics", "selectedCustomerId"]) {
+          expect(diagnosticText).not.toContain(`'${name}' is not declared under Option Explicit.`);
+          expect(diagnosticText).not.toContain(
+            `'${name}' は Option Explicit のもとで宣言されていません。`,
+          );
+        }
+
+        const delta = await server.request("textDocument/semanticTokens/full/delta", {
+          textDocument: { uri },
+          previousResultId: semanticTokenResultId(initialFull),
+        });
+        const applied = applySemanticTokenDeltaEdits(semanticTokenData(initialFull), delta);
+        const fresh = await server.request("textDocument/semanticTokens/full", {
+          textDocument: { uri },
+        });
+        expect(applied).toEqual(semanticTokenData(fresh));
+        const decoded = decodeSemanticTokens(applied);
+        expect(
+          decoded.some((token) =>
+            tokenMatches(source, token, "querySelector", semanticTokenType.method),
+          ),
+        ).toBe(true);
+        expect(
+          decoded.some((token) =>
+            tokenMatches(source, token, "selectedCustomerId", semanticTokenType.variable),
+          ),
+        ).toBe(true);
+        expect(JSON.stringify(server.takePendingNotifications("window/logMessage"))).not.toContain(
+          "semanticTokens.full.incrementalReuse",
+        );
+
+        await server.request("shutdown", null);
+        server.notify("exit", undefined);
+      } finally {
+        server.stop();
+        fs.rmSync(tempDir, { recursive: true, force: true });
+      }
+    });
+
     it("reuses semantic token full data across single embedded language edits", async () => {
       let source = `<div class="box"><span data-name="before">Title</span></div>
 <style>

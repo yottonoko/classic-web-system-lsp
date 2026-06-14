@@ -65,6 +65,22 @@ export interface AspEditImpact {
   deletedLength: number;
   delta: number;
   language?: AspEmbeddedLanguage | "mixed";
+  dirtyScope?: AspEditDirtyScope;
+}
+
+export interface AspEditDirtyScope {
+  previousStartOffset: number;
+  previousEndOffset: number;
+  currentStartOffset: number;
+  currentEndOffset: number;
+  language?: AspEmbeddedLanguage | "mixed";
+  structuralRisk?: boolean;
+  statement?: {
+    previousStartOffset: number;
+    previousEndOffset: number;
+    currentStartOffset: number;
+    currentEndOffset: number;
+  };
 }
 
 export interface AspIncrementalUpdateResult {
