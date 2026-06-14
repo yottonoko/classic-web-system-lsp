@@ -395,16 +395,25 @@ function scanAspRegionsInRange(
 ): AspRegion[] {
   const regions: AspRegion[] = [];
   let cursor = start;
+  let embeddedState: EmbeddedContentState = { kind: "normal" };
+  let embeddedStateOffset = start;
   while (cursor < end) {
     const next = findAspOpenInRange(text, cursor, end, embeddedLanguage);
     if (next === -1 || next >= end) {
       break;
     }
     if (embeddedLanguage) {
-      const state = embeddedContentStateAt(text, start, next, embeddedLanguage);
-      if (state.kind !== "normal") {
+      embeddedState = embeddedContentStateBetween(
+        text,
+        embeddedStateOffset,
+        next,
+        embeddedLanguage,
+        embeddedState,
+      );
+      embeddedStateOffset = next;
+      if (embeddedState.kind !== "normal") {
         const close = findAspClose(text, next + 2, end);
-        const stateEnd = embeddedContentStateEnd(text, next, end, embeddedLanguage, state);
+        const stateEnd = embeddedContentStateEnd(text, next, end, embeddedLanguage, embeddedState);
         if (close === -1 || close >= stateEnd) {
           cursor = next + 2;
           continue;
@@ -414,6 +423,9 @@ function scanAspRegionsInRange(
     const region = parseAspRegionAt(text, next, diagnostics, end, settings);
     regions.push(region);
     cursor = Math.max(region.end, next + 2);
+    if (embeddedLanguage) {
+      embeddedStateOffset = cursor;
+    }
   }
   return regions;
 }
@@ -452,16 +464,26 @@ function embeddedContentStateAt(
   offset: number,
   embeddedLanguage: "javascript" | "css",
 ): EmbeddedContentState {
-  let state: EmbeddedContentState = { kind: "normal" };
+  return embeddedContentStateBetween(text, start, offset, embeddedLanguage, { kind: "normal" });
+}
+
+function embeddedContentStateBetween(
+  text: string,
+  start: number,
+  offset: number,
+  embeddedLanguage: "javascript" | "css",
+  state: EmbeddedContentState,
+): EmbeddedContentState {
+  let current = state;
   for (let index = start; index < offset; index += 1) {
-    const aspEnd = embeddedAspRegionEndAt(text, index, offset, state);
+    const aspEnd = embeddedAspRegionEndAt(text, index, offset, current);
     if (aspEnd !== undefined) {
       index = aspEnd - 1;
       continue;
     }
-    state = advanceEmbeddedContentState(text, index, offset, embeddedLanguage, state);
+    current = advanceEmbeddedContentState(text, index, offset, embeddedLanguage, current);
   }
-  return state;
+  return current;
 }
 
 function embeddedContentStateEnd(

@@ -1354,8 +1354,8 @@ function includeTreeDepths(
 ): Map<string, number> {
   const depths = new Map([...roots].map((id) => [id, 0]));
   const queue = [...roots];
-  while (queue.length > 0) {
-    const current = queue.shift() ?? "";
+  for (let index = 0; index < queue.length; index += 1) {
+    const current = queue[index];
     const currentDepth = depths.get(current) ?? 0;
     for (const link of linksBySource.get(current) ?? []) {
       const next = link.source === current ? link.target : link.source;
@@ -1379,11 +1379,8 @@ function relatedIncludeTreeDepths(
   for (const [ancestorId, ancestorDepth] of ancestors) {
     const queue = [{ id: ancestorId, depth: ancestorDepth }];
     const visited = new Set<string>([ancestorId]);
-    while (queue.length > 0) {
-      const current = queue.shift();
-      if (!current) {
-        break;
-      }
+    for (let index = 0; index < queue.length; index += 1) {
+      const current = queue[index];
       for (const link of outgoing.get(current.id) ?? []) {
         const next = link.target;
         if (visited.has(next)) {
@@ -2587,11 +2584,8 @@ function includeAncestorDepthsByUri(
   const result = new Map<string, number>();
   const visited = new Set(targetFileNodeIds);
   const queue = [...targetFileNodeIds].map((id) => ({ id, depth: 0 }));
-  while (queue.length > 0) {
-    const current = queue.shift();
-    if (!current) {
-      break;
-    }
+  for (let index = 0; index < queue.length; index += 1) {
+    const current = queue[index];
     for (const parentId of parentIdsByTargetId.get(current.id) ?? []) {
       if (visited.has(parentId)) {
         continue;
@@ -2637,8 +2631,8 @@ function includedFileUrisForTarget(
   const result = new Set<string>();
   const visited = new Set<string>(targetFileIds);
   const queue = [...targetFileIds];
-  while (queue.length > 0) {
-    const source = queue.shift() ?? "";
+  for (let index = 0; index < queue.length; index += 1) {
+    const source = queue[index];
     for (const target of includesBySource.get(source) ?? []) {
       if (visited.has(target)) {
         continue;

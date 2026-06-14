@@ -655,7 +655,7 @@ interface ParsedDocumentReuseBuildResult {
 }
 
 function expandDamageSpan(parsed: AspParsedDocument, initial: DamageSpan): DamageSpan {
-  const spans = [
+  const spans = mergeDamageSpanComponents([
     ...parsed.regions.map((region) => ({ start: region.start, end: region.end })),
     ...parsed.includes.map((include) => ({
       start: include.offset,
@@ -665,7 +665,7 @@ function expandDamageSpan(parsed: AspParsedDocument, initial: DamageSpan): Damag
       start: serverObject.offset,
       end: offsetFromRange(parsed.text, serverObject.range.end),
     })),
-  ];
+  ]);
   let damage = { ...initial };
   if (initial.start === initial.end) {
     for (const span of spans) {
@@ -677,22 +677,31 @@ function expandDamageSpan(parsed: AspParsedDocument, initial: DamageSpan): Damag
       }
     }
   }
-  let changed = true;
-  while (changed) {
-    changed = false;
-    for (const span of spans) {
-      if (!rangeOverlaps(damage.start, damage.end, span.start, span.end)) {
-        continue;
-      }
-      const nextStart = Math.min(damage.start, span.start);
-      const nextEnd = Math.max(damage.end, span.end);
-      if (nextStart !== damage.start || nextEnd !== damage.end) {
-        damage = { start: nextStart, end: nextEnd };
-        changed = true;
-      }
+  for (const span of spans) {
+    if (!rangeOverlaps(damage.start, damage.end, span.start, span.end)) {
+      continue;
     }
+    damage = {
+      start: Math.min(damage.start, span.start),
+      end: Math.max(damage.end, span.end),
+    };
   }
   return damage;
+}
+
+function mergeDamageSpanComponents(spans: DamageSpan[]): DamageSpan[] {
+  const sorted = [...spans].sort((left, right) => left.start - right.start || left.end - right.end);
+  const merged: DamageSpan[] = [];
+  for (const span of sorted) {
+    const previous = merged[merged.length - 1];
+    if (!previous || !rangeOverlaps(previous.start, previous.end, span.start, span.end)) {
+      merged.push({ ...span });
+      continue;
+    }
+    previous.start = Math.min(previous.start, span.start);
+    previous.end = Math.max(previous.end, span.end);
+  }
+  return merged;
 }
 
 function damageOverlapsDirective(parsed: AspParsedDocument, damage: DamageSpan): boolean {

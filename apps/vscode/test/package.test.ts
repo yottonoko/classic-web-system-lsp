@@ -280,8 +280,12 @@ describe("VS Code extension package", () => {
     expect(flowchartStyles).toContain(".asp-lsp-source-active-block .asp-lsp-source-active-block");
     expect(flowchartSource).toContain("const [open, setOpen] = useState(false)");
     expect(flowchartSource).toContain("shouldAutoOpen");
+    expect(flowchartSource).toContain("flowchartNodesById(allNodes)");
+    expect(flowchartSource).toContain("svgElementsByFlowchartNodeId(container, payload.nodes)");
     expect(flowchartSource).toContain('container.querySelectorAll<SVGGElement>("g[id]")');
-    expect(flowchartSource).toContain("svgElementIdContainsMermaidNodeId(element.id, id)");
+    expect(flowchartSource).toContain(
+      "svgElementIdContainsMermaidNodeId(element.id, node.mermaidId)",
+    );
     expect(flowchartSource).not.toContain('querySelectorAll<SVGGElement>(`[id*="${id}"]`)');
     expect(flowchartSource).toContain("wrapFlowchartLabel");
     expect(flowchartSource).toContain("setClampedZoom");

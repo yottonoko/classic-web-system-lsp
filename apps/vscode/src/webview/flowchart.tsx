@@ -2087,15 +2087,16 @@ function flowchartSourceHighlights(
   selectedNodeId: string | undefined,
 ): FlowchartSourceHighlight[] {
   const highlights: FlowchartSourceHighlight[] = [];
+  const nodesById = flowchartNodesById(allNodes);
   const sectionRanges = flowchartSourceRangesForSection(selectedSection, selectedSectionNodes);
   if (sectionRanges.length > 0) {
     highlights.push({ kind: "section", label: selectedSection?.label, ranges: sectionRanges });
   }
-  const selectedNode = flowchartNodeById(allNodes, selectedNodeId);
+  const selectedNode = flowchartNodeById(nodesById, selectedNodeId);
   if (selectedNode?.range) {
     highlights.push({ kind: "selection", label: selectedNode.label, ranges: [selectedNode.range] });
   }
-  const hoveredNode = flowchartNodeById(allNodes, hoveredNodeId);
+  const hoveredNode = flowchartNodeById(nodesById, hoveredNodeId);
   if (hoveredNode?.range) {
     highlights.push({ kind: "hover", label: hoveredNode.label, ranges: [hoveredNode.range] });
   }
@@ -2168,11 +2169,15 @@ function flowchartSourceHighlightPriority(kind: FlowchartSourceActiveKind): numb
   }
 }
 
+function flowchartNodesById(nodes: readonly AspFlowchartNode[]): Map<string, AspFlowchartNode> {
+  return new Map(nodes.map((node) => [node.id, node]));
+}
+
 function flowchartNodeById(
-  nodes: readonly AspFlowchartNode[],
+  nodesById: Map<string, AspFlowchartNode>,
   id: string | undefined,
 ): AspFlowchartNode | undefined {
-  return id ? nodes.find((node) => node.id === id) : undefined;
+  return id ? nodesById.get(id) : undefined;
 }
 
 function flowchartSourceRangesForSection(
@@ -2991,8 +2996,9 @@ function attachSvgNodeHandlers(
   onSelectNode: (node: AspFlowchartNode) => void,
 ): void {
   const locale = payload.locale ?? "en";
+  const elementsByNodeId = svgElementsByFlowchartNodeId(container, payload.nodes);
   for (const node of payload.nodes) {
-    for (const element of svgElementsForFlowchartNode(container, node)) {
+    for (const element of elementsByNodeId.get(node.id) ?? []) {
       const hint = flowchartNodeHint(node, text, locale);
       element.setAttribute("aria-label", hint);
       element.querySelector("title")?.remove();
@@ -3020,11 +3026,12 @@ function syncSvgSearchHighlights(
     element.classList.remove("asp-lsp-flowchart-match", "asp-lsp-flowchart-active");
   }
   let activeElement: SVGGElement | undefined;
+  const elementsByNodeId = svgElementsByFlowchartNodeId(container, payload.nodes);
   for (const node of payload.nodes) {
     if (!matchedNodeIds.has(node.id) && node.id !== activeNodeId) {
       continue;
     }
-    for (const element of svgElementsForFlowchartNode(container, node)) {
+    for (const element of elementsByNodeId.get(node.id) ?? []) {
       if (matchedNodeIds.has(node.id)) {
         element.classList.add("asp-lsp-flowchart-match");
       }
@@ -3088,20 +3095,28 @@ function serializedFlowchartSvg(container: HTMLDivElement | null): string | unde
   return `${new XMLSerializer().serializeToString(clone)}\n`;
 }
 
-function svgElementsForFlowchartNode(
+function svgElementsByFlowchartNodeId(
   container: HTMLDivElement,
-  node: AspFlowchartNode,
-): SVGGElement[] {
-  const id = mermaidId(node.id);
-  const elements = [...container.querySelectorAll<SVGGElement>("g[id]")];
-  const nodeElements = elements.filter((element) => element.classList.contains("node"));
-  const matchedNodeElements = nodeElements.filter((element) =>
-    svgElementIdContainsMermaidNodeId(element.id, id),
-  );
-  if (matchedNodeElements.length > 0) {
-    return matchedNodeElements;
+  nodes: readonly AspFlowchartNode[],
+): Map<string, SVGGElement[]> {
+  const nodeMatches = new Map(nodes.map((node) => [node.id, [] as SVGGElement[]]));
+  const fallbackMatches = new Map(nodes.map((node) => [node.id, [] as SVGGElement[]]));
+  const nodeIds = nodes.map((node) => ({ id: node.id, mermaidId: mermaidId(node.id) }));
+  for (const element of container.querySelectorAll<SVGGElement>("g[id]")) {
+    for (const node of nodeIds) {
+      if (!svgElementIdContainsMermaidNodeId(element.id, node.mermaidId)) {
+        continue;
+      }
+      const matches = element.classList.contains("node") ? nodeMatches : fallbackMatches;
+      matches.get(node.id)?.push(element);
+    }
   }
-  return elements.filter((element) => svgElementIdContainsMermaidNodeId(element.id, id));
+  return new Map<string, SVGGElement[]>(
+    nodes.map((node): [string, SVGGElement[]] => {
+      const preferred = nodeMatches.get(node.id) ?? [];
+      return [node.id, preferred.length > 0 ? preferred : (fallbackMatches.get(node.id) ?? [])];
+    }),
+  );
 }
 
 function svgElementIdContainsMermaidNodeId(elementId: string, mermaidNodeId: string): boolean {
