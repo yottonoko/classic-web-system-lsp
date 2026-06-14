@@ -9898,6 +9898,7 @@ async function workspaceVbReferenceSummaryReferencesForCandidate(
     if (sameNameSymbols.some((symbol) => !sameVbReferenceTargetIdentity(symbol, target))) {
       return undefined;
     }
+    const visibilityMemo = createIncludeVisibilityMemo();
     referencesByTarget.set(
       vbReferencesWorkerTargetKey(target),
       summaries.flatMap((summary) =>
@@ -9906,7 +9907,13 @@ async function workspaceVbReferenceSummaryReferencesForCandidate(
           .flatMap((usage) =>
             usage.ranges
               .filter((range) =>
-                isSummaryFallbackTargetVisibleAt(includeGraph, summary.uri, target, range),
+                isSummaryFallbackTargetVisibleAt(
+                  includeGraph,
+                  summary.uri,
+                  target,
+                  range,
+                  visibilityMemo,
+                ),
               )
               .map((range) => ({ uri: summary.uri, range })),
           ),
@@ -9919,6 +9926,52 @@ async function workspaceVbReferenceSummaryReferencesForCandidate(
 interface IncludeReachabilityGraph {
   directIncludesByOwnerKey: Map<string, Array<{ targetKey: string }>>;
   parentIncludesByTargetKey: Map<string, Array<{ ownerKey: string }>>;
+}
+
+interface IncludeVisibilityMemo {
+  cache: Map<string, boolean>;
+  visiting: Set<string>;
+}
+
+const sourceGraphVisibilityMemoByState = new WeakMap<AspGraphBuildState, IncludeVisibilityMemo>();
+
+function createIncludeVisibilityMemo(): IncludeVisibilityMemo {
+  return { cache: new Map(), visiting: new Set() };
+}
+
+function sourceGraphVisibilityMemo(state: AspGraphBuildState): IncludeVisibilityMemo {
+  let memo = sourceGraphVisibilityMemoByState.get(state);
+  if (!memo) {
+    memo = createIncludeVisibilityMemo();
+    sourceGraphVisibilityMemoByState.set(state, memo);
+  }
+  return memo;
+}
+
+function includeVisibilityMemoKey(ownerKey: string, targetKey: string, range: Range): string {
+  return `${ownerKey}\0${targetKey}\0${range.start.line}:${range.start.character}`;
+}
+
+function memoizedIncludeVisibility(
+  memo: IncludeVisibilityMemo,
+  key: string,
+  compute: () => boolean,
+): boolean {
+  const cached = memo.cache.get(key);
+  if (cached !== undefined) {
+    return cached;
+  }
+  if (memo.visiting.has(key)) {
+    return false;
+  }
+  memo.visiting.add(key);
+  try {
+    const value = compute();
+    memo.cache.set(key, value);
+    return value;
+  } finally {
+    memo.visiting.delete(key);
+  }
 }
 
 function precomputeIncludeReachability(
@@ -10030,6 +10083,7 @@ function isSummaryFallbackTargetVisibleAt(
   ownerUri: string,
   target: VbReferencesWorkerTargetSymbol,
   referenceRange: Range,
+  memo: IncludeVisibilityMemo = createIncludeVisibilityMemo(),
 ): boolean {
   if (!target.sourceUri.startsWith("file://")) {
     return true;
@@ -10039,61 +10093,59 @@ function isSummaryFallbackTargetVisibleAt(
   if (targetKey === ownerKey) {
     return true;
   }
-  if (hasEarlierReachableSummaryInclude(graph, ownerKey, targetKey, referenceRange)) {
-    return true;
-  }
-  return isSummaryFallbackTargetVisibleFromParentContext(
+  return isSummaryFallbackTargetVisibleFromFileAt(
     graph,
     ownerKey,
     target,
+    targetKey,
+    referenceRange,
+    memo,
     new Set([ownerKey]),
   );
 }
 
-function isSummaryFallbackTargetVisibleFromParentContext(
+function isSummaryFallbackTargetVisibleFromFileAt(
   graph: WorkspaceVbReferenceSummaryIncludeGraph,
   ownerKey: string,
   target: VbReferencesWorkerTargetSymbol,
+  targetKey: string,
+  referenceRange: Range,
+  memo: IncludeVisibilityMemo,
   visited: Set<string>,
 ): boolean {
-  const parentIncludes = graph.parentIncludesByTargetKey.get(ownerKey) ?? [];
-  for (const parentInclude of parentIncludes) {
-    if (visited.has(parentInclude.ownerKey)) {
-      continue;
+  const key = includeVisibilityMemoKey(
+    ownerKey,
+    vbReferencesWorkerTargetKey(target),
+    referenceRange,
+  );
+  return memoizedIncludeVisibility(memo, key, () => {
+    if (targetKey === ownerKey) {
+      return positionBeforeOrEqual(target.range.start, referenceRange.start);
     }
-    visited.add(parentInclude.ownerKey);
-    if (
-      isSummaryFallbackTargetVisibleBeforeParentInclude(
+    if (hasEarlierReachableSummaryInclude(graph, ownerKey, targetKey, referenceRange)) {
+      return true;
+    }
+    for (const parentInclude of graph.parentIncludesByTargetKey.get(ownerKey) ?? []) {
+      if (visited.has(parentInclude.ownerKey)) {
+        continue;
+      }
+      visited.add(parentInclude.ownerKey);
+      const visible = isSummaryFallbackTargetVisibleFromFileAt(
         graph,
         parentInclude.ownerKey,
         target,
+        targetKey,
         parentInclude.range,
+        memo,
         visited,
-      )
-    ) {
+      );
       visited.delete(parentInclude.ownerKey);
-      return true;
+      if (visible) {
+        return true;
+      }
     }
-    visited.delete(parentInclude.ownerKey);
-  }
-  return false;
-}
-
-function isSummaryFallbackTargetVisibleBeforeParentInclude(
-  graph: WorkspaceVbReferenceSummaryIncludeGraph,
-  parentKey: string,
-  target: VbReferencesWorkerTargetSymbol,
-  includeRange: Range,
-  visited: Set<string>,
-): boolean {
-  const targetKey = fileIdentityKeyFromUri(target.sourceUri);
-  if (targetKey === parentKey) {
-    return positionBeforeOrEqual(target.range.start, includeRange.start);
-  }
-  if (hasEarlierReachableSummaryInclude(graph, parentKey, targetKey, includeRange)) {
-    return true;
-  }
-  return isSummaryFallbackTargetVisibleFromParentContext(graph, parentKey, target, visited);
+    return false;
+  });
 }
 
 function hasEarlierReachableSummaryInclude(
@@ -22390,63 +22442,59 @@ function isSourceGraphDeclarationVisibleFromDocument(
   if (declarationKey === ownerKey) {
     return true;
   }
-  if (hasEarlierReachableGraphInclude(state, ownerKey, declarationKey, referenceRange)) {
-    return true;
-  }
-  return isSourceGraphDeclarationVisibleFromParentContext(
+  return isSourceGraphDeclarationVisibleFromFileAt(
     state,
     ownerKey,
     declaration,
+    declarationKey,
+    referenceRange,
+    sourceGraphVisibilityMemo(state),
     new Set([ownerKey]),
   );
 }
 
-function isSourceGraphDeclarationVisibleFromParentContext(
+function isSourceGraphDeclarationVisibleFromFileAt(
   state: AspGraphBuildState,
   ownerKey: string,
   declaration: VbSymbolIndex["declarations"][number],
+  declarationKey: string,
+  referenceRange: Range,
+  memo: IncludeVisibilityMemo,
   visited: Set<string>,
 ): boolean {
-  const parentIncludes = state.parentIncludesByTargetKey.get(ownerKey) ?? [];
-  for (const parentInclude of parentIncludes) {
-    if (visited.has(parentInclude.ownerKey)) {
-      continue;
+  const key = includeVisibilityMemoKey(
+    ownerKey,
+    `${declarationKey}\0${declaration.id}`,
+    referenceRange,
+  );
+  return memoizedIncludeVisibility(memo, key, () => {
+    if (declarationKey === ownerKey) {
+      return positionBeforeOrEqual(declaration.nameRange.start, referenceRange.start);
     }
-    const nextVisited = new Set(visited);
-    nextVisited.add(parentInclude.ownerKey);
-    if (
-      isSourceGraphDeclarationVisibleBeforeParentInclude(
+    if (hasEarlierReachableGraphInclude(state, ownerKey, declarationKey, referenceRange)) {
+      return true;
+    }
+    for (const parentInclude of state.parentIncludesByTargetKey.get(ownerKey) ?? []) {
+      if (visited.has(parentInclude.ownerKey)) {
+        continue;
+      }
+      visited.add(parentInclude.ownerKey);
+      const visible = isSourceGraphDeclarationVisibleFromFileAt(
         state,
         parentInclude.ownerKey,
         declaration,
+        declarationKey,
         parentInclude.range,
-        nextVisited,
-      )
-    ) {
-      return true;
+        memo,
+        visited,
+      );
+      visited.delete(parentInclude.ownerKey);
+      if (visible) {
+        return true;
+      }
     }
-  }
-  return false;
-}
-
-function isSourceGraphDeclarationVisibleBeforeParentInclude(
-  state: AspGraphBuildState,
-  parentKey: string,
-  declaration: VbSymbolIndex["declarations"][number],
-  includeRange: Range,
-  visited: Set<string>,
-): boolean {
-  const declarationKey = state.sourceDeclarationFileKeysById.get(declaration.id);
-  if (!declarationKey) {
     return false;
-  }
-  if (declarationKey === parentKey) {
-    return positionBeforeOrEqual(declaration.nameRange.start, includeRange.start);
-  }
-  if (hasEarlierReachableGraphInclude(state, parentKey, declarationKey, includeRange)) {
-    return true;
-  }
-  return isSourceGraphDeclarationVisibleFromParentContext(state, parentKey, declaration, visited);
+  });
 }
 
 function graphIncludeCanReachTarget(

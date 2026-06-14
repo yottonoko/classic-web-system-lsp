@@ -4177,6 +4177,25 @@ Response.Write SharedCatalog.Name
     );
   });
 
+  it("does not recursively expand same-name class members in export summaries", () => {
+    const parsed = parseAspDocument(
+      "file:///site/member-cycle.asp",
+      `<%
+Class Foo
+  Public Function Foo()
+  End Function
+End Class
+%>`,
+    );
+    const summary = summarizeAspFileAnalysis(parsed);
+    const exportedClass = summary.vbscript?.exports.find((item) => item.name === "Foo");
+    const exportedMember = exportedClass?.members?.find((item) => item.name === "Foo");
+
+    expect(exportedClass?.kind).toBe("class");
+    expect(exportedMember?.kind).toBe("method");
+    expect(exportedMember?.members).toBeUndefined();
+  });
+
   it("keeps the public signature hash stable for private body-only summary changes", () => {
     const before = summarizeAspFileAnalysis(
       parseAspDocument(

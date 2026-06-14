@@ -280,10 +280,17 @@ async function fullFallbackReferencesForTargets(
   const equivalentTargets: VbSymbol[] = [];
   const equivalentKeys = new Map<string, string>();
   const targetByEquivalentKey = new Map<string, VbReferencesWorkerTargetSymbol>();
+  const visibilityMemoByTargetKey = new Map<string, IncludeVisibilityMemo>();
   const supplementalReferencesByTarget = new Map<string, VbReference[]>();
   for (const target of targets) {
     const targetKey = targetSymbolKey(target);
-    const supplementalReferences = fallbackWorkspaceExternalReferences(analysis, target);
+    const visibilityMemo = createIncludeVisibilityMemo();
+    visibilityMemoByTargetKey.set(targetKey, visibilityMemo);
+    const supplementalReferences = fallbackWorkspaceExternalReferences(
+      analysis,
+      target,
+      visibilityMemo,
+    );
     const equivalent = equivalentVbSymbol(analysis.symbols, target);
     if (equivalent) {
       const equivalentKey = vbscriptReferenceSymbolKey(equivalent);
@@ -304,9 +311,17 @@ async function fullFallbackReferencesForTargets(
     const targetKey = equivalentKeys.get(equivalentKey);
     if (targetKey) {
       const target = targetByEquivalentKey.get(equivalentKey);
+      const visibilityMemo =
+        visibilityMemoByTargetKey.get(targetKey) ?? createIncludeVisibilityMemo();
       const visibleReferences = target
         ? references.filter((reference) =>
-            isFallbackTargetVisibleAt(analysis, reference.uri, target, reference.range),
+            isFallbackTargetVisibleAt(
+              analysis,
+              reference.uri,
+              target,
+              reference.range,
+              visibilityMemo,
+            ),
           )
         : references;
       referencesByTarget[targetKey] = mergeReferences(
@@ -328,6 +343,11 @@ interface FullFallbackAnalysis {
 interface FullFallbackIncludeGraph {
   directIncludesByOwnerUri: Map<string, Array<{ range: VbReference["range"]; targetUri: string }>>;
   parentIncludesByTargetUri: Map<string, Array<{ ownerUri: string; range: VbReference["range"] }>>;
+}
+
+interface IncludeVisibilityMemo {
+  cache: Map<string, boolean>;
+  visiting: Set<string>;
 }
 
 interface FullFallbackAnalysisCacheEntry {
@@ -1021,6 +1041,7 @@ function sameVbSymbolIdentity(left: VbSymbol, right: VbReferencesWorkerTargetSym
 function fallbackWorkspaceExternalReferences(
   analysis: FullFallbackAnalysis,
   symbol: VbReferencesWorkerTargetSymbol,
+  visibilityMemo: IncludeVisibilityMemo,
 ): VbReference[] {
   if (!isGlobalWorkspaceReferenceFallbackSymbol(symbol)) {
     return [];
@@ -1030,7 +1051,9 @@ function fallbackWorkspaceExternalReferences(
       .filter((usage) => usage.key === symbol.name.toLowerCase())
       .flatMap((usage) =>
         usage.ranges
-          .filter((range) => isFallbackTargetVisibleAt(analysis, summary.uri, symbol, range))
+          .filter((range) =>
+            isFallbackTargetVisibleAt(analysis, summary.uri, symbol, range, visibilityMemo),
+          )
           .map((range) => ({ uri: summary.uri, range })),
       ),
   );
@@ -1051,85 +1074,104 @@ function isGlobalWorkspaceReferenceFallbackSymbol(symbol: VbReferencesWorkerTarg
   );
 }
 
+function createIncludeVisibilityMemo(): IncludeVisibilityMemo {
+  return { cache: new Map(), visiting: new Set() };
+}
+
+function includeVisibilityMemoKey(
+  ownerKey: string,
+  targetKey: string,
+  range: VbReference["range"],
+): string {
+  return `${ownerKey}\0${targetKey}\0${range.start.line}:${range.start.character}`;
+}
+
+function memoizedIncludeVisibility(
+  memo: IncludeVisibilityMemo,
+  key: string,
+  compute: () => boolean,
+): boolean {
+  const cached = memo.cache.get(key);
+  if (cached !== undefined) {
+    return cached;
+  }
+  if (memo.visiting.has(key)) {
+    return false;
+  }
+  memo.visiting.add(key);
+  try {
+    const value = compute();
+    memo.cache.set(key, value);
+    return value;
+  } finally {
+    memo.visiting.delete(key);
+  }
+}
+
 function isFallbackTargetVisibleAt(
   analysis: FullFallbackAnalysis,
   ownerUri: string,
   target: VbReferencesWorkerTargetSymbol,
   referenceRange: VbReference["range"],
+  visibilityMemo: IncludeVisibilityMemo = createIncludeVisibilityMemo(),
 ): boolean {
   if (!target.sourceUri.startsWith("file://")) {
     return true;
   }
-  if (sameFileIdentityUri(target.sourceUri, ownerUri)) {
+  const ownerKey = fileIdentityKeyFromUri(ownerUri);
+  const targetKey = fileIdentityKeyFromUri(target.sourceUri);
+  if (targetKey === ownerKey) {
     return true;
   }
-  if (
-    hasEarlierReachableFallbackInclude(
-      analysis.includeGraph,
-      fileIdentityKeyFromUri(ownerUri),
-      fileIdentityKeyFromUri(target.sourceUri),
-      referenceRange,
-    )
-  ) {
-    return true;
-  }
-  return isFallbackTargetVisibleFromParentContext(
+  return isFallbackTargetVisibleFromFileAt(
     analysis.includeGraph,
-    fileIdentityKeyFromUri(ownerUri),
+    ownerKey,
     target,
-    new Set([fileIdentityKeyFromUri(ownerUri)]),
+    targetKey,
+    referenceRange,
+    visibilityMemo,
+    new Set([ownerKey]),
   );
 }
 
-function isFallbackTargetVisibleFromParentContext(
+function isFallbackTargetVisibleFromFileAt(
   graph: FullFallbackIncludeGraph,
-  ownerUri: string,
+  ownerKey: string,
   target: VbReferencesWorkerTargetSymbol,
+  targetKey: string,
+  referenceRange: VbReference["range"],
+  visibilityMemo: IncludeVisibilityMemo,
   visited: Set<string>,
 ): boolean {
-  const parentIncludes = graph.parentIncludesByTargetUri.get(ownerUri) ?? [];
-  for (const parentInclude of parentIncludes) {
-    if (visited.has(parentInclude.ownerUri)) {
-      continue;
+  const key = includeVisibilityMemoKey(ownerKey, targetSymbolKey(target), referenceRange);
+  return memoizedIncludeVisibility(visibilityMemo, key, () => {
+    if (targetKey === ownerKey) {
+      return positionBeforeOrEqual(target.range.start, referenceRange.start);
     }
-    const nextVisited = new Set(visited);
-    nextVisited.add(parentInclude.ownerUri);
-    if (
-      isFallbackTargetVisibleBeforeParentInclude(
+    if (hasEarlierReachableFallbackInclude(graph, ownerKey, targetKey, referenceRange)) {
+      return true;
+    }
+    for (const parentInclude of graph.parentIncludesByTargetUri.get(ownerKey) ?? []) {
+      if (visited.has(parentInclude.ownerUri)) {
+        continue;
+      }
+      visited.add(parentInclude.ownerUri);
+      const visible = isFallbackTargetVisibleFromFileAt(
         graph,
         parentInclude.ownerUri,
         target,
+        targetKey,
         parentInclude.range,
-        nextVisited,
-      )
-    ) {
-      return true;
+        visibilityMemo,
+        visited,
+      );
+      visited.delete(parentInclude.ownerUri);
+      if (visible) {
+        return true;
+      }
     }
-  }
-  return false;
-}
-
-function isFallbackTargetVisibleBeforeParentInclude(
-  graph: FullFallbackIncludeGraph,
-  parentUri: string,
-  target: VbReferencesWorkerTargetSymbol,
-  includeRange: VbReference["range"],
-  visited: Set<string>,
-): boolean {
-  if (fileIdentityKeyFromUri(target.sourceUri) === parentUri) {
-    return positionBeforeOrEqual(target.range.start, includeRange.start);
-  }
-  if (
-    hasEarlierReachableFallbackInclude(
-      graph,
-      parentUri,
-      fileIdentityKeyFromUri(target.sourceUri),
-      includeRange,
-    )
-  ) {
-    return true;
-  }
-  return isFallbackTargetVisibleFromParentContext(graph, parentUri, target, visited);
+    return false;
+  });
 }
 
 function hasEarlierReachableFallbackInclude(

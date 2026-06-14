@@ -4217,16 +4217,22 @@ function exportSummariesForSymbols(symbols: VbSymbol[]): VbExportSummary[] {
   }
   return symbols
     .filter((symbol) => !symbol.memberOf)
-    .map((symbol) => exportSummaryForSymbol(symbol, membersByOwner));
+    .map((symbol) => exportSummaryForSymbol(symbol, membersByOwner, new Set()));
 }
 
 function exportSummaryForSymbol(
   symbol: VbSymbol,
   membersByOwner: Map<string, VbSymbol[]>,
+  seenOwners: Set<string>,
 ): VbExportSummary {
-  const members = membersByOwner
-    .get(symbol.name.toLowerCase())
-    ?.map((member) => exportSummaryForSymbol(member, membersByOwner));
+  const ownerKey = symbol.name.toLowerCase();
+  const nextSeenOwners = new Set(seenOwners);
+  nextSeenOwners.add(ownerKey);
+  const members = seenOwners.has(ownerKey)
+    ? undefined
+    : membersByOwner
+        .get(ownerKey)
+        ?.map((member) => exportSummaryForSymbol(member, membersByOwner, nextSeenOwners));
   return {
     name: symbol.name,
     kind: symbol.kind,

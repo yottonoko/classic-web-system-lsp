@@ -25,6 +25,11 @@ export interface ImplicitGlobalCanonicalIdResult {
   maxGroupSize: number;
 }
 
+interface IncludeVisibilityMemo {
+  cache: Map<string, boolean>;
+  visiting: Set<string>;
+}
+
 export interface BuildImplicitGlobalIncludeGraphHost {
   graphFileKey(fileName: string): string;
   normalizeFileName(fileName: string): string;
@@ -121,6 +126,7 @@ export function computeImplicitGlobalCanonicalIds(
     }
   }
   const reachability = precomputeIncludeReachability(includeGraph, targetKeys);
+  const visibilityMemo = createIncludeVisibilityMemo();
   const union = new ImplicitGlobalUnionFind();
   for (const declarations of declarationsByName.values()) {
     throwIfCancelled(cancellation);
@@ -136,6 +142,7 @@ export function computeImplicitGlobalCanonicalIds(
         declarationFileKeyById,
         includeGraph,
         reachability,
+        visibilityMemo,
         union,
       );
     } else {
@@ -144,6 +151,7 @@ export function computeImplicitGlobalCanonicalIds(
         declarationFileKeyById,
         includeGraph,
         reachability,
+        visibilityMemo,
         union,
       );
     }
@@ -165,6 +173,7 @@ export function computeImplicitGlobalCanonicalIds(
       declarationFileKeyById,
       includeGraph,
       reachability,
+      visibilityMemo,
     );
     for (const declaration of declarations) {
       canonicalIdById.set(declaration.id, canonical.id);
@@ -311,6 +320,7 @@ function implicitGlobalCanonicalDeclaration(
   declarationFileKeyById: Map<string, string>,
   includeGraph: ImplicitGlobalIncludeGraph,
   reachability: PrecomputedIncludeReachability,
+  visibilityMemo: IncludeVisibilityMemo,
 ): VbSymbolIndex["declarations"][number] {
   const visibilityScoreById = new Map(
     declarations.map((declaration) => [
@@ -321,6 +331,7 @@ function implicitGlobalCanonicalDeclaration(
         declarationFileKeyById,
         includeGraph,
         reachability,
+        visibilityMemo,
       ),
     ]),
   );
@@ -338,6 +349,7 @@ function implicitGlobalCanonicalVisibilityScore(
   declarationFileKeyById: Map<string, string>,
   includeGraph: ImplicitGlobalIncludeGraph,
   reachability: PrecomputedIncludeReachability,
+  visibilityMemo: IncludeVisibilityMemo,
 ): number {
   const targetKey = declarationFileKeyById.get(declaration.id);
   if (!targetKey) {
@@ -357,6 +369,7 @@ function implicitGlobalCanonicalVisibilityScore(
         targetKey,
         candidate.nameRange,
         reachability,
+        visibilityMemo,
       )
     );
   })
@@ -376,6 +389,7 @@ function unionImplicitGlobalDeclarationsPairwise(
   declarationFileKeyById: Map<string, string>,
   includeGraph: ImplicitGlobalIncludeGraph,
   reachability: PrecomputedIncludeReachability,
+  visibilityMemo: IncludeVisibilityMemo,
   union: ImplicitGlobalUnionFind,
 ): void {
   for (let leftIndex = 0; leftIndex < declarations.length; leftIndex += 1) {
@@ -398,6 +412,7 @@ function unionImplicitGlobalDeclarationsPairwise(
           rightFileKey,
           includeGraph,
           reachability,
+          visibilityMemo,
         )
       ) {
         union.union(left.id, right.id);
@@ -411,6 +426,7 @@ function unionImplicitGlobalDeclarationsByReachability(
   declarationFileKeyById: Map<string, string>,
   includeGraph: ImplicitGlobalIncludeGraph,
   reachability: PrecomputedIncludeReachability,
+  visibilityMemo: IncludeVisibilityMemo,
   union: ImplicitGlobalUnionFind,
 ): void {
   const processedByFileKey = new Map<string, Array<VbSymbolIndex["declarations"][number]>>();
@@ -446,6 +462,7 @@ function unionImplicitGlobalDeclarationsByReachability(
             candidateFileKey,
             includeGraph,
             reachability,
+            visibilityMemo,
           )
         );
       });
@@ -529,6 +546,7 @@ function implicitGlobalDeclarationsCanMerge(
   rightFileKey: string,
   includeGraph: ImplicitGlobalIncludeGraph,
   reachability: PrecomputedIncludeReachability,
+  visibilityMemo: IncludeVisibilityMemo,
 ): boolean {
   return (
     isImplicitGlobalDeclarationVisibleFromFile(
@@ -538,6 +556,7 @@ function implicitGlobalDeclarationsCanMerge(
       rightFileKey,
       left.nameRange,
       reachability,
+      visibilityMemo,
     ) ||
     isImplicitGlobalDeclarationVisibleFromFile(
       includeGraph,
@@ -546,8 +565,39 @@ function implicitGlobalDeclarationsCanMerge(
       leftFileKey,
       right.nameRange,
       reachability,
+      visibilityMemo,
     )
   );
+}
+
+function createIncludeVisibilityMemo(): IncludeVisibilityMemo {
+  return { cache: new Map(), visiting: new Set() };
+}
+
+function includeVisibilityMemoKey(ownerKey: string, targetKey: string, range: Range): string {
+  return `${ownerKey}\0${targetKey}\0${range.start.line}:${range.start.character}`;
+}
+
+function memoizedIncludeVisibility(
+  memo: IncludeVisibilityMemo,
+  key: string,
+  compute: () => boolean,
+): boolean {
+  const cached = memo.cache.get(key);
+  if (cached !== undefined) {
+    return cached;
+  }
+  if (memo.visiting.has(key)) {
+    return false;
+  }
+  memo.visiting.add(key);
+  try {
+    const value = compute();
+    memo.cache.set(key, value);
+    return value;
+  } finally {
+    memo.visiting.delete(key);
+  }
 }
 
 function isImplicitGlobalDeclarationVisibleFromFile(
@@ -557,94 +607,75 @@ function isImplicitGlobalDeclarationVisibleFromFile(
   declarationKey: string,
   referenceRange: Range,
   reachability: PrecomputedIncludeReachability,
+  visibilityMemo: IncludeVisibilityMemo,
 ): boolean {
   if (declarationKey === ownerKey) {
     return true;
   }
-  if (
-    hasEarlierReachableImplicitGlobalInclude(
-      includeGraph,
-      ownerKey,
-      declarationKey,
-      referenceRange,
-      reachability,
-    )
-  ) {
-    return true;
-  }
-  return isImplicitGlobalDeclarationVisibleFromParentContext(
+  return isImplicitGlobalDeclarationVisibleFromFileAt(
     includeGraph,
     ownerKey,
     declaration,
     declarationKey,
+    referenceRange,
     reachability,
+    visibilityMemo,
     new Set([ownerKey]),
   );
 }
 
-function isImplicitGlobalDeclarationVisibleFromParentContext(
+function isImplicitGlobalDeclarationVisibleFromFileAt(
   includeGraph: ImplicitGlobalIncludeGraph,
   ownerKey: string,
   declaration: VbSymbolIndex["declarations"][number],
   declarationKey: string,
+  referenceRange: Range,
   reachability: PrecomputedIncludeReachability,
+  visibilityMemo: IncludeVisibilityMemo,
   visited: Set<string>,
 ): boolean {
-  for (const parentInclude of includeGraph.parentIncludesByTargetKey.get(ownerKey) ?? []) {
-    if (visited.has(parentInclude.ownerKey)) {
-      continue;
+  const key = includeVisibilityMemoKey(
+    ownerKey,
+    `${declarationKey}\0${declaration.id}`,
+    referenceRange,
+  );
+  return memoizedIncludeVisibility(visibilityMemo, key, () => {
+    if (declarationKey === ownerKey) {
+      return positionBeforeOrEqual(declaration.nameRange.start, referenceRange.start);
     }
-    visited.add(parentInclude.ownerKey);
     if (
-      isImplicitGlobalDeclarationVisibleBeforeParentInclude(
+      hasEarlierReachableImplicitGlobalInclude(
+        includeGraph,
+        ownerKey,
+        declarationKey,
+        referenceRange,
+        reachability,
+      )
+    ) {
+      return true;
+    }
+    for (const parentInclude of includeGraph.parentIncludesByTargetKey.get(ownerKey) ?? []) {
+      if (visited.has(parentInclude.ownerKey)) {
+        continue;
+      }
+      visited.add(parentInclude.ownerKey);
+      const visible = isImplicitGlobalDeclarationVisibleFromFileAt(
         includeGraph,
         parentInclude.ownerKey,
         declaration,
         declarationKey,
         parentInclude.range,
         reachability,
+        visibilityMemo,
         visited,
-      )
-    ) {
+      );
       visited.delete(parentInclude.ownerKey);
-      return true;
+      if (visible) {
+        return true;
+      }
     }
-    visited.delete(parentInclude.ownerKey);
-  }
-  return false;
-}
-
-function isImplicitGlobalDeclarationVisibleBeforeParentInclude(
-  includeGraph: ImplicitGlobalIncludeGraph,
-  parentKey: string,
-  declaration: VbSymbolIndex["declarations"][number],
-  declarationKey: string,
-  includeRange: Range,
-  reachability: PrecomputedIncludeReachability,
-  visited: Set<string>,
-): boolean {
-  if (declarationKey === parentKey) {
-    return positionBeforeOrEqual(declaration.nameRange.start, includeRange.start);
-  }
-  if (
-    hasEarlierReachableImplicitGlobalInclude(
-      includeGraph,
-      parentKey,
-      declarationKey,
-      includeRange,
-      reachability,
-    )
-  ) {
-    return true;
-  }
-  return isImplicitGlobalDeclarationVisibleFromParentContext(
-    includeGraph,
-    parentKey,
-    declaration,
-    declarationKey,
-    reachability,
-    visited,
-  );
+    return false;
+  });
 }
 
 function hasEarlierReachableImplicitGlobalInclude(
