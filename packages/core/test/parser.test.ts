@@ -1644,6 +1644,47 @@ document.querySelectorAll(".customer-row").forEach((row) => row.classList.add("i
     expect(docs.get("css")?.text).toContain("*{color: red; display: block}");
   });
 
+  it("keeps inline style attributes after completion-style range rescans", () => {
+    const settings = { incremental: { mode: "full" as const } };
+    const uri = "file:///site/range-rescan-style-completion.asp";
+    let source = `<div style=""></div>`;
+    let parsed = parseAspDocument(uri, source, settings);
+
+    const styleStart = source.indexOf('style="') + 'style="'.length;
+    const displayText = "display: ;";
+    let updated = updateAspParsedDocument(
+      parsed,
+      [
+        {
+          range: { start: positionAt(source, styleStart), end: positionAt(source, styleStart) },
+          text: displayText,
+        },
+      ],
+      settings,
+    );
+    source = `${source.slice(0, styleStart)}${displayText}${source.slice(styleStart)}`;
+    parsed = updated.parsed;
+
+    const blockOffset = source.indexOf(";");
+    updated = updateAspParsedDocument(
+      parsed,
+      [
+        {
+          range: { start: positionAt(source, blockOffset), end: positionAt(source, blockOffset) },
+          text: "block",
+        },
+      ],
+      settings,
+    );
+    source = `${source.slice(0, blockOffset)}block${source.slice(blockOffset)}`;
+    parsed = updated.parsed;
+
+    const style = parsed.regions.find((region) => region.kind === "style-attribute");
+    expect(style).toBeDefined();
+    expect(source.slice(style?.contentStart, style?.contentEnd)).toBe("display: block;");
+    expect(buildVirtualDocuments(parsed).get("css")?.text).toContain("*{display: block;}");
+  });
+
   it("extracts inline style attributes from incomplete open tags", () => {
     const source = `<div class="card" style="color: re`;
     const parsed = parseAspDocument("file:///site/incomplete-style.asp", source);

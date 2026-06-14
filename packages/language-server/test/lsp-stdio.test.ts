@@ -933,6 +933,96 @@ Server.HTMLEe▮
       }
     });
 
+    it("keeps CSS completions and colors after style attribute completion edits", async () => {
+      const server = new RpcServer();
+      try {
+        await server.start();
+        await server.request("initialize", {
+          processId: process.pid,
+          rootUri: "file:///tmp",
+          capabilities: {},
+        });
+        const uri = "file:///tmp/css-style-attribute-completion-chain.asp";
+        const marked = markedDocument('<div style="color: #ff0000; ▮"></div>');
+        let source = marked.text;
+        server.notify("textDocument/didOpen", {
+          textDocument: {
+            uri,
+            languageId: "classic-asp",
+            version: 1,
+            text: source,
+          },
+        });
+        await server.waitForNotification("textDocument/publishDiagnostics");
+
+        const propertyCompletions = await server.request("textDocument/completion", {
+          textDocument: { uri },
+          position: marked.position,
+          context: { triggerKind: 1 },
+        });
+        const displayItem = completionItems(propertyCompletions).find(
+          (item) => item.label === "display",
+        );
+        const displayRange = completionEditRange(displayItem);
+        const displaySnippet = completionEditNewText(displayItem);
+        if (!displayRange || !displaySnippet) {
+          throw new Error("Missing display completion edit.");
+        }
+        const displayTabstop = displaySnippet.indexOf("$0");
+        expect(displayTabstop).toBeGreaterThanOrEqual(0);
+        const displayText = displaySnippet.replace("$0", "");
+        const displayStart = offsetAt(source, displayRange.start);
+        source = applyTextEdit(source, { range: displayRange, newText: displayText });
+        server.notify("textDocument/didChange", {
+          textDocument: { uri, version: 2 },
+          contentChanges: [{ range: displayRange, text: displayText }],
+        });
+
+        const valuePosition = positionAt(source, displayStart + displayTabstop);
+        const valueCompletions = await server.request("textDocument/completion", {
+          textDocument: { uri },
+          position: valuePosition,
+          context: {
+            triggerKind: completionTriggerKindTriggerCharacter,
+            triggerCharacter: " ",
+          },
+        });
+        const blockItem = completionItems(valueCompletions).find((item) => item.label === "block");
+        const blockRange = completionEditRange(blockItem);
+        const blockText = completionEditNewText(blockItem);
+        if (!blockRange || !blockText) {
+          throw new Error("Missing block completion edit.");
+        }
+        source = applyTextEdit(source, { range: blockRange, newText: blockText });
+        server.notify("textDocument/didChange", {
+          textDocument: { uri, version: 3 },
+          contentChanges: [{ range: blockRange, text: blockText }],
+        });
+
+        const nextPropertyCompletions = await server.request("textDocument/completion", {
+          textDocument: { uri },
+          position: positionAt(source, source.indexOf(";", source.indexOf("block")) + 1),
+          context: {
+            triggerKind: completionTriggerKindTriggerCharacter,
+            triggerCharacter: ";",
+          },
+        });
+        expect(completionLabels(nextPropertyCompletions)).toContain("display");
+
+        const colors = (await server.request("textDocument/documentColor", {
+          textDocument: { uri },
+        })) as Array<{ range: { start: { line: number; character: number } }; color: unknown }>;
+        expect(colors.map((color) => color.range.start)).toEqual([
+          positionAt(source, source.indexOf("#ff0000")),
+        ]);
+
+        await server.request("shutdown", null);
+        server.notify("exit", undefined);
+      } finally {
+        server.stop();
+      }
+    });
+
     it("returns VBScript completions after unsaved typed ASP region insertion", async () => {
       const server = new RpcServer();
       try {

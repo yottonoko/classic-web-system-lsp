@@ -691,7 +691,56 @@ function expandDamageSpan(parsed: AspParsedDocument, initial: DamageSpan): Damag
       end: Math.max(damage.end, span.end),
     };
   }
+  return expandStyleAttributeDamageSpan(parsed, damage);
+}
+
+function expandStyleAttributeDamageSpan(
+  parsed: AspParsedDocument,
+  initial: DamageSpan,
+): DamageSpan {
+  let damage = { ...initial };
+  let changed = true;
+  while (changed) {
+    changed = false;
+    for (const region of parsed.regions) {
+      if (region.kind !== "style-attribute" || !damageTouchesRange(damage, region)) {
+        continue;
+      }
+      const expanded = styleAttributeTagDamageSpan(parsed, region);
+      const next = {
+        start: Math.min(damage.start, expanded.start),
+        end: Math.max(damage.end, expanded.end),
+      };
+      if (next.start !== damage.start || next.end !== damage.end) {
+        damage = next;
+        changed = true;
+      }
+    }
+  }
   return damage;
+}
+
+function damageTouchesRange(damage: DamageSpan, range: { start: number; end: number }): boolean {
+  return (
+    rangeOverlapsOrTouches(damage.start, damage.end, range.start, range.end) ||
+    rangeOverlapsOrTouches(range.start, range.end, damage.start, damage.end)
+  );
+}
+
+function styleAttributeTagDamageSpan(parsed: AspParsedDocument, style: AspRegion): DamageSpan {
+  const span = { start: style.start, end: style.end };
+  for (const region of parsed.regions) {
+    if (region.language !== "html") {
+      continue;
+    }
+    if (region.end === style.start) {
+      span.start = Math.min(span.start, region.start);
+    }
+    if (region.start === style.end) {
+      span.end = Math.max(span.end, region.end);
+    }
+  }
+  return span;
 }
 
 function mergeDamageSpanComponents(spans: DamageSpan[]): DamageSpan[] {
