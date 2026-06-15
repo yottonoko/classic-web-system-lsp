@@ -156,7 +156,6 @@
   "command.showFolderGraph.title": "Classic ASP: Show Folder Graph",
   "command.showWorkspaceGraph.title": "Classic ASP: Show Workspace Graph",
   "command.showWorkspaceGlobFiles.title": "Classic ASP: Show Project Glob Files",
-  "command.openAnalysisExcelExport.title": "Classic ASP: Plan Excel Analysis Export",
   "command.exportCurrentFileAnalysisExcel.title": "Classic ASP: Export Current File Analysis to Excel",
   "command.showCurrentFileFlowchart.title": "Classic ASP: Show Current File Flowchart",
   "command.exportCurrentFileFlowchart.title": "Classic ASP: Export Current File Flowchart as Mermaid",

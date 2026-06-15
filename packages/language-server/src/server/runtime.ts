@@ -319,6 +319,7 @@ import {
   exportAnalysisExcelServerCommand,
   graphUpdatedNotificationMethod,
   languageServerVersion,
+  previewWorkspaceFileRelationsServerCommand,
   previewWorkspaceFilesServerCommand,
   reindexWorkspaceCommand,
   reindexWorkspaceServerCommand,
@@ -1151,6 +1152,16 @@ interface WorkspaceFilePreviewGlobStat {
   files: number;
 }
 
+interface WorkspaceFileRelationPreviewPayload {
+  selectedUri: string;
+  ancestors: string[];
+  descendants: string[];
+  relatives: string[];
+  truncated?: {
+    reason: string;
+  };
+}
+
 function aspFileOperationFilter() {
   return {
     scheme: "file",
@@ -1914,6 +1925,7 @@ connection.onInitialize((params: InitializeParams): InitializeResult => {
           buildFlowchartServerCommand,
           exportAnalysisExcelServerCommand,
           previewWorkspaceFilesServerCommand,
+          previewWorkspaceFileRelationsServerCommand,
           cancelProgressTaskServerCommand,
         ],
       },
@@ -2921,6 +2933,9 @@ connection.onExecuteCommand(async (params, token) => {
   }
   if (params.command === previewWorkspaceFilesServerCommand) {
     return previewWorkspaceFilesForCommand(params.arguments?.[0], token);
+  }
+  if (params.command === previewWorkspaceFileRelationsServerCommand) {
+    return previewWorkspaceFileRelationsForCommand(params.arguments?.[0], token);
   }
   if (params.command === cancelProgressTaskServerCommand) {
     const taskId = progressTaskIdArgument(params.arguments?.[0]);
@@ -15369,6 +15384,58 @@ function workspaceScanFilterIncludesFile(filter: WorkspaceScanFilter, fileName: 
   );
 }
 
+async function createWorkspaceFileNameFilterAsync(
+  settings: AspSettings,
+  options: {
+    includeGlobs?: string[];
+    excludeGlobs?: string[];
+    respectGitIgnore?: boolean;
+    selectedUri?: string;
+  } = {},
+): Promise<(fileName: string) => boolean> {
+  const workspaceSettings = (settings.workspace ??
+    normalizeWorkspaceSettings(settings)) as NonNullable<AspSettings["workspace"]>;
+  const includeGlobs =
+    options.includeGlobs ?? workspaceSettings.includes ?? defaultWorkspaceIncludes;
+  const excludeGlobs = options.excludeGlobs ?? workspaceSettings.excludes ?? [];
+  const respectGitIgnore = options.respectGitIgnore ?? workspaceSettings.respectGitIgnore === true;
+  const roots = workspaceIndexRoots()
+    .map(normalizeFileName)
+    .sort((left, right) => right.length - left.length);
+  const filters = await Promise.all(
+    roots.map(async (root) => ({
+      key: graphFileKey(root),
+      filter: await createWorkspaceScanFilterWithPatterns(
+        root,
+        includeGlobs,
+        excludeGlobs,
+        respectGitIgnore,
+      ),
+    })),
+  );
+  const selectedKey = workspaceFileKeyFromUriText(options.selectedUri);
+  return (fileName) => {
+    const normalized = normalizeFileName(fileName);
+    const fileKey = graphFileKey(normalized);
+    if (selectedKey && fileKey === selectedKey) {
+      return true;
+    }
+    const root = filters.find((item) => fileIdentityKeyIsWithinOrEqual(fileKey, item.key));
+    return root ? workspaceScanFilterIncludesFile(root.filter, normalized) : false;
+  };
+}
+
+function workspaceFileKeyFromUriText(uri: string | undefined): string | undefined {
+  if (!uri?.startsWith("file://")) {
+    return undefined;
+  }
+  try {
+    return graphFileKeyFromUri(uri);
+  } catch {
+    return undefined;
+  }
+}
+
 function workspaceScanFilterShouldVisitDirectory(
   filter: WorkspaceScanFilter,
   directory: string,
@@ -21088,6 +21155,7 @@ async function exportAnalysisExcelForCommand(
   const fileUris = exportAnalysisExcelFileUris(argument);
   const includeGlobs = exportAnalysisExcelStringArrayArgument(argument, "includeGlobs");
   const excludeGlobs = exportAnalysisExcelStringArrayArgument(argument, "excludeGlobs");
+  const respectGitIgnore = exportAnalysisExcelOptionalBooleanArgument(argument, "respectGitIgnore");
   const includeRelatedIncludeTreesForUnresolved = exportAnalysisExcelBooleanArgument(
     argument,
     "includeRelatedIncludeTreesForUnresolved",
@@ -21106,6 +21174,15 @@ async function exportAnalysisExcelForCommand(
   });
   const cancellation = progressCancellation(task, analysisCancellationFromToken(token));
   try {
+    const fileFilter =
+      fileUris.length > 0
+        ? undefined
+        : await createWorkspaceFileNameFilterAsync(settings, {
+            includeGlobs,
+            excludeGlobs,
+            respectGitIgnore,
+            selectedUri: uri,
+          });
     const outputLimits = {
       maxDocuments: excelSettings.maxDocuments ?? defaultExcelMaxDocuments,
       maxTextLength: excelSettings.maxTextLength ?? defaultExcelMaxTextLength,
@@ -21125,6 +21202,7 @@ async function exportAnalysisExcelForCommand(
               includeRelatedIncludeTreesForUnresolved,
               forceRelatedIncludeTreeAnalysis: includeRelatedIncludeTreesForUnresolved,
               includeAnalysisTypeDetails: !skipTypeInference,
+              fileFilter,
               maxDocuments: outputLimits.maxDocuments,
               maxTextLength: outputLimits.maxTextLength,
               includeTreeMaxDocuments:
@@ -21155,6 +21233,7 @@ async function exportAnalysisExcelForCommand(
         analysisFileCount: fileUris.length > 0 ? fileUris.length : undefined,
         includeGlobs,
         excludeGlobs,
+        respectGitIgnore,
       },
       progress: (event) =>
         task.update({
@@ -21245,6 +21324,17 @@ function exportAnalysisExcelBooleanArgument(
   return (argument as Record<string, unknown>)[key] === true;
 }
 
+function exportAnalysisExcelOptionalBooleanArgument(
+  argument: unknown,
+  key: string,
+): boolean | undefined {
+  if (!argument || typeof argument !== "object" || !(key in argument)) {
+    return undefined;
+  }
+  const value = (argument as Record<string, unknown>)[key];
+  return typeof value === "boolean" ? value : undefined;
+}
+
 function analysisExcelLocale(
   settings: AspSettings,
   configured: AspSettings["locale"],
@@ -21299,6 +21389,295 @@ async function previewWorkspaceFilesForCommand(
   } finally {
     task.end();
   }
+}
+
+async function previewWorkspaceFileRelationsForCommand(
+  argument: unknown,
+  token?: GraphCancellationToken,
+): Promise<WorkspaceFileRelationPreviewPayload> {
+  const selectedUri = previewWorkspaceSelectedUriArgument(argument);
+  if (!selectedUri) {
+    throw new ResponseError(ErrorCodes.InvalidParams, "selectedUri is required.");
+  }
+  const settings = cachedSettings(selectedUri);
+  const workspaceSettings = (settings.workspace ??
+    normalizeWorkspaceSettings(settings)) as NonNullable<AspSettings["workspace"]>;
+  const includeGlobs = previewWorkspaceStringArrayArgument(
+    argument,
+    "includeGlobs",
+    workspaceSettings.includes ?? defaultWorkspaceIncludes,
+    true,
+  );
+  const excludeGlobs = previewWorkspaceStringArrayArgument(
+    argument,
+    "excludeGlobs",
+    workspaceSettings.excludes ?? [],
+    true,
+  );
+  const respectGitIgnore = previewWorkspaceBooleanArgument(
+    argument,
+    "respectGitIgnore",
+    workspaceSettings.respectGitIgnore === true,
+  );
+  const task = beginProgressTask("analyzing", "workspace.previewFiles", {
+    cancellable: true,
+    detail: progressFileLabelFromUri(selectedUri),
+  });
+  const cancellation = progressCancellation(task, analysisCancellationFromToken(token));
+  try {
+    return await previewWorkspaceFileRelationsAsync(
+      selectedUri,
+      settings,
+      includeGlobs,
+      excludeGlobs,
+      respectGitIgnore,
+      cancellation,
+    );
+  } finally {
+    task.end();
+  }
+}
+
+async function previewWorkspaceFileRelationsAsync(
+  selectedUri: string,
+  settings: AspSettings,
+  includeGlobs: string[],
+  excludeGlobs: string[],
+  respectGitIgnore: boolean,
+  cancellation: AnalysisCancellation,
+): Promise<WorkspaceFileRelationPreviewPayload> {
+  const selectedFileName = graphFileNameFromUri(selectedUri);
+  const selectedKey = graphFileKey(selectedFileName);
+  await ensureWorkspaceIndexAsync(settings, tokenFromAnalysisCancellation(cancellation));
+  throwIfGraphCancelled(cancellation);
+  const fileFilter = await createWorkspaceFileNameFilterAsync(settings, {
+    includeGlobs,
+    excludeGlobs,
+    respectGitIgnore,
+    selectedUri,
+  });
+  await ensureWorkspaceIncludeGraphAsync(settings, cancellation);
+  await syncOpenDocumentIncludeGraphDependenciesAsync(settings, cancellation);
+  throwIfGraphCancelled(cancellation);
+  const maxFiles = settings.workspace?.maxIndexFiles ?? defaultMaxIndexFiles;
+  const descendants = workspaceIncludeDescendantDepths(
+    selectedFileName,
+    fileFilter,
+    cancellation,
+    maxFiles,
+  );
+  const ancestors = workspaceIncludeAncestorDepths(
+    selectedFileName,
+    fileFilter,
+    cancellation,
+    maxFiles,
+  );
+  const relatives = workspaceIncludeRelativeDepths(
+    selectedFileName,
+    ancestors.depthByKey,
+    descendants.depthByKey,
+    fileFilter,
+    cancellation,
+    maxFiles,
+  );
+  const truncatedReason =
+    descendants.truncatedReason ?? ancestors.truncatedReason ?? relatives.truncatedReason;
+  const toUris = (items: Map<string, WorkspaceFileRelationDepth>): string[] =>
+    [...items.values()]
+      .filter((item) => item.key !== selectedKey)
+      .sort(
+        (left, right) =>
+          left.depth - right.depth ||
+          normalizeFileName(left.fileName).localeCompare(normalizeFileName(right.fileName)),
+      )
+      .map((item) => pathToFileUri(item.fileName));
+  return {
+    selectedUri,
+    ancestors: toUris(ancestors.depthByKey),
+    descendants: toUris(descendants.depthByKey),
+    relatives: toUris(relatives.depthByKey),
+    truncated: truncatedReason ? { reason: truncatedReason } : undefined,
+  };
+}
+
+async function syncOpenDocumentIncludeGraphDependenciesAsync(
+  settings: AspSettings,
+  cancellation: AnalysisCancellation,
+): Promise<void> {
+  const openDocuments = documents
+    .all()
+    .filter((document) => isClassicAspGraphUri(document.uri))
+    .filter((document) => workspaceRootForFileName(graphFileNameFromUri(document.uri)));
+  await mapWithConcurrency(openDocuments, includeReadConcurrency(settings), async (document) => {
+    throwIfGraphCancelled(cancellation);
+    resetIncludeDependencies(document.uri);
+    const includeRefs = extractAspIncludeRefs(document.getText());
+    for (const include of includeRefs) {
+      throwIfGraphCancelled(cancellation);
+      const resolved = await resolveIncludePathDetailsAsync(
+        document.uri,
+        include.path,
+        include.mode,
+        settings,
+      );
+      if (resolved.exists) {
+        recordIncludeDependency(document.uri, pathToFileUri(resolved.fileName));
+      }
+    }
+  });
+}
+
+interface WorkspaceFileRelationDepth {
+  key: string;
+  fileName: string;
+  depth: number;
+}
+
+function workspaceIncludeDescendantDepths(
+  selectedFileName: string,
+  fileFilter: (fileName: string) => boolean,
+  cancellation: AnalysisCancellation,
+  maxFiles: number,
+): { depthByKey: Map<string, WorkspaceFileRelationDepth>; truncatedReason?: string } {
+  const selectedKey = graphFileKey(selectedFileName);
+  const depthByKey = new Map<string, WorkspaceFileRelationDepth>();
+  const queue: Array<{ fileName: string; depth: number }> = [
+    { fileName: selectedFileName, depth: 0 },
+  ];
+  let truncatedReason: string | undefined;
+  while (queue.length > 0) {
+    throwIfGraphCancelled(cancellation);
+    const current = queue.shift()!;
+    if (current.depth >= 20) {
+      truncatedReason ??= "depth>20";
+      continue;
+    }
+    for (const targetFileName of workspaceIncludeTargetFileNamesForOwner(current.fileName)) {
+      throwIfGraphCancelled(cancellation);
+      const targetKey = graphFileKey(targetFileName);
+      if (targetKey === selectedKey || depthByKey.has(targetKey) || !fileFilter(targetFileName)) {
+        continue;
+      }
+      if (depthByKey.size >= maxFiles) {
+        truncatedReason ??= `files>${maxFiles}`;
+        continue;
+      }
+      const depth = current.depth + 1;
+      depthByKey.set(targetKey, { key: targetKey, fileName: targetFileName, depth });
+      queue.push({ fileName: targetFileName, depth });
+    }
+  }
+  return { depthByKey, truncatedReason };
+}
+
+function workspaceIncludeAncestorDepths(
+  selectedFileName: string,
+  fileFilter: (fileName: string) => boolean,
+  cancellation: AnalysisCancellation,
+  maxFiles: number,
+): { depthByKey: Map<string, WorkspaceFileRelationDepth>; truncatedReason?: string } {
+  const selectedKey = graphFileKey(selectedFileName);
+  const depthByKey = new Map<string, WorkspaceFileRelationDepth>();
+  const queue: Array<{ fileName: string; depth: number }> = [
+    { fileName: selectedFileName, depth: 0 },
+  ];
+  let truncatedReason: string | undefined;
+  while (queue.length > 0) {
+    throwIfGraphCancelled(cancellation);
+    const current = queue.shift()!;
+    if (current.depth >= 20) {
+      truncatedReason ??= "depth>20";
+      continue;
+    }
+    for (const ownerFileName of workspaceIncludeGraph.candidatesForTargets([current.fileName])) {
+      throwIfGraphCancelled(cancellation);
+      const ownerKey = graphFileKey(ownerFileName);
+      if (ownerKey === selectedKey || depthByKey.has(ownerKey) || !fileFilter(ownerFileName)) {
+        continue;
+      }
+      if (depthByKey.size >= maxFiles) {
+        truncatedReason ??= `files>${maxFiles}`;
+        continue;
+      }
+      const depth = current.depth + 1;
+      depthByKey.set(ownerKey, { key: ownerKey, fileName: ownerFileName, depth });
+      queue.push({ fileName: ownerFileName, depth });
+    }
+  }
+  return { depthByKey, truncatedReason };
+}
+
+function workspaceIncludeTargetFileNamesForOwner(ownerFileName: string): string[] {
+  return workspaceIncludeGraph
+    .targetFileNamesForOwner(ownerFileName)
+    .map(
+      (target) =>
+        workspaceIndex.get(target)?.fileName ??
+        workspaceIndex.get(fileIdentityKeyFromFileName(target))?.fileName,
+    )
+    .filter((fileName): fileName is string => fileName !== undefined);
+}
+
+function workspaceIncludeRelativeDepths(
+  selectedFileName: string,
+  ancestorDepthByKey: Map<string, WorkspaceFileRelationDepth>,
+  descendantDepthByKey: Map<string, WorkspaceFileRelationDepth>,
+  fileFilter: (fileName: string) => boolean,
+  cancellation: AnalysisCancellation,
+  maxFiles: number,
+): { depthByKey: Map<string, WorkspaceFileRelationDepth>; truncatedReason?: string } {
+  const selectedKey = graphFileKey(selectedFileName);
+  const depthByKey = new Map<string, WorkspaceFileRelationDepth>();
+  let truncatedReason: string | undefined;
+  for (const ancestor of ancestorDepthByKey.values()) {
+    const queue: Array<{ fileName: string; depth: number }> = [
+      { fileName: ancestor.fileName, depth: 0 },
+    ];
+    const visited = new Set<string>([ancestor.key]);
+    while (queue.length > 0) {
+      throwIfGraphCancelled(cancellation);
+      const current = queue.shift()!;
+      if (current.depth >= ancestor.depth) {
+        continue;
+      }
+      for (const targetFileName of workspaceIncludeTargetFileNamesForOwner(current.fileName)) {
+        throwIfGraphCancelled(cancellation);
+        const targetKey = graphFileKey(targetFileName);
+        if (visited.has(targetKey)) {
+          continue;
+        }
+        visited.add(targetKey);
+        if (!fileFilter(targetFileName)) {
+          continue;
+        }
+        const depth = current.depth + 1;
+        const isSelected = targetKey === selectedKey;
+        const isAncestor = ancestorDepthByKey.has(targetKey);
+        const isDescendant = descendantDepthByKey.has(targetKey);
+        if (!isSelected && !isAncestor && !isDescendant) {
+          if (depthByKey.size >= maxFiles) {
+            truncatedReason ??= `files>${maxFiles}`;
+          } else if (!depthByKey.has(targetKey)) {
+            depthByKey.set(targetKey, { key: targetKey, fileName: targetFileName, depth });
+          }
+        }
+        if (depth < ancestor.depth) {
+          queue.push({ fileName: targetFileName, depth });
+        }
+      }
+    }
+  }
+  return { depthByKey, truncatedReason };
+}
+
+function previewWorkspaceSelectedUriArgument(argument: unknown): string | undefined {
+  if (!argument || typeof argument !== "object" || !("selectedUri" in argument)) {
+    return undefined;
+  }
+  const selectedUri = (argument as { selectedUri?: unknown }).selectedUri;
+  return typeof selectedUri === "string" && selectedUri.startsWith("file://")
+    ? selectedUri
+    : undefined;
 }
 
 function previewWorkspaceStringArrayArgument(
@@ -21817,6 +22196,7 @@ async function collectIncomingIncludeGraphDocumentsAsync(
   cancellation: AnalysisCancellation,
   options: {
     excludedFileKeys?: Set<string>;
+    fileFilter?: (fileName: string) => boolean;
     token?: GraphCancellationToken;
     progress?: AspLspProgressTaskHandle;
   } = {},
@@ -21847,7 +22227,11 @@ async function collectIncomingIncludeGraphDocumentsAsync(
     concurrency,
     async (document): Promise<AspGraphDocument | undefined> => {
       throwIfGraphCancelled(cancellation);
-      if (excludedFileKeys.has(graphFileKeyFromUri(document.uri))) {
+      const fileName = graphFileNameFromUri(document.uri);
+      if (
+        excludedFileKeys.has(graphFileKey(fileName)) ||
+        (options.fileFilter && !options.fileFilter(fileName))
+      ) {
         return undefined;
       }
       const cached = await ensureFreshCachedDocumentAsync(document);
@@ -21879,6 +22263,7 @@ async function collectIncomingIncludeGraphDocumentsAsync(
     targetFileNames,
     opened,
     excludedFileKeys,
+    options.fileFilter,
     settings,
     cancellation,
     options.progress,
@@ -21919,6 +22304,7 @@ async function incomingIncludeIndexedEntriesAsync(
   targetFileNames: Set<string>,
   opened: Set<string>,
   excludedFileKeys: Set<string>,
+  fileFilter: ((fileName: string) => boolean) | undefined,
   settings: AspSettings,
   cancellation: AnalysisCancellation,
   progress?: AspLspProgressTaskHandle,
@@ -21926,7 +22312,8 @@ async function incomingIncludeIndexedEntriesAsync(
   const indexedEntries = [...workspaceIndex.values()].filter(
     (entry) =>
       !opened.has(graphFileKey(entry.fileName)) &&
-      !excludedFileKeys.has(graphFileKey(entry.fileName)),
+      !excludedFileKeys.has(graphFileKey(entry.fileName)) &&
+      (fileFilter === undefined || fileFilter(entry.fileName)),
   );
   if (settings.graph?.useReverseIncludeIndex === false) {
     return indexedEntries;
@@ -22042,6 +22429,7 @@ async function graphPayloadFromDocumentsAsync(
     truncated?: AspGraphPayload["truncated"];
     cancellation?: AnalysisCancellation;
     includeAnalysisTypeDetails?: boolean;
+    fileFilter?: (fileName: string) => boolean;
     outputLimits?: VbProjectContextLimits;
     progress?: AspLspProgressTaskHandle;
     operationCache?: GraphFileIndexOperationCache;
@@ -22064,6 +22452,7 @@ async function graphPayloadFromDocumentSourcesAsync(
     truncated?: AspGraphPayload["truncated"];
     cancellation?: AnalysisCancellation;
     includeAnalysisTypeDetails?: boolean;
+    fileFilter?: (fileName: string) => boolean;
     outputLimits?: VbProjectContextLimits;
     progress?: AspLspProgressTaskHandle;
     operationCache?: GraphFileIndexOperationCache;
@@ -22165,7 +22554,9 @@ async function graphPayloadFromDocumentSourcesAsync(
       canonicalizedReplay?.push(indexed);
       const detail = progressFileLabel(indexed.document.fileName);
       updateGraphProgress("graph.addStructure", detail, [detail]);
-      await addDocumentStructureToAspGraphAsync(state, indexed, settings);
+      await addDocumentStructureToAspGraphAsync(state, indexed, settings, {
+        fileFilter: options.fileFilter,
+      });
       advanceGraphProgress("graph.addStructure", detail);
       throwIfGraphCancelled(cancellation);
       await yieldToEventLoop();
@@ -22531,6 +22922,9 @@ async function addDocumentStructureToAspGraphAsync(
   state: AspGraphBuildState,
   indexed: AspGraphIndexedDocument,
   settings: AspSettings,
+  options: {
+    fileFilter?: (fileName: string) => boolean;
+  } = {},
 ): Promise<void> {
   const { document, graphIndex } = indexed;
   const index = graphIndex.vbSymbolIndex;
@@ -22544,6 +22938,9 @@ async function addDocumentStructureToAspGraphAsync(
       settings,
     );
     const targetFileName = normalizeFileName(resolved.fileName);
+    if (options.fileFilter && !options.fileFilter(targetFileName)) {
+      continue;
+    }
     const targetKey = graphFileKey(targetFileName);
     const targetUri = pathToFileUri(targetFileName);
     pushAspGraphMapItem(state.directIncludesByOwnerKey, documentKey, {

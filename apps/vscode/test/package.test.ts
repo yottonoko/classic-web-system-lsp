@@ -363,7 +363,7 @@ describe("VS Code extension package", () => {
     );
   });
 
-  it("declares the workspace file preview and Excel planner webview", () => {
+  it("declares the workspace file preview webview and selected Excel export", () => {
     const manifest = JSON.parse(fs.readFileSync("package.json", "utf8")) as {
       contributes?: {
         commands?: Array<{ command?: string; title?: string }>;
@@ -374,20 +374,32 @@ describe("VS Code extension package", () => {
     const webviewSource = readWorkspaceFilesWebviewSource();
 
     expect(manifest.contributes?.commands?.map((command) => command.command)).toEqual(
-      expect.arrayContaining(["aspLsp.showWorkspaceGlobFiles", "aspLsp.openAnalysisExcelExport"]),
+      expect.arrayContaining([
+        "aspLsp.showWorkspaceGlobFiles",
+        "aspLsp.exportCurrentFileAnalysisExcel",
+      ]),
+    );
+    expect(manifest.contributes?.commands?.map((command) => command.command)).not.toContain(
+      "aspLsp.openAnalysisExcelExport",
     );
     expect(extensionSource).toContain("previewWorkspaceFilesServerCommand");
+    expect(extensionSource).toContain("previewWorkspaceFileRelationsServerCommand");
     expect(extensionSource).toContain("showWorkspaceGlobFiles(context)");
-    expect(extensionSource).toContain("showAnalysisExcelExport(context)");
+    expect(extensionSource).not.toContain("showAnalysisExcelExport(context)");
     expect(buildScript).toContain("workspace-files.tsx");
     expect(buildScript).toContain("workspace-files.js");
     expect(webviewSource).toContain("__ASP_LSP_WORKSPACE_FILES__");
     expect(webviewSource).toContain('type: "preview"');
-    expect(webviewSource).toContain('type: "exportExcel"');
+    expect(webviewSource).toContain('type: "previewRelations"');
+    expect(webviewSource).toContain('type: "exportSelectedExcel"');
+    expect(webviewSource).not.toContain('type: "exportExcel"');
     expect(webviewSource).toContain("VirtualList");
     expect(webviewSource).toContain("globStats");
     expect(webviewSource).toContain("GlobEditor");
     expect(webviewSource).toContain("glob-count");
+    expect(webviewSource).toContain("relation-descendant");
+    expect(webviewSource).toContain("relation-ancestor");
+    expect(webviewSource).toContain("relation-relative");
     expect(webviewSource).toContain('@import "tailwindcss";');
     expect(webviewSource).toContain('from "../lib/utils"');
     expect(webviewSource).toContain("grid-template-columns: minmax(540px, 1fr)");
@@ -1141,6 +1153,8 @@ describe("VS Code extension package", () => {
     expect(commands).toContain("aspLsp.showCurrentFileGraph");
     expect(commands).toContain("aspLsp.showFolderGraph");
     expect(commands).toContain("aspLsp.showWorkspaceGraph");
+    expect(commands).toContain("aspLsp.showWorkspaceGlobFiles");
+    expect(commands).not.toContain("aspLsp.openAnalysisExcelExport");
     expect(commands).toContain("aspLsp.exportCurrentFileAnalysisExcel");
     expect(commands).not.toContain("aspLsp.exportFolderAnalysisExcel");
     expect(commands).not.toContain("aspLsp.exportWorkspaceAnalysisExcel");
@@ -1208,6 +1222,8 @@ describe("VS Code extension package", () => {
     expect(nls["command.showCurrentFileGraph.title"]).toBeTruthy();
     expect(nls["command.showFolderGraph.title"]).toBeTruthy();
     expect(nls["command.showWorkspaceGraph.title"]).toBeTruthy();
+    expect(nls["command.showWorkspaceGlobFiles.title"]).toBeTruthy();
+    expect(nls["command.openAnalysisExcelExport.title"]).toBeUndefined();
     expect(nls["command.exportCurrentFileAnalysisExcel.title"]).toBeTruthy();
     expect(nls["command.exportFolderAnalysisExcel.title"]).toBeUndefined();
     expect(nls["command.exportWorkspaceAnalysisExcel.title"]).toBeUndefined();
@@ -1216,6 +1232,8 @@ describe("VS Code extension package", () => {
     expect(nlsJa["command.showCurrentFileGraph.title"]).toBeTruthy();
     expect(nlsJa["command.showFolderGraph.title"]).toBeTruthy();
     expect(nlsJa["command.showWorkspaceGraph.title"]).toBeTruthy();
+    expect(nlsJa["command.showWorkspaceGlobFiles.title"]).toBeTruthy();
+    expect(nlsJa["command.openAnalysisExcelExport.title"]).toBeUndefined();
     expect(nlsJa["command.exportCurrentFileAnalysisExcel.title"]).toBeTruthy();
     expect(nlsJa["command.exportFolderAnalysisExcel.title"]).toBeUndefined();
     expect(nlsJa["command.exportWorkspaceAnalysisExcel.title"]).toBeUndefined();

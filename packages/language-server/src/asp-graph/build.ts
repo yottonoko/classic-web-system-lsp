@@ -119,6 +119,7 @@ export interface AspGraphBuildHost {
     cancellation: AnalysisCancellation,
     options?: {
       excludedFileKeys?: Set<string>;
+      fileFilter?: AspGraphDocumentFileFilter;
       token?: GraphCancellationToken;
       progress?: AspGraphProgressTaskHandle;
     },
@@ -132,6 +133,7 @@ export interface AspGraphBuildHost {
       truncated?: AspGraphPayload["truncated"];
       cancellation?: AnalysisCancellation;
       includeAnalysisTypeDetails?: boolean;
+      fileFilter?: AspGraphDocumentFileFilter;
       outputLimits?: VbProjectContextLimits;
       progress?: AspGraphProgressTaskHandle;
       operationCache?: GraphFileIndexOperationCache;
@@ -146,6 +148,7 @@ export interface AspGraphBuildHost {
       truncated?: AspGraphPayload["truncated"];
       cancellation?: AnalysisCancellation;
       includeAnalysisTypeDetails?: boolean;
+      fileFilter?: AspGraphDocumentFileFilter;
       outputLimits?: VbProjectContextLimits;
       progress?: AspGraphProgressTaskHandle;
       operationCache?: GraphFileIndexOperationCache;
@@ -236,14 +239,18 @@ export interface BuildDocumentAspGraphOptions {
   includeRelatedIncludeTreesForUnresolved?: boolean;
   forceRelatedIncludeTreeAnalysis?: boolean;
   includeAnalysisTypeDetails?: boolean;
+  fileFilter?: AspGraphDocumentFileFilter;
   outputLimits?: VbProjectContextLimits;
   includeTreeLimits?: VbProjectContextLimits;
   progress?: AspGraphProgressTaskHandle;
   operationCache?: GraphFileIndexOperationCache;
 }
 
+export type AspGraphDocumentFileFilter = (fileName: string) => boolean;
+
 export interface CollectIncludeTreeGraphDocumentsOptions {
   excludedFileKeys?: Set<string>;
+  fileFilter?: AspGraphDocumentFileFilter;
   initialTextLength?: number;
   limits?: VbProjectContextLimits;
   truncation?: AspGraphDocumentCollectionTruncation;
@@ -257,6 +264,7 @@ export interface CollectRelatedIncludeTreeGraphDocumentsOptions extends CollectI
 
 export interface CollectRelatedIncludeTreeOwnerGraphDocumentsOptions {
   excludedFileKeys?: Set<string>;
+  fileFilter?: AspGraphDocumentFileFilter;
   token?: GraphCancellationToken;
 }
 
@@ -300,6 +308,7 @@ export function createAspGraphBuildService(host: AspGraphBuildHost): AspGraphBui
           graphCommandIncludeRelatedIncludeTreesForUnresolved(argument),
         forceRelatedIncludeTreeAnalysis: graphCommandForceRelatedIncludeTreeAnalysis(argument),
         includeAnalysisTypeDetails: graphCommandIncludeAnalysisTypeDetails(argument),
+        fileFilter: graphCommandFileFilter(argument),
         outputLimits: graphCommandOutputLimits(argument, host),
         includeTreeLimits: graphCommandIncludeTreeLimits(argument, host),
         progress: task,
@@ -352,6 +361,7 @@ export function createAspGraphBuildService(host: AspGraphBuildHost): AspGraphBui
       cancellation,
       {
         limits: includeTreeLimits,
+        fileFilter: options.fileFilter,
         progress: options.progress,
         progressLabel: "graph.collectIncludes",
         truncation: graphDocumentTruncation,
@@ -390,6 +400,7 @@ export function createAspGraphBuildService(host: AspGraphBuildHost): AspGraphBui
             excludedFileKeys: new Set(
               documentsForGraph.map((document) => host.graphFileKey(document.fileName)),
             ),
+            fileFilter: options.fileFilter,
             initialTextLength: graphDocumentsTextLength(documentsForGraph),
             limits: includeTreeLimits,
             progress: options.progress,
@@ -421,6 +432,7 @@ export function createAspGraphBuildService(host: AspGraphBuildHost): AspGraphBui
             excludedFileKeys: new Set(
               documentsForGraph.map((document) => host.graphFileKey(document.fileName)),
             ),
+            fileFilter: options.fileFilter,
             progress: options.progress,
           },
         ),
@@ -439,6 +451,7 @@ export function createAspGraphBuildService(host: AspGraphBuildHost): AspGraphBui
       truncated,
       cancellation,
       includeAnalysisTypeDetails: options.includeAnalysisTypeDetails,
+      fileFilter: options.fileFilter,
       outputLimits: options.outputLimits,
       progress: options.progress,
       operationCache: options.operationCache,
@@ -696,6 +709,9 @@ export function createAspGraphBuildService(host: AspGraphBuildHost): AspGraphBui
       if (visited.has(documentKey) || excludedFileKeys.has(documentKey)) {
         return;
       }
+      if (depth > 0 && options.fileFilter && !options.fileFilter(document.fileName)) {
+        return;
+      }
       visited.add(documentKey);
       documentsForGraph.push(document);
       textLength += document.text.length;
@@ -722,6 +738,7 @@ export function createAspGraphBuildService(host: AspGraphBuildHost): AspGraphBui
         includeRefs,
         settings,
         cancellation,
+        options.fileFilter,
         options.progress,
       );
       for (const include of includeRefs) {
@@ -742,7 +759,12 @@ export function createAspGraphBuildService(host: AspGraphBuildHost): AspGraphBui
         );
         throwIfGraphCancelled(cancellation);
         const includeKey = host.graphFileKey(resolved.fileName);
-        if (!resolved.exists || visited.has(includeKey) || excludedFileKeys.has(includeKey)) {
+        if (
+          !resolved.exists ||
+          visited.has(includeKey) ||
+          excludedFileKeys.has(includeKey) ||
+          (options.fileFilter && !options.fileFilter(resolved.fileName))
+        ) {
           continue;
         }
         if (visited.size + excludedFileKeys.size >= limits.maxDocuments) {
@@ -779,6 +801,7 @@ export function createAspGraphBuildService(host: AspGraphBuildHost): AspGraphBui
     includeRefs: AspInclude[],
     settings: AspSettings,
     cancellation: AnalysisCancellation,
+    fileFilter?: AspGraphDocumentFileFilter,
     progress?: AspGraphProgressTaskHandle,
   ): Promise<void> {
     await host.mapWithConcurrency(
@@ -795,6 +818,9 @@ export function createAspGraphBuildService(host: AspGraphBuildHost): AspGraphBui
           settings,
         );
         if (!resolved.exists || cancellation.isCancellationRequested()) {
+          return;
+        }
+        if (fileFilter && !fileFilter(resolved.fileName)) {
           return;
         }
         await Promise.all([
@@ -841,6 +867,7 @@ export function createAspGraphBuildService(host: AspGraphBuildHost): AspGraphBui
         cancellation,
         {
           excludedFileKeys,
+          fileFilter: options.fileFilter,
           progress: options.progress,
           token: options.token,
         },
@@ -869,6 +896,7 @@ export function createAspGraphBuildService(host: AspGraphBuildHost): AspGraphBui
           cancellation,
           {
             excludedFileKeys,
+            fileFilter: options.fileFilter,
             initialTextLength: textLength,
             limits,
             progress: options.progress,
@@ -929,6 +957,7 @@ export function createAspGraphBuildService(host: AspGraphBuildHost): AspGraphBui
         cancellation,
         {
           excludedFileKeys,
+          fileFilter: options.fileFilter,
           token: options.token,
         },
       );
@@ -1129,6 +1158,14 @@ function graphCommandIncludeAnalysisTypeDetails(argument: unknown): boolean {
     return false;
   }
   return (argument as { includeAnalysisTypeDetails?: unknown }).includeAnalysisTypeDetails === true;
+}
+
+function graphCommandFileFilter(argument: unknown): AspGraphDocumentFileFilter | undefined {
+  if (!argument || typeof argument !== "object" || !("fileFilter" in argument)) {
+    return undefined;
+  }
+  const fileFilter = (argument as { fileFilter?: unknown }).fileFilter;
+  return typeof fileFilter === "function" ? (fileFilter as AspGraphDocumentFileFilter) : undefined;
 }
 
 function graphCommandIncludeTreeLimits(

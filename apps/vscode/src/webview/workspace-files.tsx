@@ -1,4 +1,4 @@
-import React, { useMemo, useState } from "react";
+import React, { useEffect, useMemo, useState } from "react";
 import { createRoot } from "react-dom/client";
 import { VirtualList } from "./virtual-list";
 import styles from "./workspace-files.css?inline";
@@ -8,6 +8,7 @@ import type {
   WorkspaceFilesGlobStat,
   WorkspaceFilesPayload,
   WorkspaceFilesPreviewRequest,
+  WorkspaceFilesRelationPreviewPayload,
 } from "../workspace-files-webview";
 
 declare const acquireVsCodeApi: () => {
@@ -46,6 +47,17 @@ type GlobInputItem = {
 };
 
 type GlobKind = "exclude" | "include";
+type RelationKind = "ancestor" | "descendant" | "relative";
+
+type WorkspaceFileRelations = {
+  selectedUri: string;
+  ancestors: ReadonlySet<string>;
+  descendants: ReadonlySet<string>;
+  relatives: ReadonlySet<string>;
+  truncated?: {
+    reason: string;
+  };
+};
 
 type Locale = "en" | "ja";
 type TextKey =
@@ -68,8 +80,6 @@ type TextKey =
   | "includeGlobs"
   | "lastModified"
   | "lastScanned"
-  | "mode.excel"
-  | "mode.view"
   | "name"
   | "noSelection"
   | "none"
@@ -78,9 +88,11 @@ type TextKey =
   | "projectRoot"
   | "relativePath"
   | "respectGitIgnore"
+  | "relationsTruncated"
   | "search"
   | "selectedFile"
   | "size"
+  | "title"
   | "totalSize"
   | "truncated"
   | "type"
@@ -111,8 +123,6 @@ const messages: Record<Locale, Record<TextKey, string>> = {
     includeGlobs: "Include globs",
     lastModified: "Modified",
     lastScanned: "Last scanned",
-    "mode.excel": "Analysis files",
-    "mode.view": "Project glob files",
     name: "Name",
     noSelection: "Select a file to inspect it.",
     none: "None",
@@ -121,9 +131,11 @@ const messages: Record<Locale, Record<TextKey, string>> = {
     projectRoot: "Project root",
     relativePath: "Relative path",
     respectGitIgnore: "Respect .gitignore",
+    relationsTruncated: "Relation preview truncated: {reason}",
     search: "Search files",
     selectedFile: "Selected file",
     size: "Size",
+    title: "Analysis files",
     totalSize: "Total size",
     truncated: "Truncated: {reason}",
     type: "Type",
@@ -149,8 +161,6 @@ const messages: Record<Locale, Record<TextKey, string>> = {
     includeGlobs: "Include globs",
     lastModified: "Modified",
     lastScanned: "Last scanned",
-    "mode.excel": "Analysis Files",
-    "mode.view": "Project Glob Files",
     name: "Name",
     noSelection: "file を選ぶと詳細を表示します。",
     none: "None",
@@ -159,9 +169,11 @@ const messages: Record<Locale, Record<TextKey, string>> = {
     projectRoot: "Project Root",
     relativePath: "Relative Path",
     respectGitIgnore: ".gitignore を尊重",
+    relationsTruncated: "関係 preview 切り詰め: {reason}",
     search: "Search files...",
     selectedFile: "Selected File",
     size: "Size",
+    title: "Analysis Files",
     totalSize: "Total Size",
     truncated: "切り詰め: {reason}",
     type: "Type",
@@ -182,19 +194,21 @@ function App(): React.ReactElement {
   const [search, setSearch] = useState("");
   const [collapsedTreeIds, setCollapsedTreeIds] = useState<ReadonlySet<string>>(() => new Set());
   const [selectedUri, setSelectedUri] = useState<string | undefined>();
+  const [relations, setRelations] = useState<WorkspaceFileRelations | undefined>();
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | undefined>();
   const allFiles = useMemo(() => payload.roots.flatMap((root) => root.files), [payload]);
-  const rows = useMemo(() => visibleTreeRows(treeRows(payload), collapsedTreeIds), [
-    payload,
-    collapsedTreeIds,
-  ]);
+  const rows = useMemo(
+    () => visibleTreeRows(treeRows(payload), collapsedTreeIds),
+    [payload, collapsedTreeIds],
+  );
   const summary = useMemo(() => summarizePayload(payload), [payload]);
   const selectedFile =
     allFiles.find((file) => file.uri === selectedUri) ?? allFiles[0] ?? undefined;
-  const fileUris = allFiles.map((file) => file.uri);
-  const includeList = globValues(includeGlobItems);
-  const excludeList = globValues(excludeGlobItems);
+  const includeList = useMemo(() => globValues(includeGlobItems), [includeGlobItems]);
+  const excludeList = useMemo(() => globValues(excludeGlobItems), [excludeGlobItems]);
+  const includeListKey = includeList.join("\0");
+  const excludeListKey = excludeList.join("\0");
   const text = (key: TextKey, params: Record<string, string | number> = {}): string => {
     let message = messages[locale][key] ?? messages.en[key];
     for (const [name, value] of Object.entries(params)) {
@@ -209,6 +223,39 @@ function App(): React.ReactElement {
     excludeGlobs: excludeList,
     respectGitIgnore,
   });
+
+  useEffect(() => {
+    if (!selectedFile) {
+      setRelations(undefined);
+      return;
+    }
+    const requestId = `${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`;
+    const listener = (event: MessageEvent): void => {
+      const message = event.data as {
+        type?: string;
+        requestId?: string;
+        payload?: WorkspaceFilesRelationPreviewPayload;
+      };
+      if (message.type !== "relationsResult" || message.requestId !== requestId) {
+        return;
+      }
+      window.removeEventListener("message", listener);
+      setRelations(message.payload ? relationsFromPayload(message.payload) : undefined);
+    };
+    const timeout = window.setTimeout(() => {
+      window.addEventListener("message", listener);
+      vscode.postMessage({
+        type: "previewRelations",
+        requestId,
+        selectedUri: selectedFile.uri,
+        ...request(),
+      });
+    }, 160);
+    return () => {
+      window.clearTimeout(timeout);
+      window.removeEventListener("message", listener);
+    };
+  }, [excludeListKey, includeListKey, respectGitIgnore, selectedFile]);
   const toggleTreeRow = (id: string): void => {
     setCollapsedTreeIds((ids) => {
       const next = new Set(ids);
@@ -273,6 +320,7 @@ function App(): React.ReactElement {
         setIncludeGlobItems(globItems(message.payload.includeGlobs, "include"));
         setExcludeGlobItems(globItems(message.payload.excludeGlobs, "exclude"));
         setSelectedUri(undefined);
+        setRelations(undefined);
         setCollapsedTreeIds(new Set());
       } else {
         setError(text("previewFailed", { error: message.error ?? "unknown" }));
@@ -282,8 +330,8 @@ function App(): React.ReactElement {
     vscode.postMessage({ type: "preview", requestId, ...request() });
   }
 
-  function exportExcel(): void {
-    if (payload.mode !== "excel" || fileUris.length === 0) {
+  function exportSelectedExcel(): void {
+    if (!selectedFile) {
       return;
     }
     setBusy(true);
@@ -299,7 +347,11 @@ function App(): React.ReactElement {
       }
     };
     window.addEventListener("message", listener);
-    vscode.postMessage({ type: "exportExcel", fileUris, ...request() });
+    vscode.postMessage({
+      type: "exportSelectedExcel",
+      selectedUri: selectedFile.uri,
+      ...request(),
+    });
   }
 
   return (
@@ -310,7 +362,7 @@ function App(): React.ReactElement {
       <style>{styles}</style>
       <header className="workspace-files-toolbar">
         <div className="toolbar-title">
-          <h1>{text(payload.mode === "excel" ? "mode.excel" : "mode.view")}</h1>
+          <h1>{text("title")}</h1>
           <p>
             {text("fileCount", { count: payload.stats.files })} · {text("totalSize")}{" "}
             {formatBytes(payload.stats.totalBytes)}
@@ -327,16 +379,6 @@ function App(): React.ReactElement {
           <button type="button" onClick={preview} disabled={busy}>
             {text("action.refresh")}
           </button>
-          {payload.mode === "excel" ? (
-            <button
-              type="button"
-              className="primary-button"
-              onClick={exportExcel}
-              disabled={busy || fileUris.length === 0}
-            >
-              {text("action.export")}
-            </button>
-          ) : null}
         </div>
       </header>
       <section className="filter-strip" aria-label={text("filters")}>
@@ -377,6 +419,11 @@ function App(): React.ReactElement {
       {payload.truncated ? (
         <div className="notice">{text("truncated", { reason: payload.truncated.reason })}</div>
       ) : null}
+      {relations?.truncated ? (
+        <div className="notice">
+          {text("relationsTruncated", { reason: relations.truncated.reason })}
+        </div>
+      ) : null}
       {error ? <div className="notice danger">{error}</div> : null}
       <main className="workspace-files-main">
         <section className="tree-pane" aria-label={text("files")}>
@@ -409,6 +456,9 @@ function App(): React.ReactElement {
                   row={row}
                   search={search}
                   selected={row.kind === "file" && row.file.uri === selectedFile?.uri}
+                  relation={
+                    row.kind === "file" ? relationKindForUri(row.file.uri, relations) : undefined
+                  }
                   text={text}
                   collapsed={isCollapsibleTreeRow(row) && collapsedTreeIds.has(row.id)}
                   onSelect={() => {
@@ -488,30 +538,56 @@ function App(): React.ReactElement {
               <p className="muted">{text("noSelection")}</p>
             )}
             {selectedFile ? (
-              <button
-                type="button"
-                onClick={() => vscode.postMessage({ type: "openFile", uri: selectedFile.uri })}
-              >
-                {text("open")}
-              </button>
+              <div className="selected-actions">
+                <button
+                  type="button"
+                  onClick={() => vscode.postMessage({ type: "openFile", uri: selectedFile.uri })}
+                >
+                  {text("open")}
+                </button>
+                <button
+                  type="button"
+                  className="primary-button"
+                  onClick={exportSelectedExcel}
+                  disabled={busy}
+                >
+                  {text("action.export")}
+                </button>
+              </div>
             ) : null}
           </section>
-          {payload.mode === "excel" ? (
-            <section className="panel-section export-section">
-              <button
-                type="button"
-                className="primary-button export-button"
-                onClick={exportExcel}
-                disabled={busy || fileUris.length === 0}
-              >
-                {text("action.export")}
-              </button>
-            </section>
-          ) : null}
         </aside>
       </main>
     </div>
   );
+}
+
+function relationsFromPayload(
+  payload: WorkspaceFilesRelationPreviewPayload,
+): WorkspaceFileRelations {
+  return {
+    selectedUri: payload.selectedUri,
+    ancestors: new Set(payload.ancestors),
+    descendants: new Set(payload.descendants),
+    relatives: new Set(payload.relatives),
+    truncated: payload.truncated,
+  };
+}
+
+function relationKindForUri(
+  uri: string,
+  relations: WorkspaceFileRelations | undefined,
+): RelationKind | undefined {
+  if (!relations || relations.selectedUri === uri) {
+    return undefined;
+  }
+  if (relations.ancestors.has(uri)) {
+    return "ancestor";
+  }
+  if (relations.descendants.has(uri)) {
+    return "descendant";
+  }
+  return relations.relatives.has(uri) ? "relative" : undefined;
 }
 
 function MetricCard({
@@ -624,6 +700,7 @@ function GlobChips({
 function TreeRowView({
   collapsed,
   locale,
+  relation,
   row,
   search,
   selected,
@@ -632,13 +709,21 @@ function TreeRowView({
 }: {
   collapsed: boolean;
   locale: Locale;
+  relation?: RelationKind;
   row: TreeRow;
   search: string;
   selected: boolean;
   text(key: TextKey, params?: Record<string, string | number>): string;
   onSelect(): void;
 }): React.ReactElement {
-  const className = cn("tree-row", row.kind, selected && "selected");
+  const className = cn(
+    "tree-row",
+    row.kind,
+    relation === "ancestor" && "relation-ancestor",
+    relation === "descendant" && "relation-descendant",
+    relation === "relative" && "relation-relative",
+    selected && "selected",
+  );
   const collapsible = isCollapsibleTreeRow(row);
   return (
     <button
@@ -885,7 +970,6 @@ function formatNumber(value: number, locale: Locale): string {
 
 function emptyPayload(): WorkspaceFilesPayload {
   return {
-    mode: "view",
     includeGlobs: ["**/*.{asp,asa,inc}"],
     excludeGlobs: [],
     globStats: {

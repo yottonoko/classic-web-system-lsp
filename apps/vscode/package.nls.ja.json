@@ -156,7 +156,6 @@
   "command.showFolderGraph.title": "Classic ASP: Folder graph を表示",
   "command.showWorkspaceGraph.title": "Classic ASP: Workspace graph を表示",
   "command.showWorkspaceGlobFiles.title": "Classic ASP: Project glob file を表示",
-  "command.openAnalysisExcelExport.title": "Classic ASP: Excel analysis export を計画",
   "command.exportCurrentFileAnalysisExcel.title": "Classic ASP: Current file analysis を Excel export",
   "command.showCurrentFileFlowchart.title": "Classic ASP: Current file flowchart を表示",
   "command.exportCurrentFileFlowchart.title": "Classic ASP: Current file flowchart を Mermaid として出力",

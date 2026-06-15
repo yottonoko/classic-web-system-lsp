@@ -127,6 +127,7 @@ describe(
         expect(initializeText).toContain('"aspLsp.server.clearProcessCache"');
         expect(initializeText).toContain('"aspLsp.server.buildGraph"');
         expect(initializeText).toContain('"aspLsp.server.buildFlowchart"');
+        expect(initializeText).toContain('"aspLsp.server.previewWorkspaceFileRelations"');
         expect(initializeText).not.toContain('"aspLsp.reindexWorkspace"');
         expect(initializeText).not.toContain('"aspLsp.clearCache"');
         expect(initializeText).not.toContain('"aspLsp.clearDiskCache"');
@@ -9693,6 +9694,118 @@ Response.Write PageValue
         await folderWorkbook.xlsx.readFile(folderTargetPath);
         expect(folderWorkbook.getWorksheet("概要")).toBeTruthy();
         expect(folderWorkbook.getWorksheet("宣言")).toBeTruthy();
+
+        await server.request("shutdown", null);
+        server.notify("exit", undefined);
+      } finally {
+        server.stop();
+        fs.rmSync(tempDir, { recursive: true, force: true });
+      }
+    });
+
+    it("applies workspace globs to selected document Excel export and relation preview", async () => {
+      const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "asp-lsp-selected-excel-"));
+      const includesDir = path.join(tempDir, "includes");
+      const legacyDir = path.join(tempDir, "legacy");
+      fs.mkdirSync(includesDir, { recursive: true });
+      fs.mkdirSync(legacyDir, { recursive: true });
+      const page = path.join(tempDir, "default.asp");
+      const parent = path.join(tempDir, "parent.asp");
+      const sibling = path.join(tempDir, "sibling.asp");
+      const common = path.join(includesDir, "common.inc");
+      const skipped = path.join(legacyDir, "skip.inc");
+      const targetPath = path.join(tempDir, "selected-analysis.xlsx");
+      const uri = pathToFileURL(page).toString();
+      const source = `<!-- #include file="includes/common.inc" -->
+<!-- #include file="legacy/skip.inc" -->
+<%
+Response.Write CommonValue
+%>`;
+      fs.writeFileSync(page, source, "utf8");
+      fs.writeFileSync(
+        parent,
+        `<!-- #include file="default.asp" -->\n<!-- #include file="sibling.asp" -->`,
+        "utf8",
+      );
+      fs.writeFileSync(sibling, `<%\nConst SiblingValue = 3\n%>`, "utf8");
+      fs.writeFileSync(common, `<%\nConst CommonValue = 1\n%>`, "utf8");
+      fs.writeFileSync(skipped, `<%\nConst SkippedValue = 2\n%>`, "utf8");
+      const includeGlobs = ["**/*.asp", "**/*.inc"];
+      const excludeGlobs = ["legacy/**"];
+      const server = new RpcServer();
+      try {
+        await server.start();
+        await server.request("initialize", {
+          processId: process.pid,
+          rootUri: pathToFileURL(tempDir).toString(),
+          capabilities: {},
+        });
+        server.notify("textDocument/didOpen", {
+          textDocument: {
+            uri,
+            languageId: "classic-asp",
+            version: 1,
+            text: source,
+          },
+        });
+
+        const relations = (await server.request("workspace/executeCommand", {
+          command: "aspLsp.server.previewWorkspaceFileRelations",
+          arguments: [
+            {
+              selectedUri: uri,
+              includeGlobs,
+              excludeGlobs,
+              respectGitIgnore: false,
+            },
+          ],
+        })) as {
+          ancestors?: string[];
+          descendants?: string[];
+          relatives?: string[];
+        };
+
+        expect(relations.ancestors).toContain(pathToFileURL(parent).toString());
+        expect(relations.descendants).toContain(pathToFileURL(common).toString());
+        expect(relations.descendants).not.toContain(pathToFileURL(skipped).toString());
+        expect(relations.relatives).toContain(pathToFileURL(sibling).toString());
+
+        const result = (await server.request("workspace/executeCommand", {
+          command: "aspLsp.server.exportAnalysisExcel",
+          arguments: [
+            {
+              scope: "document",
+              uri,
+              targetPath,
+              includeGlobs,
+              excludeGlobs,
+              respectGitIgnore: false,
+              includeRelatedIncludeTreesForUnresolved: true,
+              skipTypeInference: true,
+              maxDocuments: 64,
+              maxTextLength: 1_000_000,
+              includeTreeMaxDocuments: 64,
+              includeTreeMaxTextLength: 1_000_000,
+            },
+          ],
+        })) as { ok?: boolean; targetPath?: string };
+
+        expect(result).toEqual({ ok: true, targetPath });
+        const workbook = new ExcelJS.Workbook();
+        await workbook.xlsx.readFile(targetPath);
+        const workbookText = workbook.worksheets
+          .flatMap((worksheet) => {
+            const values: string[] = [];
+            worksheet.eachRow((row) => {
+              row.eachCell((cell) => values.push(String(cell.value ?? "")));
+            });
+            return values;
+          })
+          .join("\n");
+        expect(workbookText).toContain("CommonValue");
+        expect(workbookText).toContain("sibling.asp");
+        expect(workbookText).not.toContain("SkippedValue");
+        expect(workbookText).not.toContain("legacy/skip.inc");
 
         await server.request("shutdown", null);
         server.notify("exit", undefined);

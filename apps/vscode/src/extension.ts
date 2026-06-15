@@ -30,6 +30,8 @@ import {
   showWorkspaceFilesWebview,
   type WorkspaceFilesPayload,
   type WorkspaceFilesPreviewRequest,
+  type WorkspaceFilesRelationPreviewPayload,
+  type WorkspaceFilesSelectedExportRequest,
 } from "./workspace-files-webview";
 import { getServerModulePath } from "./server-path";
 
@@ -43,6 +45,7 @@ const buildGraphServerCommand = "aspLsp.server.buildGraph";
 const buildFlowchartServerCommand = "aspLsp.server.buildFlowchart";
 const exportAnalysisExcelServerCommand = "aspLsp.server.exportAnalysisExcel";
 const previewWorkspaceFilesServerCommand = "aspLsp.server.previewWorkspaceFiles";
+const previewWorkspaceFileRelationsServerCommand = "aspLsp.server.previewWorkspaceFileRelations";
 const cancelProgressTaskServerCommand = "aspLsp.server.cancelProgressTask";
 const serverStatusNotificationMethod = "aspLsp/status";
 const graphUpdatedNotificationMethod = "aspLsp/graphUpdated";
@@ -118,7 +121,7 @@ interface TrackedGraphPanel {
   backgroundTaskId?: string;
 }
 
-type WorkspaceFilesServerPayload = Omit<WorkspaceFilesPayload, "locale" | "mode" | "settings">;
+type WorkspaceFilesServerPayload = Omit<WorkspaceFilesPayload, "locale" | "settings">;
 
 let client: LanguageClient | undefined;
 let outputChannel: vscode.OutputChannel | undefined;
@@ -174,9 +177,6 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     ),
     vscode.commands.registerCommand("aspLsp.showWorkspaceGlobFiles", async () =>
       showWorkspaceGlobFiles(context),
-    ),
-    vscode.commands.registerCommand("aspLsp.openAnalysisExcelExport", async () =>
-      showAnalysisExcelExport(context),
     ),
     vscode.commands.registerCommand(
       "aspLsp.exportCurrentFileAnalysisExcel",
@@ -581,10 +581,7 @@ async function showWorkspaceGlobFiles(context: vscode.ExtensionContext): Promise
     void vscode.window.showWarningMessage(extensionLocalizer()("workspaceFiles.serverUnavailable"));
     return;
   }
-  const payload = workspaceFilesPayloadForMode(
-    await requestWorkspaceFilesPreview(undefined, "workspaceFiles.viewTitle"),
-    "view",
-  );
+  const payload = await requestWorkspaceFilesPreview(undefined, "workspaceFiles.viewTitle");
   showWorkspaceFilesWebview(
     context,
     payload,
@@ -593,36 +590,9 @@ async function showWorkspaceGlobFiles(context: vscode.ExtensionContext): Promise
     extensionLocale(),
     webviewThemeSetting(),
     {
-      preview: (request) =>
-        requestWorkspaceFilesPreview(request, "workspaceFiles.viewTitle").then((payload) =>
-          workspaceFilesPayloadForMode(payload, "view"),
-        ),
-    },
-  );
-}
-
-async function showAnalysisExcelExport(context: vscode.ExtensionContext): Promise<void> {
-  if (!client) {
-    void vscode.window.showWarningMessage(extensionLocalizer()("excel.serverUnavailable"));
-    return;
-  }
-  const payload = workspaceFilesPayloadForMode(
-    await requestWorkspaceFilesPreview(undefined, "workspaceFiles.excelTitle"),
-    "excel",
-  );
-  showWorkspaceFilesWebview(
-    context,
-    payload,
-    extensionLocalizer()("workspaceFiles.excelPanelTitle"),
-    graphViewColumn(),
-    extensionLocale(),
-    webviewThemeSetting(),
-    {
-      preview: (request) =>
-        requestWorkspaceFilesPreview(request, "workspaceFiles.excelTitle").then((payload) =>
-          workspaceFilesPayloadForMode(payload, "excel"),
-        ),
-      exportExcel: exportWorkspaceFilesAnalysisExcel,
+      preview: (request) => requestWorkspaceFilesPreview(request, "workspaceFiles.viewTitle"),
+      previewRelations: requestWorkspaceFileRelations,
+      exportSelectedExcel: exportSelectedWorkspaceFileAnalysisExcel,
     },
   );
 }
@@ -661,84 +631,62 @@ async function requestWorkspaceFilesPreview(
   );
 }
 
-async function exportWorkspaceFilesAnalysisExcel(
-  request: WorkspaceFilesPreviewRequest & { fileUris: string[] },
-): Promise<void> {
+function defaultWorkspaceFilesPreviewRequest(): WorkspaceFilesPreviewRequest {
+  const configuration = vscode.workspace.getConfiguration("aspLsp");
+  return {
+    includeGlobs: workspaceGlobConfiguration(configuration.get<unknown>("workspace.includes"), [
+      "**/*.{asp,asa,inc}",
+    ]),
+    excludeGlobs: workspaceGlobConfiguration(configuration.get<unknown>("workspace.excludes"), []),
+    respectGitIgnore: configuration.get<boolean>("workspace.respectGitIgnore", false),
+  };
+}
+
+function workspaceGlobConfiguration(value: unknown, fallback: string[]): string[] {
+  return Array.isArray(value)
+    ? value
+        .filter((item): item is string => typeof item === "string" && item.trim().length > 0)
+        .map((item) => item.trim())
+    : fallback;
+}
+
+async function requestWorkspaceFileRelations(
+  request: WorkspaceFilesPreviewRequest & { selectedUri: string },
+): Promise<WorkspaceFilesRelationPreviewPayload> {
   if (!client) {
-    throw new Error(extensionLocalizer()("excel.serverUnavailable"));
-  }
-  if (request.fileUris.length === 0) {
-    void vscode.window.showWarningMessage(extensionLocalizer()("workspaceFiles.noFiles"));
-    return;
+    throw new Error(extensionLocalizer()("workspaceFiles.serverUnavailable"));
   }
   const activeClient = client;
-  const includeRelatedIncludeTreesForUnresolved = relatedIncludeTreeAnalysisSetting("excel");
-  const skipTypeInference = excelSkipTypeInferenceSetting();
-  const graphLimits = graphAnalysisLimitSettings("excel");
-  const exportStatus = beginExtensionProgressTask("analyzing", "excel.chooseFile", {
-    current: 0,
-    total: 4,
-    detail: extensionLocalizer()("workspaceFiles.fileCount", {
-      count: String(request.fileUris.length),
-    }),
-  });
-  const target = await vscode.window.showSaveDialog({
-    defaultUri: workspaceAnalysisExcelDefaultUri(),
-    filters: { "Excel Workbook": ["xlsx"] },
-    saveLabel: extensionLocalizer()("excel.saveLabel"),
-  });
-  if (!target) {
-    exportStatus.end();
-    return;
-  }
-  exportStatus.update({ current: 2, label: "excel.graph", detail: target.fsPath });
-  try {
-    await vscode.window.withProgress(
-      {
-        location: vscode.ProgressLocation.Notification,
-        title: extensionLocalizer()("excel.writeTitle"),
-        cancellable: false,
-      },
-      async () => {
-        await activeClient.sendRequest("workspace/executeCommand", {
-          command: exportAnalysisExcelServerCommand,
-          arguments: [
-            {
-              scope: "workspace",
-              targetPath: target.fsPath,
-              fileUris: request.fileUris,
-              includeGlobs: request.includeGlobs,
-              excludeGlobs: request.excludeGlobs,
-              includeRelatedIncludeTreesForUnresolved,
-              skipTypeInference,
-              ...graphLimits,
-            },
-          ],
-        });
-        exportStatus.update({ current: 4, label: "excel.file", detail: target.fsPath });
-      },
-    );
-  } finally {
-    exportStatus.end();
-  }
-  void vscode.window.showInformationMessage(
-    extensionLocalizer()("excel.exported", { file: target.fsPath }),
+  return activeClient.sendRequest<WorkspaceFilesRelationPreviewPayload>(
+    "workspace/executeCommand",
+    {
+      command: previewWorkspaceFileRelationsServerCommand,
+      arguments: [
+        {
+          selectedUri: request.selectedUri,
+          includeGlobs: request.includeGlobs,
+          excludeGlobs: request.excludeGlobs,
+          respectGitIgnore: request.respectGitIgnore,
+        },
+      ],
+    },
   );
 }
 
-function workspaceAnalysisExcelDefaultUri(): vscode.Uri | undefined {
-  const folder = vscode.workspace.workspaceFolders?.[0]?.uri;
-  return folder ? vscode.Uri.joinPath(folder, "classic-asp-analysis.xlsx") : undefined;
+async function exportSelectedWorkspaceFileAnalysisExcel(
+  request: WorkspaceFilesSelectedExportRequest,
+): Promise<void> {
+  await exportAnalysisExcel(vscode.Uri.parse(request.selectedUri), {
+    includeGlobs: request.includeGlobs,
+    excludeGlobs: request.excludeGlobs,
+    respectGitIgnore: request.respectGitIgnore,
+  });
 }
 
-function workspaceFilesPayloadForMode(
-  payload: WorkspaceFilesServerPayload,
-  mode: WorkspaceFilesPayload["mode"],
-): WorkspaceFilesPayload {
-  return { ...payload, mode };
-}
-
-async function exportAnalysisExcel(selectedUri?: vscode.Uri): Promise<void> {
+async function exportAnalysisExcel(
+  selectedUri?: vscode.Uri,
+  workspaceFilter?: WorkspaceFilesPreviewRequest,
+): Promise<void> {
   if (!client) {
     void vscode.window.showWarningMessage(extensionLocalizer()("excel.serverUnavailable"));
     return;
@@ -751,6 +699,7 @@ async function exportAnalysisExcel(selectedUri?: vscode.Uri): Promise<void> {
   const includeRelatedIncludeTreesForUnresolved = relatedIncludeTreeAnalysisSetting("excel");
   const skipTypeInference = excelSkipTypeInferenceSetting();
   const graphLimits = graphAnalysisLimitSettings("excel");
+  const workspaceFilterRequest = workspaceFilter ?? defaultWorkspaceFilesPreviewRequest();
   const exportStatus = beginExtensionProgressTask("analyzing", "excel.chooseFile", {
     current: 0,
     total: 4,
@@ -787,6 +736,9 @@ async function exportAnalysisExcel(selectedUri?: vscode.Uri): Promise<void> {
               uri: request.uri,
               activeDocument: request.activeDocument,
               targetPath: target.fsPath,
+              includeGlobs: workspaceFilterRequest.includeGlobs,
+              excludeGlobs: workspaceFilterRequest.excludeGlobs,
+              respectGitIgnore: workspaceFilterRequest.respectGitIgnore,
               includeRelatedIncludeTreesForUnresolved,
               skipTypeInference,
               ...graphLimits,
@@ -2007,11 +1959,7 @@ type ExtensionMessageKey =
   | "excel.exported"
   | "workspaceFiles.serverUnavailable"
   | "workspaceFiles.viewTitle"
-  | "workspaceFiles.excelTitle"
   | "workspaceFiles.viewPanelTitle"
-  | "workspaceFiles.excelPanelTitle"
-  | "workspaceFiles.noFiles"
-  | "workspaceFiles.fileCount"
   | "flowchart.serverUnavailable"
   | "flowchart.noActiveFile"
   | "flowchart.currentTitle"
@@ -2118,11 +2066,7 @@ const extensionMessages: Record<"en" | "ja", Record<ExtensionMessageKey, string>
     "workspaceFiles.serverUnavailable":
       "Start the Classic ASP Language Server before previewing workspace files.",
     "workspaceFiles.viewTitle": "Classic ASP: Project glob files",
-    "workspaceFiles.excelTitle": "Classic ASP: Excel analysis files",
     "workspaceFiles.viewPanelTitle": "Classic ASP Files: Project glob",
-    "workspaceFiles.excelPanelTitle": "Classic ASP Excel: Analysis files",
-    "workspaceFiles.noFiles": "No Classic ASP files are selected for Excel export.",
-    "workspaceFiles.fileCount": "{count} files",
     "flowchart.serverUnavailable":
       "Start the Classic ASP Language Server before building a flowchart.",
     "flowchart.noActiveFile": "Open a Classic ASP file before building the current file flowchart.",
@@ -2229,11 +2173,7 @@ const extensionMessages: Record<"en" | "ja", Record<ExtensionMessageKey, string>
     "workspaceFiles.serverUnavailable":
       "workspace file を preview する前に Classic ASP Language Server を起動してください。",
     "workspaceFiles.viewTitle": "Classic ASP: project glob file",
-    "workspaceFiles.excelTitle": "Classic ASP: Excel 解析 file",
     "workspaceFiles.viewPanelTitle": "Classic ASP Files: project glob",
-    "workspaceFiles.excelPanelTitle": "Classic ASP Excel: 解析 file",
-    "workspaceFiles.noFiles": "Excel export 対象の Classic ASP file がありません。",
-    "workspaceFiles.fileCount": "{count} files",
     "flowchart.serverUnavailable":
       "flowchart を作成する前に Classic ASP Language Server を起動してください。",
     "flowchart.noActiveFile":

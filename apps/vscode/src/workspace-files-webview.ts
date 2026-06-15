@@ -4,10 +4,8 @@ import { displayPathForUriText } from "./path-display";
 export type WorkspaceFilesLocale = "en" | "ja";
 export type WorkspaceFilesTheme = "light" | "dark";
 export type WorkspaceFilesThemeSetting = WorkspaceFilesTheme | "auto";
-export type WorkspaceFilesMode = "view" | "excel";
 
 export interface WorkspaceFilesPayload {
-  mode: WorkspaceFilesMode;
   locale?: WorkspaceFilesLocale;
   includeGlobs: string[];
   excludeGlobs: string[];
@@ -59,14 +57,33 @@ export interface WorkspaceFilesPreviewRequest {
   respectGitIgnore: boolean;
 }
 
+export interface WorkspaceFilesRelationPreviewPayload {
+  selectedUri: string;
+  ancestors: string[];
+  descendants: string[];
+  relatives: string[];
+  truncated?: {
+    reason: string;
+  };
+}
+
+export interface WorkspaceFilesSelectedExportRequest extends WorkspaceFilesPreviewRequest {
+  selectedUri: string;
+}
+
 interface PreviewMessage extends WorkspaceFilesPreviewRequest {
   type: "preview";
   requestId: string;
 }
 
-interface ExportExcelMessage extends WorkspaceFilesPreviewRequest {
-  type: "exportExcel";
-  fileUris: string[];
+interface PreviewRelationsMessage extends WorkspaceFilesPreviewRequest {
+  type: "previewRelations";
+  requestId: string;
+  selectedUri: string;
+}
+
+interface ExportSelectedExcelMessage extends WorkspaceFilesSelectedExportRequest {
+  type: "exportSelectedExcel";
 }
 
 interface OpenFileMessage {
@@ -81,13 +98,24 @@ interface PreviewResultHostMessage {
   error?: string;
 }
 
+interface RelationsResultHostMessage {
+  type: "relationsResult";
+  requestId: string;
+  payload?: WorkspaceFilesRelationPreviewPayload;
+  error?: string;
+}
+
 interface ExportResultHostMessage {
   type: "exportResult";
   ok: boolean;
   error?: string;
 }
 
-type WebviewMessage = PreviewMessage | ExportExcelMessage | OpenFileMessage;
+type WebviewMessage =
+  | PreviewMessage
+  | PreviewRelationsMessage
+  | ExportSelectedExcelMessage
+  | OpenFileMessage;
 
 export function showWorkspaceFilesWebview(
   context: vscode.ExtensionContext,
@@ -98,7 +126,10 @@ export function showWorkspaceFilesWebview(
   theme: WorkspaceFilesThemeSetting,
   handlers: {
     preview(request: WorkspaceFilesPreviewRequest): Promise<WorkspaceFilesPayload>;
-    exportExcel?(request: ExportExcelMessage): Promise<void>;
+    previewRelations?(
+      request: PreviewRelationsMessage,
+    ): Promise<WorkspaceFilesRelationPreviewPayload>;
+    exportSelectedExcel?(request: WorkspaceFilesSelectedExportRequest): Promise<void>;
   },
 ): vscode.WebviewPanel {
   const webviewRoot = vscode.Uri.joinPath(context.extensionUri, "dist", "webview");
@@ -109,9 +140,11 @@ export function showWorkspaceFilesWebview(
   });
   panel.webview.onDidReceiveMessage((message: WebviewMessage) => {
     if (message.type === "preview") {
-      void previewWorkspaceFiles(panel.webview, message, locale, theme, payload.mode, handlers);
-    } else if (message.type === "exportExcel") {
-      void exportWorkspaceFiles(panel.webview, message, handlers);
+      void previewWorkspaceFiles(panel.webview, message, locale, theme, handlers);
+    } else if (message.type === "previewRelations") {
+      void previewWorkspaceFileRelations(panel.webview, message, handlers);
+    } else if (message.type === "exportSelectedExcel") {
+      void exportSelectedWorkspaceFile(panel.webview, message, handlers);
     } else if (message.type === "openFile") {
       void openWorkspaceFile(message.uri);
     }
@@ -131,7 +164,6 @@ async function previewWorkspaceFiles(
   message: PreviewMessage,
   locale: WorkspaceFilesLocale,
   theme: WorkspaceFilesThemeSetting,
-  mode: WorkspaceFilesMode,
   handlers: {
     preview(request: WorkspaceFilesPreviewRequest): Promise<WorkspaceFilesPayload>;
   },
@@ -142,23 +174,44 @@ async function previewWorkspaceFiles(
   };
   try {
     const payload = await handlers.preview(message);
-    response.payload = payloadForWebview({ ...payload, mode }, locale, theme);
+    response.payload = payloadForWebview(payload, locale, theme);
   } catch (error) {
     response.error = error instanceof Error ? error.message : String(error);
   }
   await webview.postMessage(response);
 }
 
-async function exportWorkspaceFiles(
+async function previewWorkspaceFileRelations(
   webview: vscode.Webview,
-  message: ExportExcelMessage,
+  message: PreviewRelationsMessage,
   handlers: {
-    exportExcel?(request: ExportExcelMessage): Promise<void>;
+    previewRelations?(
+      request: PreviewRelationsMessage,
+    ): Promise<WorkspaceFilesRelationPreviewPayload>;
+  },
+): Promise<void> {
+  const response: RelationsResultHostMessage = {
+    type: "relationsResult",
+    requestId: message.requestId,
+  };
+  try {
+    response.payload = await handlers.previewRelations?.(message);
+  } catch (error) {
+    response.error = error instanceof Error ? error.message : String(error);
+  }
+  await webview.postMessage(response);
+}
+
+async function exportSelectedWorkspaceFile(
+  webview: vscode.Webview,
+  message: ExportSelectedExcelMessage,
+  handlers: {
+    exportSelectedExcel?(request: WorkspaceFilesSelectedExportRequest): Promise<void>;
   },
 ): Promise<void> {
   const response: ExportResultHostMessage = { type: "exportResult", ok: true };
   try {
-    await handlers.exportExcel?.(message);
+    await handlers.exportSelectedExcel?.(message);
   } catch (error) {
     response.ok = false;
     response.error = error instanceof Error ? error.message : String(error);

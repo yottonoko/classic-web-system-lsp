@@ -61,6 +61,7 @@ interface AnalysisExcelSettingsSummary {
   analysisFileCount?: number;
   includeGlobs?: string[];
   excludeGlobs?: string[];
+  respectGitIgnore?: boolean;
 }
 
 interface UsageCounts {
@@ -176,6 +177,7 @@ type AnalysisTextKey =
   | "analysisFileCount"
   | "includeGlobs"
   | "excludeGlobs"
+  | "respectGitIgnore"
   | "includeTreeDescendant"
   | "includeTreeAncestor"
   | "includeTreeRelative"
@@ -329,6 +331,7 @@ const text: Record<AspGraphLocale, Record<AnalysisTextKey, string>> = {
     analysisFileCount: "Analysis files",
     includeGlobs: "Temporary include globs",
     excludeGlobs: "Temporary exclude globs",
+    respectGitIgnore: "Respect .gitignore",
     includeTreeDescendant: "Descendant",
     includeTreeAncestor: "Ancestor",
     includeTreeRelative: "Relative",
@@ -483,6 +486,7 @@ const text: Record<AspGraphLocale, Record<AnalysisTextKey, string>> = {
     analysisFileCount: "解析 file 数",
     includeGlobs: "一時 include glob",
     excludeGlobs: "一時 exclude glob",
+    respectGitIgnore: ".gitignore を尊重",
     includeTreeDescendant: "子孫",
     includeTreeAncestor: "祖先",
     includeTreeRelative: "親戚",
@@ -1230,6 +1234,7 @@ function analysisSettingRows(
     [t.analysisFileCount, settings?.analysisFileCount ?? ""],
     [t.includeGlobs, settings?.includeGlobs?.join("\n") ?? ""],
     [t.excludeGlobs, settings?.excludeGlobs?.join("\n") ?? ""],
+    [t.respectGitIgnore, enabledDisplay(settings?.respectGitIgnore === true, locale)],
   ];
 }
 
