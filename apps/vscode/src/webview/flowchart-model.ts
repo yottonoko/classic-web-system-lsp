@@ -5,7 +5,6 @@ import type {
   AspFlowchartNodeLink,
   AspFlowchartPayload,
   AspFlowchartSection,
-  AspFlowchartTarget,
 } from "@asp-lsp/core";
 
 type FlowchartLocale = "en" | "ja";

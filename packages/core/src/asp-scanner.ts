@@ -458,15 +458,6 @@ function findAspOpenInRange(
   return -1;
 }
 
-function embeddedContentStateAt(
-  text: string,
-  start: number,
-  offset: number,
-  embeddedLanguage: "javascript" | "css",
-): EmbeddedContentState {
-  return embeddedContentStateBetween(text, start, offset, embeddedLanguage, { kind: "normal" });
-}
-
 function embeddedContentStateBetween(
   text: string,
   start: number,
