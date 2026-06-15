@@ -9,6 +9,7 @@ export {
   clearProcessCacheCommand,
   clearProcessCacheServerCommand,
   exportAnalysisExcelServerCommand,
+  previewWorkspaceFilesServerCommand,
   reindexWorkspaceCommand,
   reindexWorkspaceServerCommand,
 } from "./constants";

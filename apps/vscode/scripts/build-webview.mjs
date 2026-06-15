@@ -20,6 +20,12 @@ const codeHikeLighterEntry = path.join(
 
 await buildWebview("include-graph.tsx", "AspLspGraphWebview", "include-graph.js", true);
 await buildWebview("flowchart.tsx", "AspLspFlowchartWebview", "flowchart.js", false);
+await buildWebview(
+  "workspace-files.tsx",
+  "AspLspWorkspaceFilesWebview",
+  "workspace-files.js",
+  false,
+);
 
 async function buildWebview(entry, name, fileName, emptyOutDir) {
   await build({

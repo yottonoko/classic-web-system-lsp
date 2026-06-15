@@ -1211,6 +1211,16 @@
         "title": "%command.showWorkspaceGraph.title%"
       },
       {
+        "command": "aspLsp.showWorkspaceGlobFiles",
+        "title": "%command.showWorkspaceGlobFiles.title%",
+        "icon": "$(list-tree)"
+      },
+      {
+        "command": "aspLsp.openAnalysisExcelExport",
+        "title": "%command.openAnalysisExcelExport.title%",
+        "icon": "$(file-media)"
+      },
+      {
         "command": "aspLsp.exportCurrentFileAnalysisExcel",
         "title": "%command.exportCurrentFileAnalysisExcel.title%",
         "icon": "$(file-media)"

@@ -41,6 +41,14 @@ function readFlowchartWebviewSource(): string {
   );
 }
 
+function readWorkspaceFilesWebviewSource(): string {
+  return readWebviewSources(
+    "src/workspace-files-webview.ts",
+    "src/webview/workspace-files.tsx",
+    "src/webview/workspace-files.css",
+  );
+}
+
 describe("VS Code extension package", () => {
   it("keeps the language server as a runtime dependency", () => {
     const manifest = JSON.parse(fs.readFileSync("package.json", "utf8")) as {
@@ -348,6 +356,31 @@ describe("VS Code extension package", () => {
     expect(flowchartSource).not.toContain(
       'vscode.postMessage({ type: "openRange", uri: payload.uri, range: node.range })',
     );
+  });
+
+  it("declares the workspace file preview and Excel planner webview", () => {
+    const manifest = JSON.parse(fs.readFileSync("package.json", "utf8")) as {
+      contributes?: {
+        commands?: Array<{ command?: string; title?: string }>;
+      };
+    };
+    const extensionSource = fs.readFileSync("src/extension.ts", "utf8");
+    const buildScript = fs.readFileSync("scripts/build-webview.mjs", "utf8");
+    const webviewSource = readWorkspaceFilesWebviewSource();
+
+    expect(manifest.contributes?.commands?.map((command) => command.command)).toEqual(
+      expect.arrayContaining(["aspLsp.showWorkspaceGlobFiles", "aspLsp.openAnalysisExcelExport"]),
+    );
+    expect(extensionSource).toContain("previewWorkspaceFilesServerCommand");
+    expect(extensionSource).toContain("showWorkspaceGlobFiles(context)");
+    expect(extensionSource).toContain("showAnalysisExcelExport(context)");
+    expect(buildScript).toContain("workspace-files.tsx");
+    expect(buildScript).toContain("workspace-files.js");
+    expect(webviewSource).toContain("__ASP_LSP_WORKSPACE_FILES__");
+    expect(webviewSource).toContain('type: "preview"');
+    expect(webviewSource).toContain('type: "exportExcel"');
+    expect(webviewSource).toContain("VirtualList");
+    expect(webviewSource).toContain("grid-template-columns: minmax(320px, 1fr)");
   });
 
   it("keeps graph search responsive and keyboard-accessible", () => {

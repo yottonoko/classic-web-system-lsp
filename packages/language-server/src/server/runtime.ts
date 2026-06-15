@@ -319,6 +319,7 @@ import {
   exportAnalysisExcelServerCommand,
   graphUpdatedNotificationMethod,
   languageServerVersion,
+  previewWorkspaceFilesServerCommand,
   reindexWorkspaceCommand,
   reindexWorkspaceServerCommand,
   statusNotificationMethod,
@@ -1110,6 +1111,35 @@ interface WorkspaceScanFilter {
   gitIgnoreRules: WorkspaceGitIgnoreRule[];
 }
 
+interface WorkspaceFilePreviewFile {
+  uri: string;
+  fileName: string;
+  relativePath: string;
+  size: number;
+  mtimeMs: number;
+}
+
+interface WorkspaceFilePreviewRoot {
+  uri: string;
+  fileName: string;
+  name: string;
+  files: WorkspaceFilePreviewFile[];
+}
+
+interface WorkspaceFilePreviewPayload {
+  includeGlobs: string[];
+  excludeGlobs: string[];
+  respectGitIgnore: boolean;
+  roots: WorkspaceFilePreviewRoot[];
+  stats: {
+    files: number;
+    totalBytes: number;
+  };
+  truncated?: {
+    reason: string;
+  };
+}
+
 function aspFileOperationFilter() {
   return {
     scheme: "file",
@@ -1872,6 +1902,7 @@ connection.onInitialize((params: InitializeParams): InitializeResult => {
           buildGraphServerCommand,
           buildFlowchartServerCommand,
           exportAnalysisExcelServerCommand,
+          previewWorkspaceFilesServerCommand,
           cancelProgressTaskServerCommand,
         ],
       },
@@ -2876,6 +2907,9 @@ connection.onExecuteCommand(async (params, token) => {
   }
   if (params.command === exportAnalysisExcelServerCommand) {
     return exportAnalysisExcelForCommand(params.arguments?.[0], token);
+  }
+  if (params.command === previewWorkspaceFilesServerCommand) {
+    return previewWorkspaceFilesForCommand(params.arguments?.[0], token);
   }
   if (params.command === cancelProgressTaskServerCommand) {
     const taskId = progressTaskIdArgument(params.arguments?.[0]);
@@ -15259,17 +15293,26 @@ async function createWorkspaceScanFilter(
   root: string,
   settings: AspSettings,
 ): Promise<WorkspaceScanFilter> {
+  return createWorkspaceScanFilterWithPatterns(
+    root,
+    settings.workspace?.includes ?? defaultWorkspaceIncludes,
+    settings.workspace?.excludes ?? [],
+    settings.workspace?.respectGitIgnore === true,
+  );
+}
+
+async function createWorkspaceScanFilterWithPatterns(
+  root: string,
+  includes: string[],
+  excludes: string[],
+  respectGitIgnore: boolean,
+): Promise<WorkspaceScanFilter> {
   const normalizedRoot = normalizeFileName(root);
   return {
     root: normalizedRoot,
-    includes: compileWorkspaceGlobPatterns(
-      settings.workspace?.includes ?? defaultWorkspaceIncludes,
-    ),
-    excludes: compileWorkspaceGlobPatterns(settings.workspace?.excludes ?? []),
-    gitIgnoreRules:
-      settings.workspace?.respectGitIgnore === true
-        ? await readWorkspaceGitIgnoreRulesAsync(normalizedRoot)
-        : [],
+    includes: compileWorkspaceGlobPatterns(includes),
+    excludes: compileWorkspaceGlobPatterns(excludes),
+    gitIgnoreRules: respectGitIgnore ? await readWorkspaceGitIgnoreRulesAsync(normalizedRoot) : [],
   };
 }
 
@@ -20990,6 +21033,9 @@ async function exportAnalysisExcelForCommand(
   const uri = graphCommandUri(argument);
   const settings = uri ? cachedSettings(uri) : globalSettings;
   const excelSettings = settings.excel ?? normalizeExcelSettings(settings);
+  const fileUris = exportAnalysisExcelFileUris(argument);
+  const includeGlobs = exportAnalysisExcelStringArrayArgument(argument, "includeGlobs");
+  const excludeGlobs = exportAnalysisExcelStringArrayArgument(argument, "excludeGlobs");
   const includeRelatedIncludeTreesForUnresolved = exportAnalysisExcelBooleanArgument(
     argument,
     "includeRelatedIncludeTreesForUnresolved",
@@ -21008,23 +21054,34 @@ async function exportAnalysisExcelForCommand(
   });
   const cancellation = progressCancellation(task, analysisCancellationFromToken(token));
   try {
-    const graph = await buildAspGraphForCommand(
-      {
-        scope,
-        uri,
-        activeDocument: exportAnalysisExcelActiveDocument(argument),
-        includeRelatedIncludeTreesForUnresolved,
-        forceRelatedIncludeTreeAnalysis: includeRelatedIncludeTreesForUnresolved,
-        includeAnalysisTypeDetails: !skipTypeInference,
-        maxDocuments: excelSettings.maxDocuments ?? defaultExcelMaxDocuments,
-        maxTextLength: excelSettings.maxTextLength ?? defaultExcelMaxTextLength,
-        includeTreeMaxDocuments:
-          excelSettings.includeTreeMaxDocuments ?? defaultExcelIncludeTreeMaxDocuments,
-        includeTreeMaxTextLength:
-          excelSettings.includeTreeMaxTextLength ?? defaultExcelIncludeTreeMaxTextLength,
-      },
-      tokenFromAnalysisCancellation(cancellation),
-    );
+    const outputLimits = {
+      maxDocuments: excelSettings.maxDocuments ?? defaultExcelMaxDocuments,
+      maxTextLength: excelSettings.maxTextLength ?? defaultExcelMaxTextLength,
+    };
+    const graph =
+      fileUris.length > 0
+        ? await buildAspGraphFromExcelFileUrisAsync(fileUris, settings, cancellation, {
+            includeAnalysisTypeDetails: !skipTypeInference,
+            outputLimits,
+            progress: task,
+          })
+        : await buildAspGraphForCommand(
+            {
+              scope,
+              uri,
+              activeDocument: exportAnalysisExcelActiveDocument(argument),
+              includeRelatedIncludeTreesForUnresolved,
+              forceRelatedIncludeTreeAnalysis: includeRelatedIncludeTreesForUnresolved,
+              includeAnalysisTypeDetails: !skipTypeInference,
+              maxDocuments: outputLimits.maxDocuments,
+              maxTextLength: outputLimits.maxTextLength,
+              includeTreeMaxDocuments:
+                excelSettings.includeTreeMaxDocuments ?? defaultExcelIncludeTreeMaxDocuments,
+              includeTreeMaxTextLength:
+                excelSettings.includeTreeMaxTextLength ?? defaultExcelIncludeTreeMaxTextLength,
+            },
+            tokenFromAnalysisCancellation(cancellation),
+          );
     const excelLocale = analysisExcelLocale(settings, excelSettings.locale);
     task.update({ label: "excel.sheets", current: 1, total: 3, detail: targetPath });
     throwIfGraphCancelled(cancellation);
@@ -21043,6 +21100,9 @@ async function exportAnalysisExcelForCommand(
           excelSettings.includeTreeMaxDocuments ?? defaultExcelIncludeTreeMaxDocuments,
         includeTreeMaxTextLength:
           excelSettings.includeTreeMaxTextLength ?? defaultExcelIncludeTreeMaxTextLength,
+        analysisFileCount: fileUris.length > 0 ? fileUris.length : undefined,
+        includeGlobs,
+        excludeGlobs,
       },
       progress: (event) =>
         task.update({
@@ -21088,6 +21148,34 @@ function exportAnalysisExcelTargetPath(argument: unknown): string | undefined {
   return typeof targetPath === "string" && targetPath.length > 0 ? targetPath : undefined;
 }
 
+function exportAnalysisExcelFileUris(argument: unknown): string[] {
+  if (!argument || typeof argument !== "object" || !("fileUris" in argument)) {
+    return [];
+  }
+  const fileUris = (argument as { fileUris?: unknown }).fileUris;
+  if (!Array.isArray(fileUris)) {
+    return [];
+  }
+  return fileUris.filter((uri): uri is string => typeof uri === "string" && uri.length > 0);
+}
+
+function exportAnalysisExcelStringArrayArgument(
+  argument: unknown,
+  key: string,
+): string[] | undefined {
+  if (!argument || typeof argument !== "object" || !(key in argument)) {
+    return undefined;
+  }
+  const value = (argument as Record<string, unknown>)[key];
+  if (!Array.isArray(value)) {
+    return undefined;
+  }
+  const items = value.filter(
+    (item): item is string => typeof item === "string" && item.trim().length > 0,
+  );
+  return items.length > 0 ? items.map((item) => item.trim()) : [];
+}
+
 function exportAnalysisExcelActiveDocument(argument: unknown): unknown {
   return argument && typeof argument === "object" && "activeDocument" in argument
     ? (argument as { activeDocument?: unknown }).activeDocument
@@ -21112,6 +21200,367 @@ function analysisExcelLocale(
   const locale =
     configured === "auto" || configured === undefined ? settings.resolvedLocale : configured;
   return locale === "ja" ? "ja" : "en";
+}
+
+async function previewWorkspaceFilesForCommand(
+  argument: unknown,
+  token?: GraphCancellationToken,
+): Promise<WorkspaceFilePreviewPayload> {
+  const workspaceSettings = (globalSettings.workspace ??
+    normalizeWorkspaceSettings(globalSettings)) as NonNullable<AspSettings["workspace"]>;
+  const includeGlobs = previewWorkspaceStringArrayArgument(
+    argument,
+    "includeGlobs",
+    workspaceSettings.includes ?? defaultWorkspaceIncludes,
+    true,
+  );
+  const excludeGlobs = previewWorkspaceStringArrayArgument(
+    argument,
+    "excludeGlobs",
+    workspaceSettings.excludes ?? [],
+    true,
+  );
+  const respectGitIgnore = previewWorkspaceBooleanArgument(
+    argument,
+    "respectGitIgnore",
+    workspaceSettings.respectGitIgnore === true,
+  );
+  const maxFiles = previewWorkspacePositiveIntegerArgument(
+    argument,
+    "maxFiles",
+    workspaceSettings.maxIndexFiles ?? defaultMaxIndexFiles,
+  );
+  const task = beginProgressTask("loading", "workspace.previewFiles", {
+    cancellable: true,
+  });
+  const cancellation = progressCancellation(task, analysisCancellationFromToken(token));
+  try {
+    return await previewWorkspaceFilesAsync(
+      globalSettings,
+      includeGlobs,
+      excludeGlobs,
+      respectGitIgnore,
+      maxFiles,
+      cancellation,
+      task,
+    );
+  } finally {
+    task.end();
+  }
+}
+
+function previewWorkspaceStringArrayArgument(
+  argument: unknown,
+  key: string,
+  fallback: string[],
+  allowEmpty = false,
+): string[] {
+  if (!argument || typeof argument !== "object" || !(key in argument)) {
+    return [...fallback];
+  }
+  const value = (argument as Record<string, unknown>)[key];
+  if (!Array.isArray(value)) {
+    return [...fallback];
+  }
+  const items = value
+    .filter((item): item is string => typeof item === "string" && item.trim().length > 0)
+    .map((item) => item.trim());
+  return items.length > 0 || allowEmpty ? items : [...fallback];
+}
+
+function previewWorkspaceBooleanArgument(
+  argument: unknown,
+  key: string,
+  fallback: boolean,
+): boolean {
+  if (!argument || typeof argument !== "object" || !(key in argument)) {
+    return fallback;
+  }
+  return (argument as Record<string, unknown>)[key] === true;
+}
+
+function previewWorkspacePositiveIntegerArgument(
+  argument: unknown,
+  key: string,
+  fallback: number,
+): number {
+  if (!argument || typeof argument !== "object" || !(key in argument)) {
+    return fallback;
+  }
+  const value = (argument as Record<string, unknown>)[key];
+  return typeof value === "number" && Number.isFinite(value) && value > 0
+    ? Math.floor(value)
+    : fallback;
+}
+
+async function previewWorkspaceFilesAsync(
+  settings: AspSettings,
+  includeGlobs: string[],
+  excludeGlobs: string[],
+  respectGitIgnore: boolean,
+  maxFiles: number,
+  cancellation: AnalysisCancellation,
+  progress?: AspLspProgressTaskHandle,
+): Promise<WorkspaceFilePreviewPayload> {
+  const roots = workspaceIndexRoots().sort((left, right) =>
+    normalizeFileName(left).localeCompare(normalizeFileName(right)),
+  );
+  const previewRoots: WorkspaceFilePreviewRoot[] = [];
+  let files = 0;
+  let totalBytes = 0;
+  let truncated = false;
+  for (const root of roots) {
+    throwIfGraphCancelled(cancellation);
+    const normalizedRoot = normalizeFileName(root);
+    progress?.update({
+      label: "workspace.previewFiles",
+      current: files,
+      total: maxFiles,
+      detail: progressFileLabel(normalizedRoot),
+    });
+    const filter = await createWorkspaceScanFilterWithPatterns(
+      normalizedRoot,
+      includeGlobs,
+      excludeGlobs,
+      respectGitIgnore,
+    );
+    const rootFiles = await previewWorkspaceRootFilesAsync(filter, settings, {
+      maxFiles,
+      get files() {
+        return files;
+      },
+      addFile(file): void {
+        files += 1;
+        totalBytes += file.size;
+      },
+      cancellation,
+      progress,
+    });
+    if (rootFiles.truncated) {
+      truncated = true;
+    }
+    previewRoots.push({
+      uri: pathToFileUri(normalizedRoot),
+      fileName: normalizedRoot,
+      name: path.basename(normalizedRoot) || normalizedRoot,
+      files: rootFiles.files,
+    });
+  }
+  return {
+    includeGlobs,
+    excludeGlobs,
+    respectGitIgnore,
+    roots: previewRoots,
+    stats: {
+      files,
+      totalBytes,
+    },
+    truncated: truncated ? { reason: `files>${maxFiles}` } : undefined,
+  };
+}
+
+async function previewWorkspaceRootFilesAsync(
+  filter: WorkspaceScanFilter,
+  settings: AspSettings,
+  state: {
+    maxFiles: number;
+    readonly files: number;
+    addFile(file: WorkspaceFilePreviewFile): void;
+    cancellation: AnalysisCancellation;
+    progress?: AspLspProgressTaskHandle;
+  },
+): Promise<{ files: WorkspaceFilePreviewFile[]; truncated: boolean }> {
+  const stat = await fsGateway.statAsync(filter.root);
+  if (!stat?.isDirectory()) {
+    return { files: [], truncated: false };
+  }
+  const concurrency = includeReadConcurrency(settings);
+  const directories = [filter.root];
+  const files: WorkspaceFilePreviewFile[] = [];
+  let truncated = false;
+  while (directories.length > 0) {
+    throwIfGraphCancelled(state.cancellation);
+    if (state.files >= state.maxFiles) {
+      truncated = true;
+      break;
+    }
+    const batch = directories.splice(0, concurrency);
+    const batches = await mapWithConcurrency(batch, concurrency, async (directory) => {
+      const listing = await fsGateway.readdirAsync(directory);
+      const childDirectories: string[] = [];
+      const childFiles: string[] = [];
+      for (const entry of [...(listing?.entries ?? [])].sort((left, right) =>
+        left.name.localeCompare(right.name),
+      )) {
+        throwIfGraphCancelled(state.cancellation);
+        const fullPath = path.join(directory, entry.name);
+        if (entry.isDirectory()) {
+          if (workspaceScanFilterShouldVisitDirectory(filter, fullPath)) {
+            childDirectories.push(fullPath);
+          }
+        } else if (
+          entry.isFile() &&
+          isAspWorkspaceFile(fullPath) &&
+          workspaceScanFilterIncludesFile(filter, fullPath)
+        ) {
+          childFiles.push(fullPath);
+        }
+      }
+      return { childDirectories, childFiles };
+    });
+    const childFiles: string[] = [];
+    for (const item of batches) {
+      directories.push(...item.childDirectories);
+      childFiles.push(...item.childFiles);
+    }
+    for (const fileName of childFiles.sort((left, right) => left.localeCompare(right))) {
+      throwIfGraphCancelled(state.cancellation);
+      if (state.files >= state.maxFiles) {
+        truncated = true;
+        break;
+      }
+      const fileStat = await fsGateway.statAsync(fileName);
+      if (!fileStat?.isFile()) {
+        continue;
+      }
+      const normalized = normalizeFileName(fileName);
+      const relativePath = workspaceRelativePath(filter.root, normalized);
+      if (!relativePath) {
+        continue;
+      }
+      const file: WorkspaceFilePreviewFile = {
+        uri: pathToFileUri(normalized),
+        fileName: normalized,
+        relativePath,
+        size: fileStat.size,
+        mtimeMs: fileStat.mtimeMs,
+      };
+      files.push(file);
+      state.addFile(file);
+      state.progress?.update({
+        label: "workspace.previewFiles",
+        current: Math.min(state.files, state.maxFiles),
+        total: state.maxFiles,
+        detail: progressFileLabel(normalized),
+      });
+    }
+    await yieldToEventLoop();
+  }
+  return { files, truncated };
+}
+
+async function buildAspGraphFromExcelFileUrisAsync(
+  fileUris: string[],
+  settings: AspSettings,
+  cancellation: AnalysisCancellation,
+  options: {
+    includeAnalysisTypeDetails: boolean;
+    outputLimits: VbProjectContextLimits;
+    progress?: AspLspProgressTaskHandle;
+  },
+): Promise<AspGraphPayload> {
+  const sources = await excelGraphDocumentSourcesFromUrisAsync(
+    fileUris,
+    settings,
+    cancellation,
+    options.progress,
+  );
+  if (sources.length === 0) {
+    throw new ResponseError(ErrorCodes.InvalidParams, "fileUris contains no analyzable files.");
+  }
+  return graphPayloadFromDocumentSourcesAsync("workspace", sources, settings, {
+    cancellation,
+    includeAnalysisTypeDetails: options.includeAnalysisTypeDetails,
+    outputLimits: options.outputLimits,
+    progress: options.progress,
+    operationCache: new Map(),
+  });
+}
+
+async function excelGraphDocumentSourcesFromUrisAsync(
+  fileUris: string[],
+  settings: AspSettings,
+  cancellation: AnalysisCancellation,
+  progress?: AspLspProgressTaskHandle,
+): Promise<AspGraphDocumentSource[]> {
+  const seen = new Set<string>();
+  const sources: AspGraphDocumentSource[] = [];
+  progress?.update({
+    label: "graph.prepareDocuments",
+    current: 0,
+    total: fileUris.length,
+    activeItems: [],
+  });
+  for (const uri of fileUris) {
+    throwIfGraphCancelled(cancellation);
+    const source = await excelGraphDocumentSourceFromUriAsync(uri, settings, cancellation);
+    if (!source) {
+      continue;
+    }
+    const key = graphFileKey(source.fileName);
+    if (seen.has(key)) {
+      continue;
+    }
+    seen.add(key);
+    sources.push(source);
+    progress?.update({
+      label: "graph.prepareDocuments",
+      current: sources.length,
+      total: fileUris.length,
+      detail: progressFileLabel(source.fileName),
+    });
+  }
+  return sources;
+}
+
+async function excelGraphDocumentSourceFromUriAsync(
+  uri: string,
+  settings: AspSettings,
+  cancellation: AnalysisCancellation,
+): Promise<AspGraphDocumentSource | undefined> {
+  if (!uri.startsWith("file://")) {
+    return undefined;
+  }
+  let fileName: string;
+  try {
+    fileName = graphFileNameFromUri(uri);
+  } catch {
+    return undefined;
+  }
+  if (!isAspWorkspaceFile(fileName) || !workspaceRootForFileName(fileName)) {
+    return undefined;
+  }
+  const openDocument = openDocumentForFileName(fileName);
+  if (openDocument) {
+    const cached = await ensureFreshCachedDocumentAsync(openDocument);
+    const graphDocument = await graphDocumentFromCachedAsync(
+      cached,
+      cachedSettings(cached.source.uri),
+    );
+    return graphPayloadDocumentSourceFromDocument(graphDocument);
+  }
+  const stat = await fsGateway.statAsync(fileName);
+  if (!stat?.isFile()) {
+    return undefined;
+  }
+  const canonicalUri = pathToFileUri(fileName);
+  const entry: WorkspaceIndexedDocument = {
+    uri: canonicalUri,
+    fileName,
+    mtimeMs: stat.mtimeMs,
+    size: stat.size,
+  };
+  return {
+    uri: canonicalUri,
+    fileName,
+    textLength: stat.size,
+    load: async () => {
+      throwIfGraphCancelled(cancellation);
+      const cached = await cachedFromIndexedAsync(entry, cachedSettings(canonicalUri));
+      throwIfGraphCancelled(cancellation);
+      return graphDocumentFromCachedAsync(cached, cachedSettings(canonicalUri));
+    },
+  };
 }
 
 function collectDocumentGraphDocumentsAsync(

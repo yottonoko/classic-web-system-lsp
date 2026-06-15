@@ -223,7 +223,7 @@ describe("analysis Excel sheets", () => {
     expect(
       sheets.find((sheet) => sheet.sheet === "チャート元データ")?.autoFilterRef,
     ).toBeUndefined();
-    expect(sheets.find((sheet) => sheet.sheet === "概要")?.autoFilterRef).toBe("A1:B27");
+    expect(sheets.find((sheet) => sheet.sheet === "概要")?.autoFilterRef).toBe("A1:B30");
     expect(sheets.find((sheet) => sheet.sheet === "宣言")?.autoFilterRef).toBe("A1:Q8");
     expect(sheets.find((sheet) => sheet.sheet === "ファイル内使用")?.autoFilterRef).toBe("A1:K5");
     expect(sheets.find((sheet) => sheet.sheet === "外部ファイルからの使用")?.autoFilterRef).toBe(
@@ -872,6 +872,44 @@ describe("analysis Excel sheets", () => {
 
     expect(values).not.toContain("On Error Resume Next");
     expect(values).not.toContain("exceptionHandling");
+  });
+
+  it("summarizes workspace file-list exports across all files", () => {
+    const payload: AspGraphPayload = {
+      ...analysisPayload(),
+      scope: "workspace",
+      rootUri: undefined,
+    };
+    const sheets = createAnalysisExcelSheets(payload, "ja", {
+      generatedAt: new Date("2026-06-10T00:00:00.000Z"),
+      settings: {
+        analysisFileCount: 7,
+        includeGlobs: ["**/*.asp", "**/*.inc"],
+        excludeGlobs: ["legacy/**"],
+      },
+    });
+
+    expect(table(sheets, "概要")).toEqual(
+      expect.arrayContaining([
+        ["解析範囲", "ワークスペース"],
+        ["ルート", "ワークスペース"],
+        ["解析 file 数", 7],
+        ["一時 include glob", "**/*.asp\n**/*.inc"],
+        ["一時 exclude glob", "legacy/**"],
+      ]),
+    );
+    expect(table(sheets, "宣言")).toEqual(
+      expect.arrayContaining([
+        expect.arrayContaining(["includes/util.inc", "SharedValue"]),
+        expect.arrayContaining(["main.asp", "TargetValue"]),
+      ]),
+    );
+    expect(table(sheets, "インクルードツリー")).toEqual(
+      expect.arrayContaining([
+        expect.arrayContaining(["子孫", 1, "main.asp", "includes/util.inc"]),
+        expect.arrayContaining(["子孫", 1, "parent.asp", "main.asp"]),
+      ]),
+    );
   });
 });
 

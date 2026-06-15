@@ -58,6 +58,9 @@ interface AnalysisExcelSettingsSummary {
   maxTextLength?: number;
   includeTreeMaxDocuments?: number;
   includeTreeMaxTextLength?: number;
+  analysisFileCount?: number;
+  includeGlobs?: string[];
+  excludeGlobs?: string[];
 }
 
 interface UsageCounts {
@@ -170,6 +173,9 @@ type AnalysisTextKey =
   | "maxTextLength"
   | "includeTreeMaxDocuments"
   | "includeTreeMaxTextLength"
+  | "analysisFileCount"
+  | "includeGlobs"
+  | "excludeGlobs"
   | "includeTreeDescendant"
   | "includeTreeAncestor"
   | "includeTreeRelative"
@@ -320,6 +326,9 @@ const text: Record<AspGraphLocale, Record<AnalysisTextKey, string>> = {
     maxTextLength: "Excel output text limit",
     includeTreeMaxDocuments: "Excel include tree document limit",
     includeTreeMaxTextLength: "Excel include tree text limit",
+    analysisFileCount: "Analysis files",
+    includeGlobs: "Temporary include globs",
+    excludeGlobs: "Temporary exclude globs",
     includeTreeDescendant: "Descendant",
     includeTreeAncestor: "Ancestor",
     includeTreeRelative: "Relative",
@@ -471,6 +480,9 @@ const text: Record<AspGraphLocale, Record<AnalysisTextKey, string>> = {
     maxTextLength: "Excel 出力 text 上限",
     includeTreeMaxDocuments: "Excel include tree document 上限",
     includeTreeMaxTextLength: "Excel include tree text 上限",
+    analysisFileCount: "解析 file 数",
+    includeGlobs: "一時 include glob",
+    excludeGlobs: "一時 exclude glob",
     includeTreeDescendant: "子孫",
     includeTreeAncestor: "祖先",
     includeTreeRelative: "親戚",
@@ -876,7 +888,7 @@ export async function createAnalysisExcelSheetsAsync(
   await options.yieldControl?.();
 
   publish("excel.analysisContext", "classify usages and declarations");
-  const context = analysisContext(normalizedPayload, options, nodesById, fileNamesByUri);
+  const context = analysisContext(normalizedPayload, locale, options, nodesById, fileNamesByUri);
   current += 1;
   publish("excel.analysisContext", `${context.targetDeclarations.length} declarations`);
   await options.yieldControl?.();
@@ -934,7 +946,7 @@ function createAnalysisExcelBuildContext(
   const generatedAt = options.generatedAt ?? new Date();
   const nodesById = new Map(normalizedPayload.nodes.map((node) => [node.id, node]));
   const fileNamesByUri = fileNamesByUriMap(normalizedPayload.nodes);
-  const context = analysisContext(normalizedPayload, options, nodesById, fileNamesByUri);
+  const context = analysisContext(normalizedPayload, locale, options, nodesById, fileNamesByUri);
   const analysisRows = analysisSummaryRows(locale, context, fileNamesByUri);
   const analysisChartStartRow = analysisRows.length + 3;
   const analysisRowsWithChartSpace = [
@@ -1154,7 +1166,7 @@ function summaryRows(
 ): Cell[][] {
   const t = text[locale];
   const rows: Array<[string, string | number]> = [
-    [t.scope, valueLabel("file", locale)],
+    [t.scope, valueLabel(context.targetUri ? "file" : "workspace", locale)],
     [t.root, context.targetFileName],
     [t.generatedAt, formatGeneratedAt(generatedAt)],
     [t.declarationsCount, context.targetDeclarations.length],
@@ -1215,6 +1227,9 @@ function analysisSettingRows(
     [t.maxTextLength, settings?.maxTextLength ?? ""],
     [t.includeTreeMaxDocuments, settings?.includeTreeMaxDocuments ?? ""],
     [t.includeTreeMaxTextLength, settings?.includeTreeMaxTextLength ?? ""],
+    [t.analysisFileCount, settings?.analysisFileCount ?? ""],
+    [t.includeGlobs, settings?.includeGlobs?.join("\n") ?? ""],
+    [t.excludeGlobs, settings?.excludeGlobs?.join("\n") ?? ""],
   ];
 }
 
@@ -1292,8 +1307,23 @@ function includeTreeRelations(
   targetUri: string | undefined,
   nodesById: Map<string, AspGraphNode>,
 ): IncludeTreeRelation[] {
+  const includeLinks = payload.links.filter((link) => link.kind === "include");
   if (!targetUri) {
-    return [];
+    return includeLinks.flatMap((link) => {
+      const source = nodesById.get(link.source);
+      const target = nodesById.get(link.target);
+      return source && target
+        ? [
+            {
+              link,
+              source,
+              target,
+              direction: "descendant" as const,
+              depth: 1,
+            },
+          ]
+        : [];
+    });
   }
   const targetIds = new Set(
     payload.nodes
@@ -1303,7 +1333,6 @@ function includeTreeRelations(
   if (targetIds.size === 0) {
     return [];
   }
-  const includeLinks = payload.links.filter((link) => link.kind === "include");
   const outgoing = includeLinksByEndpoint(includeLinks, "source");
   const incoming = includeLinksByEndpoint(includeLinks, "target");
   const descendantDepths = includeTreeDepths(targetIds, outgoing);
@@ -2387,29 +2416,41 @@ function usageLinkRows(
 
 function analysisContext(
   payload: AspGraphPayload,
+  locale: AspGraphLocale,
   options: AnalysisExcelOptions,
   nodesById: Map<string, AspGraphNode>,
   fileNamesByUri: Map<string, string>,
 ): AnalysisContext {
-  const targetUri = options.targetUri ?? defaultAnalysisTargetUri(payload);
-  const targetFileName = displayNameForUri(targetUri, fileNamesByUri);
+  const workspaceWide = payload.scope === "workspace" && !options.targetUri;
+  const targetUri = workspaceWide
+    ? undefined
+    : (options.targetUri ?? defaultAnalysisTargetUri(payload));
+  const targetFileName = workspaceWide
+    ? valueLabel("workspace", locale)
+    : displayNameForUri(targetUri, fileNamesByUri);
   const rootDeclarations = sourceDeclarationNodes(payload.nodes)
-    .filter((node) => sameGraphUri(node.uri, targetUri) && isAnalysisDeclaration(node))
+    .filter(
+      (node) => (workspaceWide || sameGraphUri(node.uri, targetUri)) && isAnalysisDeclaration(node),
+    )
     .sort(compareNodesByLocation(fileNamesByUri));
   const rootDeclarationIds = new Set(rootDeclarations.map((node) => node.id));
   const includedFileUris = includedFileUrisForTarget(payload, targetUri, nodesById);
-  const includedDeclarations = sourceDeclarationNodes(payload.nodes).filter(
-    (node) =>
-      node.uri !== undefined &&
-      includedFileUris.has(graphUriIdentity(node.uri)) &&
-      isExternallyVisibleDeclaration(node),
-  );
+  const includedDeclarations = workspaceWide
+    ? []
+    : sourceDeclarationNodes(payload.nodes).filter(
+        (node) =>
+          node.uri !== undefined &&
+          includedFileUris.has(graphUriIdentity(node.uri)) &&
+          isExternallyVisibleDeclaration(node),
+      );
   const includedDeclarationIds = new Set(includedDeclarations.map((node) => node.id));
-  const includedUsageLinks = filteredGraphLinks(
-    payload.links,
-    (link) => isUsageGraphLink(link) && includedDeclarationIds.has(link.target),
-    ({ uri }) => sameGraphUri(uri, targetUri),
-  );
+  const includedUsageLinks = workspaceWide
+    ? []
+    : filteredGraphLinks(
+        payload.links,
+        (link) => isUsageGraphLink(link) && includedDeclarationIds.has(link.target),
+        ({ uri }) => sameGraphUri(uri, targetUri),
+      );
   const targetDeclarations = rootDeclarations;
   const targetDeclarationIds = new Set(targetDeclarations.map((node) => node.id));
   const implicitGlobalDeclarations = targetDeclarations.filter(isImplicitGlobalDeclaration);
@@ -2431,23 +2472,25 @@ function analysisContext(
   const internalUsageLinks = filteredGraphLinks(
     payload.links,
     (link) => isUsageGraphLink(link) && rootDeclarationIds.has(link.target),
-    ({ uri }) => sameGraphUri(uri, targetUri),
+    ({ uri }) => workspaceWide || sameGraphUri(uri, targetUri),
   );
-  const externalUsageLinks = filteredGraphLinks(
-    payload.links,
-    (link) => isUsageGraphLink(link) && rootDeclarationIds.has(link.target),
-    ({ uri }) => !sameGraphUri(uri, targetUri),
-  );
+  const externalUsageLinks = workspaceWide
+    ? []
+    : filteredGraphLinks(
+        payload.links,
+        (link) => isUsageGraphLink(link) && rootDeclarationIds.has(link.target),
+        ({ uri }) => !sameGraphUri(uri, targetUri),
+      );
   const targetUsageLinks = [...internalUsageLinks, ...externalUsageLinks, ...includedUsageLinks];
   const memberUsageLinks = filteredGraphLinks(
     payload.links,
     (link) => isMemberReferenceGraphLink(link, nodesById),
-    ({ uri }) => sameGraphUri(uri, targetUri),
+    ({ uri }) => workspaceWide || sameGraphUri(uri, targetUri),
   );
   const unresolvedLinks = filteredGraphLinks(
     payload.links,
     (link) => isUnresolvedGraphLink(link, nodesById),
-    ({ uri }) => sameGraphUri(uri, targetUri),
+    ({ uri }) => workspaceWide || sameGraphUri(uri, targetUri),
   );
   const targetUsageCounts = usageCountsByTarget(targetUsageLinks);
   const externalUsageCounts = usageCountsByTarget(externalUsageLinks);

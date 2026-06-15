@@ -9,6 +9,7 @@ export const clearProcessCacheServerCommand = "aspLsp.server.clearProcessCache";
 export const buildGraphServerCommand = "aspLsp.server.buildGraph";
 export const buildFlowchartServerCommand = "aspLsp.server.buildFlowchart";
 export const exportAnalysisExcelServerCommand = "aspLsp.server.exportAnalysisExcel";
+export const previewWorkspaceFilesServerCommand = "aspLsp.server.previewWorkspaceFiles";
 export const cancelProgressTaskServerCommand = "aspLsp.server.cancelProgressTask";
 export const statusNotificationMethod = "aspLsp/status";
 export const graphUpdatedNotificationMethod = "aspLsp/graphUpdated";
