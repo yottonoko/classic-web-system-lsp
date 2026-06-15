@@ -372,6 +372,10 @@ describe("VS Code extension package", () => {
     const extensionSource = fs.readFileSync("src/extension.ts", "utf8");
     const buildScript = fs.readFileSync("scripts/build-webview.mjs", "utf8");
     const webviewSource = readWorkspaceFilesWebviewSource();
+    const japanesePackageNls = JSON.parse(fs.readFileSync("package.nls.ja.json", "utf8")) as Record<
+      string,
+      string
+    >;
 
     expect(manifest.contributes?.commands?.map((command) => command.command)).toEqual(
       expect.arrayContaining([
@@ -421,6 +425,21 @@ describe("VS Code extension package", () => {
     expect(webviewSource).toContain("aria-expanded={collapsible ? !collapsed : undefined}");
     expect(webviewSource).not.toContain("treeRows(payload, search)");
     expect(webviewSource).not.toContain("root.files.filter");
+    expect(webviewSource).toContain('title: "解析ファイル"');
+    expect(webviewSource).toContain('projectRoot: "プロジェクトルート"');
+    expect(webviewSource).toContain('selectedFile: "選択中のファイル"');
+    expect(webviewSource).toContain('showUnmatched: "対象外ファイル/フォルダーも表示"');
+    expect(extensionSource).toContain(
+      '"workspaceFiles.viewPanelTitle": "Classic ASP ファイル: プロジェクト glob"',
+    );
+    expect(extensionSource).toContain('"workspaceFiles.serverUnavailable":');
+    expect(extensionSource).toContain("ワークスペースファイルをプレビューする前に");
+    expect(japanesePackageNls["command.showWorkspaceGlobFiles.title"]).toBe(
+      "Classic ASP: プロジェクト glob ファイルを表示",
+    );
+    expect(japanesePackageNls["command.exportCurrentFileAnalysisExcel.title"]).toBe(
+      "Classic ASP: 現在のファイル解析を Excel 出力",
+    );
   });
 
   it("keeps graph search responsive and keyboard-accessible", () => {
@@ -634,10 +653,10 @@ describe("VS Code extension package", () => {
     expect(extensionSourceText).toContain("Resolving include paths");
     expect(extensionSourceText).toContain("Writing Excel rows");
     expect(extensionSourceText).toContain("Excel 作成中");
-    expect(extensionSourceText).toContain("Excel 解析 graph 取得中");
-    expect(extensionSourceText).toContain("Excel row 書き込み中");
-    expect(extensionSourceText).toContain("flowchart 生成中");
-    expect(extensionSourceText).toContain("Classic ASP analysis workbook を作成中");
+    expect(extensionSourceText).toContain("Excel 解析グラフを取得中");
+    expect(extensionSourceText).toContain("Excel 行を書き込み中");
+    expect(extensionSourceText).toContain("フローチャートを生成中");
+    expect(extensionSourceText).toContain("Classic ASP 解析ブックを作成中");
     expect(extensionSourceText).toContain("graphAnalysisLimitSettings");
     const analysisExcelSource = fs.readFileSync(
       "../../packages/language-server/src/analysis-excel/sheets.ts",
