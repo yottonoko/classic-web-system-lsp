@@ -127,7 +127,7 @@ describe(
         expect(initializeText).toContain('"aspLsp.server.clearProcessCache"');
         expect(initializeText).toContain('"aspLsp.server.buildGraph"');
         expect(initializeText).toContain('"aspLsp.server.buildFlowchart"');
-        expect(initializeText).toContain('"aspLsp.server.previewWorkspaceFileRelations"');
+        expect(initializeText).not.toContain('"aspLsp.server.previewWorkspaceFileRelations"');
         expect(initializeText).not.toContain('"aspLsp.reindexWorkspace"');
         expect(initializeText).not.toContain('"aspLsp.clearCache"');
         expect(initializeText).not.toContain('"aspLsp.clearDiskCache"');
@@ -9703,7 +9703,7 @@ Response.Write PageValue
       }
     });
 
-    it("applies workspace globs to selected document Excel export and relation preview", async () => {
+    it("applies workspace globs to selected document Excel export", async () => {
       const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "asp-lsp-selected-excel-"));
       const includesDir = path.join(tempDir, "includes");
       const legacyDir = path.join(tempDir, "legacy");
@@ -9748,27 +9748,6 @@ Response.Write CommonValue
             text: source,
           },
         });
-
-        const relations = (await server.request("workspace/executeCommand", {
-          command: "aspLsp.server.previewWorkspaceFileRelations",
-          arguments: [
-            {
-              selectedUri: uri,
-              includeGlobs,
-              excludeGlobs,
-              respectGitIgnore: false,
-            },
-          ],
-        })) as {
-          ancestors?: string[];
-          descendants?: string[];
-          relatives?: string[];
-        };
-
-        expect(relations.ancestors).toContain(pathToFileURL(parent).toString());
-        expect(relations.descendants).toContain(pathToFileURL(common).toString());
-        expect(relations.descendants).not.toContain(pathToFileURL(skipped).toString());
-        expect(relations.relatives).toContain(pathToFileURL(sibling).toString());
 
         const result = (await server.request("workspace/executeCommand", {
           command: "aspLsp.server.exportAnalysisExcel",

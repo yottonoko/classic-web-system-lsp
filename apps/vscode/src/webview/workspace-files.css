@@ -362,21 +362,6 @@ button:disabled {
   color: var(--vscode-list-activeSelectionForeground, var(--asp-lsp-text-strong));
 }
 
-.tree-row.relation-descendant:not(.selected) {
-  background: color-mix(in srgb, #0891b2 18%, transparent);
-  border-left-color: #22d3ee;
-}
-
-.tree-row.relation-ancestor:not(.selected) {
-  background: color-mix(in srgb, #b45309 18%, transparent);
-  border-left-color: #f59e0b;
-}
-
-.tree-row.relation-relative:not(.selected) {
-  background: color-mix(in srgb, #7c3aed 16%, transparent);
-  border-left-color: #a78bfa;
-}
-
 .tree-name {
   align-items: center;
   display: flex;

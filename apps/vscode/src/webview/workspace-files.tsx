@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useState } from "react";
+import React, { useEffect, useMemo, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
 import { VirtualList } from "./virtual-list";
 import styles from "./workspace-files.css?inline";
@@ -8,7 +8,6 @@ import type {
   WorkspaceFilesGlobStat,
   WorkspaceFilesPayload,
   WorkspaceFilesPreviewRequest,
-  WorkspaceFilesRelationPreviewPayload,
 } from "../workspace-files-webview";
 
 declare const acquireVsCodeApi: () => {
@@ -47,24 +46,11 @@ type GlobInputItem = {
 };
 
 type GlobKind = "exclude" | "include";
-type RelationKind = "ancestor" | "descendant" | "relative";
-
-type WorkspaceFileRelations = {
-  selectedUri: string;
-  ancestors: ReadonlySet<string>;
-  descendants: ReadonlySet<string>;
-  relatives: ReadonlySet<string>;
-  truncated?: {
-    reason: string;
-  };
-};
 
 type Locale = "en" | "ja";
 type TextKey =
   | "action.addGlob"
   | "action.export"
-  | "action.preview"
-  | "action.refresh"
   | "action.removeGlob"
   | "analysisOverview"
   | "currentFilters"
@@ -88,7 +74,6 @@ type TextKey =
   | "projectRoot"
   | "relativePath"
   | "respectGitIgnore"
-  | "relationsTruncated"
   | "search"
   | "selectedFile"
   | "size"
@@ -106,8 +91,6 @@ const messages: Record<Locale, Record<TextKey, string>> = {
   en: {
     "action.addGlob": "Add glob",
     "action.export": "Export Excel",
-    "action.preview": "Preview",
-    "action.refresh": "Refresh",
     "action.removeGlob": "Remove glob",
     analysisOverview: "Analysis overview",
     currentFilters: "Current filters",
@@ -131,7 +114,6 @@ const messages: Record<Locale, Record<TextKey, string>> = {
     projectRoot: "Project root",
     relativePath: "Relative path",
     respectGitIgnore: "Respect .gitignore",
-    relationsTruncated: "Relation preview truncated: {reason}",
     search: "Search files",
     selectedFile: "Selected file",
     size: "Size",
@@ -144,8 +126,6 @@ const messages: Record<Locale, Record<TextKey, string>> = {
   ja: {
     "action.addGlob": "glob 追加",
     "action.export": "Excel export",
-    "action.preview": "Preview",
-    "action.refresh": "更新",
     "action.removeGlob": "glob 削除",
     analysisOverview: "解析 overview",
     currentFilters: "現在の filter",
@@ -169,7 +149,6 @@ const messages: Record<Locale, Record<TextKey, string>> = {
     projectRoot: "Project Root",
     relativePath: "Relative Path",
     respectGitIgnore: ".gitignore を尊重",
-    relationsTruncated: "関係 preview 切り詰め: {reason}",
     search: "Search files...",
     selectedFile: "Selected File",
     size: "Size",
@@ -180,6 +159,30 @@ const messages: Record<Locale, Record<TextKey, string>> = {
     workspace: "Workspace",
   },
 };
+
+function messageText(
+  locale: Locale,
+  key: TextKey,
+  params: Record<string, string | number> = {},
+): string {
+  let message = messages[locale][key] ?? messages.en[key];
+  for (const [name, value] of Object.entries(params)) {
+    message = message.replaceAll(`{${name}}`, String(value));
+  }
+  return message;
+}
+
+function createRequestId(): string {
+  return `${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`;
+}
+
+function previewRequestSignature(request: WorkspaceFilesPreviewRequest): string {
+  return JSON.stringify({
+    includeGlobs: request.includeGlobs,
+    excludeGlobs: request.excludeGlobs,
+    respectGitIgnore: request.respectGitIgnore,
+  });
+}
 
 function App(): React.ReactElement {
   const [payload, setPayload] = useState<WorkspaceFilesPayload>(initialPayload ?? emptyPayload());
@@ -194,9 +197,11 @@ function App(): React.ReactElement {
   const [search, setSearch] = useState("");
   const [collapsedTreeIds, setCollapsedTreeIds] = useState<ReadonlySet<string>>(() => new Set());
   const [selectedUri, setSelectedUri] = useState<string | undefined>();
-  const [relations, setRelations] = useState<WorkspaceFileRelations | undefined>();
-  const [busy, setBusy] = useState(false);
+  const [previewBusy, setPreviewBusy] = useState(false);
+  const [exportBusy, setExportBusy] = useState(false);
   const [error, setError] = useState<string | undefined>();
+  const activePreviewRequestIdRef = useRef<string | undefined>(undefined);
+  const lastPreviewSignatureRef = useRef<string | undefined>(undefined);
   const allFiles = useMemo(() => payload.roots.flatMap((root) => root.files), [payload]);
   const rows = useMemo(
     () => visibleTreeRows(treeRows(payload), collapsedTreeIds),
@@ -207,55 +212,88 @@ function App(): React.ReactElement {
     allFiles.find((file) => file.uri === selectedUri) ?? allFiles[0] ?? undefined;
   const includeList = useMemo(() => globValues(includeGlobItems), [includeGlobItems]);
   const excludeList = useMemo(() => globValues(excludeGlobItems), [excludeGlobItems]);
-  const includeListKey = includeList.join("\0");
-  const excludeListKey = excludeList.join("\0");
-  const text = (key: TextKey, params: Record<string, string | number> = {}): string => {
-    let message = messages[locale][key] ?? messages.en[key];
-    for (const [name, value] of Object.entries(params)) {
-      message = message.replaceAll(`{${name}}`, String(value));
-    }
-    return message;
-  };
+  const previewRequest = useMemo<WorkspaceFilesPreviewRequest>(
+    () => ({
+      includeGlobs: includeList,
+      excludeGlobs: excludeList,
+      respectGitIgnore,
+    }),
+    [excludeList, includeList, respectGitIgnore],
+  );
+  const previewSignature = useMemo(() => previewRequestSignature(previewRequest), [previewRequest]);
+  const busy = previewBusy || exportBusy;
+  const text = (key: TextKey, params: Record<string, string | number> = {}): string =>
+    messageText(locale, key, params);
   const rootLabel =
     payload.roots.map((root) => root.displayPath ?? root.name).join(", ") || text("workspace");
-  const request = (): WorkspaceFilesPreviewRequest => ({
-    includeGlobs: includeList,
-    excludeGlobs: excludeList,
-    respectGitIgnore,
-  });
 
   useEffect(() => {
-    if (!selectedFile) {
-      setRelations(undefined);
+    if (lastPreviewSignatureRef.current === undefined) {
+      lastPreviewSignatureRef.current = previewSignature;
       return;
     }
-    const requestId = `${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`;
-    const listener = (event: MessageEvent): void => {
-      const message = event.data as {
-        type?: string;
-        requestId?: string;
-        payload?: WorkspaceFilesRelationPreviewPayload;
-      };
-      if (message.type !== "relationsResult" || message.requestId !== requestId) {
-        return;
-      }
-      window.removeEventListener("message", listener);
-      setRelations(message.payload ? relationsFromPayload(message.payload) : undefined);
-    };
+    if (previewSignature === lastPreviewSignatureRef.current) {
+      return;
+    }
+    if (activePreviewRequestIdRef.current !== undefined) {
+      activePreviewRequestIdRef.current = undefined;
+      setPreviewBusy(false);
+    }
+    const requestId = createRequestId();
+    let listener: ((event: MessageEvent) => void) | undefined;
     const timeout = window.setTimeout(() => {
+      activePreviewRequestIdRef.current = requestId;
+      setPreviewBusy(true);
+      setError(undefined);
+      listener = (event: MessageEvent): void => {
+        const message = event.data as {
+          type?: string;
+          requestId?: string;
+          payload?: WorkspaceFilesPayload;
+          error?: string;
+        };
+        if (message.type !== "previewResult" || message.requestId !== requestId) {
+          return;
+        }
+        if (listener) {
+          window.removeEventListener("message", listener);
+        }
+        if (activePreviewRequestIdRef.current !== requestId) {
+          return;
+        }
+        activePreviewRequestIdRef.current = undefined;
+        setPreviewBusy(false);
+        if (message.payload) {
+          lastPreviewSignatureRef.current = previewRequestSignature({
+            includeGlobs: message.payload.includeGlobs,
+            excludeGlobs: message.payload.excludeGlobs,
+            respectGitIgnore: message.payload.respectGitIgnore,
+          });
+          setPayload(message.payload);
+          setIncludeGlobItems(globItems(message.payload.includeGlobs, "include"));
+          setExcludeGlobItems(globItems(message.payload.excludeGlobs, "exclude"));
+          setRespectGitIgnore(message.payload.respectGitIgnore);
+          setSelectedUri(undefined);
+          setCollapsedTreeIds(new Set());
+        } else {
+          setError(messageText(locale, "previewFailed", { error: message.error ?? "unknown" }));
+        }
+      };
       window.addEventListener("message", listener);
-      vscode.postMessage({
-        type: "previewRelations",
-        requestId,
-        selectedUri: selectedFile.uri,
-        ...request(),
-      });
-    }, 160);
+      vscode.postMessage({ type: "preview", requestId, ...previewRequest });
+    }, 500);
     return () => {
       window.clearTimeout(timeout);
-      window.removeEventListener("message", listener);
+      if (listener) {
+        window.removeEventListener("message", listener);
+      }
+      if (activePreviewRequestIdRef.current === requestId) {
+        activePreviewRequestIdRef.current = undefined;
+        setPreviewBusy(false);
+      }
     };
-  }, [excludeListKey, includeListKey, respectGitIgnore, selectedFile]);
+  }, [locale, previewRequest, previewSignature]);
+
   const toggleTreeRow = (id: string): void => {
     setCollapsedTreeIds((ids) => {
       const next = new Set(ids);
@@ -299,49 +337,18 @@ function App(): React.ReactElement {
     }
   };
 
-  function preview(): void {
-    const requestId = `${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`;
-    setBusy(true);
-    setError(undefined);
-    const listener = (event: MessageEvent): void => {
-      const message = event.data as {
-        type?: string;
-        requestId?: string;
-        payload?: WorkspaceFilesPayload;
-        error?: string;
-      };
-      if (message.type !== "previewResult" || message.requestId !== requestId) {
-        return;
-      }
-      window.removeEventListener("message", listener);
-      setBusy(false);
-      if (message.payload) {
-        setPayload(message.payload);
-        setIncludeGlobItems(globItems(message.payload.includeGlobs, "include"));
-        setExcludeGlobItems(globItems(message.payload.excludeGlobs, "exclude"));
-        setSelectedUri(undefined);
-        setRelations(undefined);
-        setCollapsedTreeIds(new Set());
-      } else {
-        setError(text("previewFailed", { error: message.error ?? "unknown" }));
-      }
-    };
-    window.addEventListener("message", listener);
-    vscode.postMessage({ type: "preview", requestId, ...request() });
-  }
-
   function exportSelectedExcel(): void {
     if (!selectedFile) {
       return;
     }
-    setBusy(true);
+    setExportBusy(true);
     const listener = (event: MessageEvent): void => {
       const message = event.data as { type?: string; ok?: boolean; error?: string };
       if (message.type !== "exportResult") {
         return;
       }
       window.removeEventListener("message", listener);
-      setBusy(false);
+      setExportBusy(false);
       if (message.ok === false) {
         setError(message.error ?? "Export failed.");
       }
@@ -350,7 +357,7 @@ function App(): React.ReactElement {
     vscode.postMessage({
       type: "exportSelectedExcel",
       selectedUri: selectedFile.uri,
-      ...request(),
+      ...previewRequest,
     });
   }
 
@@ -376,9 +383,6 @@ function App(): React.ReactElement {
             value={search}
             onChange={(event) => setSearch(event.currentTarget.value)}
           />
-          <button type="button" onClick={preview} disabled={busy}>
-            {text("action.refresh")}
-          </button>
         </div>
       </header>
       <section className="filter-strip" aria-label={text("filters")}>
@@ -411,18 +415,10 @@ function App(): React.ReactElement {
             />
             <span>{text("respectGitIgnore")}</span>
           </label>
-          <button type="button" onClick={preview} disabled={busy}>
-            {text("action.preview")}
-          </button>
         </div>
       </section>
       {payload.truncated ? (
         <div className="notice">{text("truncated", { reason: payload.truncated.reason })}</div>
-      ) : null}
-      {relations?.truncated ? (
-        <div className="notice">
-          {text("relationsTruncated", { reason: relations.truncated.reason })}
-        </div>
       ) : null}
       {error ? <div className="notice danger">{error}</div> : null}
       <main className="workspace-files-main">
@@ -456,9 +452,6 @@ function App(): React.ReactElement {
                   row={row}
                   search={search}
                   selected={row.kind === "file" && row.file.uri === selectedFile?.uri}
-                  relation={
-                    row.kind === "file" ? relationKindForUri(row.file.uri, relations) : undefined
-                  }
                   text={text}
                   collapsed={isCollapsibleTreeRow(row) && collapsedTreeIds.has(row.id)}
                   onSelect={() => {
@@ -560,34 +553,6 @@ function App(): React.ReactElement {
       </main>
     </div>
   );
-}
-
-function relationsFromPayload(
-  payload: WorkspaceFilesRelationPreviewPayload,
-): WorkspaceFileRelations {
-  return {
-    selectedUri: payload.selectedUri,
-    ancestors: new Set(payload.ancestors),
-    descendants: new Set(payload.descendants),
-    relatives: new Set(payload.relatives),
-    truncated: payload.truncated,
-  };
-}
-
-function relationKindForUri(
-  uri: string,
-  relations: WorkspaceFileRelations | undefined,
-): RelationKind | undefined {
-  if (!relations || relations.selectedUri === uri) {
-    return undefined;
-  }
-  if (relations.ancestors.has(uri)) {
-    return "ancestor";
-  }
-  if (relations.descendants.has(uri)) {
-    return "descendant";
-  }
-  return relations.relatives.has(uri) ? "relative" : undefined;
 }
 
 function MetricCard({
@@ -700,7 +665,6 @@ function GlobChips({
 function TreeRowView({
   collapsed,
   locale,
-  relation,
   row,
   search,
   selected,
@@ -709,21 +673,13 @@ function TreeRowView({
 }: {
   collapsed: boolean;
   locale: Locale;
-  relation?: RelationKind;
   row: TreeRow;
   search: string;
   selected: boolean;
   text(key: TextKey, params?: Record<string, string | number>): string;
   onSelect(): void;
 }): React.ReactElement {
-  const className = cn(
-    "tree-row",
-    row.kind,
-    relation === "ancestor" && "relation-ancestor",
-    relation === "descendant" && "relation-descendant",
-    relation === "relative" && "relation-relative",
-    selected && "selected",
-  );
+  const className = cn("tree-row", row.kind, selected && "selected");
   const collapsible = isCollapsibleTreeRow(row);
   return (
     <button

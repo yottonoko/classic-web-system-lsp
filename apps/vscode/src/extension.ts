@@ -30,7 +30,6 @@ import {
   showWorkspaceFilesWebview,
   type WorkspaceFilesPayload,
   type WorkspaceFilesPreviewRequest,
-  type WorkspaceFilesRelationPreviewPayload,
   type WorkspaceFilesSelectedExportRequest,
 } from "./workspace-files-webview";
 import { getServerModulePath } from "./server-path";
@@ -45,7 +44,6 @@ const buildGraphServerCommand = "aspLsp.server.buildGraph";
 const buildFlowchartServerCommand = "aspLsp.server.buildFlowchart";
 const exportAnalysisExcelServerCommand = "aspLsp.server.exportAnalysisExcel";
 const previewWorkspaceFilesServerCommand = "aspLsp.server.previewWorkspaceFiles";
-const previewWorkspaceFileRelationsServerCommand = "aspLsp.server.previewWorkspaceFileRelations";
 const cancelProgressTaskServerCommand = "aspLsp.server.cancelProgressTask";
 const serverStatusNotificationMethod = "aspLsp/status";
 const graphUpdatedNotificationMethod = "aspLsp/graphUpdated";
@@ -591,7 +589,6 @@ async function showWorkspaceGlobFiles(context: vscode.ExtensionContext): Promise
     webviewThemeSetting(),
     {
       preview: (request) => requestWorkspaceFilesPreview(request, "workspaceFiles.viewTitle"),
-      previewRelations: requestWorkspaceFileRelations,
       exportSelectedExcel: exportSelectedWorkspaceFileAnalysisExcel,
     },
   );
@@ -648,29 +645,6 @@ function workspaceGlobConfiguration(value: unknown, fallback: string[]): string[
         .filter((item): item is string => typeof item === "string" && item.trim().length > 0)
         .map((item) => item.trim())
     : fallback;
-}
-
-async function requestWorkspaceFileRelations(
-  request: WorkspaceFilesPreviewRequest & { selectedUri: string },
-): Promise<WorkspaceFilesRelationPreviewPayload> {
-  if (!client) {
-    throw new Error(extensionLocalizer()("workspaceFiles.serverUnavailable"));
-  }
-  const activeClient = client;
-  return activeClient.sendRequest<WorkspaceFilesRelationPreviewPayload>(
-    "workspace/executeCommand",
-    {
-      command: previewWorkspaceFileRelationsServerCommand,
-      arguments: [
-        {
-          selectedUri: request.selectedUri,
-          includeGlobs: request.includeGlobs,
-          excludeGlobs: request.excludeGlobs,
-          respectGitIgnore: request.respectGitIgnore,
-        },
-      ],
-    },
-  );
 }
 
 async function exportSelectedWorkspaceFileAnalysisExcel(

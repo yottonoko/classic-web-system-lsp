@@ -57,16 +57,6 @@ export interface WorkspaceFilesPreviewRequest {
   respectGitIgnore: boolean;
 }
 
-export interface WorkspaceFilesRelationPreviewPayload {
-  selectedUri: string;
-  ancestors: string[];
-  descendants: string[];
-  relatives: string[];
-  truncated?: {
-    reason: string;
-  };
-}
-
 export interface WorkspaceFilesSelectedExportRequest extends WorkspaceFilesPreviewRequest {
   selectedUri: string;
 }
@@ -74,12 +64,6 @@ export interface WorkspaceFilesSelectedExportRequest extends WorkspaceFilesPrevi
 interface PreviewMessage extends WorkspaceFilesPreviewRequest {
   type: "preview";
   requestId: string;
-}
-
-interface PreviewRelationsMessage extends WorkspaceFilesPreviewRequest {
-  type: "previewRelations";
-  requestId: string;
-  selectedUri: string;
 }
 
 interface ExportSelectedExcelMessage extends WorkspaceFilesSelectedExportRequest {
@@ -98,24 +82,13 @@ interface PreviewResultHostMessage {
   error?: string;
 }
 
-interface RelationsResultHostMessage {
-  type: "relationsResult";
-  requestId: string;
-  payload?: WorkspaceFilesRelationPreviewPayload;
-  error?: string;
-}
-
 interface ExportResultHostMessage {
   type: "exportResult";
   ok: boolean;
   error?: string;
 }
 
-type WebviewMessage =
-  | PreviewMessage
-  | PreviewRelationsMessage
-  | ExportSelectedExcelMessage
-  | OpenFileMessage;
+type WebviewMessage = PreviewMessage | ExportSelectedExcelMessage | OpenFileMessage;
 
 export function showWorkspaceFilesWebview(
   context: vscode.ExtensionContext,
@@ -126,9 +99,6 @@ export function showWorkspaceFilesWebview(
   theme: WorkspaceFilesThemeSetting,
   handlers: {
     preview(request: WorkspaceFilesPreviewRequest): Promise<WorkspaceFilesPayload>;
-    previewRelations?(
-      request: PreviewRelationsMessage,
-    ): Promise<WorkspaceFilesRelationPreviewPayload>;
     exportSelectedExcel?(request: WorkspaceFilesSelectedExportRequest): Promise<void>;
   },
 ): vscode.WebviewPanel {
@@ -141,8 +111,6 @@ export function showWorkspaceFilesWebview(
   panel.webview.onDidReceiveMessage((message: WebviewMessage) => {
     if (message.type === "preview") {
       void previewWorkspaceFiles(panel.webview, message, locale, theme, handlers);
-    } else if (message.type === "previewRelations") {
-      void previewWorkspaceFileRelations(panel.webview, message, handlers);
     } else if (message.type === "exportSelectedExcel") {
       void exportSelectedWorkspaceFile(panel.webview, message, handlers);
     } else if (message.type === "openFile") {
@@ -175,27 +143,6 @@ async function previewWorkspaceFiles(
   try {
     const payload = await handlers.preview(message);
     response.payload = payloadForWebview(payload, locale, theme);
-  } catch (error) {
-    response.error = error instanceof Error ? error.message : String(error);
-  }
-  await webview.postMessage(response);
-}
-
-async function previewWorkspaceFileRelations(
-  webview: vscode.Webview,
-  message: PreviewRelationsMessage,
-  handlers: {
-    previewRelations?(
-      request: PreviewRelationsMessage,
-    ): Promise<WorkspaceFilesRelationPreviewPayload>;
-  },
-): Promise<void> {
-  const response: RelationsResultHostMessage = {
-    type: "relationsResult",
-    requestId: message.requestId,
-  };
-  try {
-    response.payload = await handlers.previewRelations?.(message);
   } catch (error) {
     response.error = error instanceof Error ? error.message : String(error);
   }

@@ -9,7 +9,6 @@ export {
   clearProcessCacheCommand,
   clearProcessCacheServerCommand,
   exportAnalysisExcelServerCommand,
-  previewWorkspaceFileRelationsServerCommand,
   previewWorkspaceFilesServerCommand,
   reindexWorkspaceCommand,
   reindexWorkspaceServerCommand,
