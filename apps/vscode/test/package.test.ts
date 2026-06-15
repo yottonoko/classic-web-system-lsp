@@ -192,6 +192,8 @@ describe("VS Code extension package", () => {
     expect(virtualListSource).toContain("function VirtualList");
     expect(virtualListSource).toContain("items.length > threshold");
     expect(virtualListSource).toContain("virtualizer.measureElement");
+    expect(virtualListSource).toContain('position: "relative"');
+    expect(virtualListSource).toContain('overflow: "auto"');
     expect(flowchartSource).toContain(
       "flowchartForSection(payload, selectedSectionId, themePalette)",
     );

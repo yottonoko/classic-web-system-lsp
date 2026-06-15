@@ -83,8 +83,18 @@ export function VirtualList<TItem>({
   }
 
   return (
-    <div ref={parentRef} className={`${className ?? ""} overflow-auto pr-1`} style={{ maxHeight }}>
-      <div className="relative w-full" style={{ height: `${virtualizer.getTotalSize()}px` }}>
+    <div
+      ref={parentRef}
+      className={className}
+      style={{ maxHeight, overflow: "auto", paddingRight: 4 }}
+    >
+      <div
+        style={{
+          height: `${virtualizer.getTotalSize()}px`,
+          position: "relative",
+          width: "100%",
+        }}
+      >
         {virtualItems.map((virtualItem) => {
           const item = items[virtualItem.index];
           if (item === undefined) {
