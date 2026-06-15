@@ -30,29 +30,49 @@ type TreeRow =
       file: WorkspaceFilesFile;
     };
 
+type Summary = {
+  aspFiles: number;
+  asaFiles: number;
+  folders: number;
+  incFiles: number;
+  latestModifiedMs: number;
+};
+
 type Locale = "en" | "ja";
 type TextKey =
   | "action.export"
   | "action.preview"
   | "action.refresh"
+  | "analysisOverview"
+  | "currentFilters"
   | "empty"
   | "excludeGlobs"
   | "fileCount"
   | "files"
   | "filters"
+  | "folder"
+  | "foldersScanned"
+  | "fullPath"
   | "includeGlobs"
   | "lastModified"
+  | "lastScanned"
   | "mode.excel"
   | "mode.view"
+  | "name"
   | "noSelection"
+  | "none"
   | "open"
   | "previewFailed"
+  | "projectRoot"
+  | "relativePath"
   | "respectGitIgnore"
   | "search"
   | "selectedFile"
   | "size"
   | "totalSize"
-  | "truncated";
+  | "truncated"
+  | "type"
+  | "workspace";
 
 const vscode = acquireVsCodeApi();
 const initialPayload = window.__ASP_LSP_WORKSPACE_FILES__;
@@ -62,55 +82,79 @@ const messages: Record<Locale, Record<TextKey, string>> = {
     "action.export": "Export Excel",
     "action.preview": "Preview",
     "action.refresh": "Refresh",
+    analysisOverview: "Analysis overview",
+    currentFilters: "Current filters",
     empty: "No Classic ASP files match the current filters.",
     excludeGlobs: "Exclude globs",
     fileCount: "{count} files",
     files: "Files",
     filters: "Filters",
+    folder: "Folder",
+    foldersScanned: "Folders scanned",
+    fullPath: "Full path",
     includeGlobs: "Include globs",
     lastModified: "Modified",
-    "mode.excel": "Excel analysis files",
+    lastScanned: "Last scanned",
+    "mode.excel": "Analysis files",
     "mode.view": "Project glob files",
+    name: "Name",
     noSelection: "Select a file to inspect it.",
+    none: "None",
     open: "Open",
     previewFailed: "Preview failed: {error}",
+    projectRoot: "Project root",
+    relativePath: "Relative path",
     respectGitIgnore: "Respect .gitignore",
     search: "Search files",
     selectedFile: "Selected file",
     size: "Size",
     totalSize: "Total size",
     truncated: "Truncated: {reason}",
+    type: "Type",
+    workspace: "Workspace",
   },
   ja: {
     "action.export": "Excel export",
     "action.preview": "Preview",
     "action.refresh": "更新",
+    analysisOverview: "解析 overview",
+    currentFilters: "現在の filter",
     empty: "現在の filter に一致する Classic ASP file はありません。",
     excludeGlobs: "Exclude globs",
     fileCount: "{count} files",
-    files: "ファイル",
-    filters: "フィルター",
+    files: "Files",
+    filters: "Filters",
+    folder: "Folder",
+    foldersScanned: "Folders scanned",
+    fullPath: "Full path",
     includeGlobs: "Include globs",
-    lastModified: "更新日時",
-    "mode.excel": "Excel 解析 file",
-    "mode.view": "Project glob file",
+    lastModified: "Modified",
+    lastScanned: "Last scanned",
+    "mode.excel": "Analysis Files",
+    "mode.view": "Project Glob Files",
+    name: "Name",
     noSelection: "file を選ぶと詳細を表示します。",
+    none: "None",
     open: "開く",
     previewFailed: "Preview 失敗: {error}",
+    projectRoot: "Project Root",
+    relativePath: "Relative Path",
     respectGitIgnore: ".gitignore を尊重",
-    search: "file を検索",
-    selectedFile: "選択 file",
-    size: "サイズ",
-    totalSize: "合計サイズ",
+    search: "Search files...",
+    selectedFile: "Selected File",
+    size: "Size",
+    totalSize: "Total Size",
     truncated: "切り詰め: {reason}",
+    type: "Type",
+    workspace: "Workspace",
   },
 };
 
 function App(): React.ReactElement {
   const [payload, setPayload] = useState<WorkspaceFilesPayload>(initialPayload ?? emptyPayload());
   const locale: Locale = payload.locale === "ja" ? "ja" : "en";
-  const [includeGlobs, setIncludeGlobs] = useState(payload.includeGlobs.join("\n"));
-  const [excludeGlobs, setExcludeGlobs] = useState(payload.excludeGlobs.join("\n"));
+  const [includeGlobs, setIncludeGlobs] = useState(globText(payload.includeGlobs));
+  const [excludeGlobs, setExcludeGlobs] = useState(globText(payload.excludeGlobs));
   const [respectGitIgnore, setRespectGitIgnore] = useState(payload.respectGitIgnore);
   const [search, setSearch] = useState("");
   const [selectedUri, setSelectedUri] = useState<string | undefined>();
@@ -118,14 +162,12 @@ function App(): React.ReactElement {
   const [error, setError] = useState<string | undefined>();
   const allFiles = useMemo(() => payload.roots.flatMap((root) => root.files), [payload]);
   const rows = useMemo(() => treeRows(payload, search), [payload, search]);
+  const summary = useMemo(() => summarizePayload(payload), [payload]);
   const selectedFile =
     allFiles.find((file) => file.uri === selectedUri) ?? allFiles[0] ?? undefined;
   const fileUris = allFiles.map((file) => file.uri);
-  const request = (): WorkspaceFilesPreviewRequest => ({
-    includeGlobs: globLines(includeGlobs),
-    excludeGlobs: globLines(excludeGlobs),
-    respectGitIgnore,
-  });
+  const includeList = globLines(includeGlobs);
+  const excludeList = globLines(excludeGlobs);
   const text = (key: TextKey, params: Record<string, string | number> = {}): string => {
     let message = messages[locale][key] ?? messages.en[key];
     for (const [name, value] of Object.entries(params)) {
@@ -133,6 +175,13 @@ function App(): React.ReactElement {
     }
     return message;
   };
+  const rootLabel =
+    payload.roots.map((root) => root.displayPath ?? root.name).join(", ") || text("workspace");
+  const request = (): WorkspaceFilesPreviewRequest => ({
+    includeGlobs: includeList,
+    excludeGlobs: excludeList,
+    respectGitIgnore,
+  });
 
   function preview(): void {
     const requestId = `${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`;
@@ -182,10 +231,13 @@ function App(): React.ReactElement {
   }
 
   return (
-    <div className="workspace-files-app">
+    <div
+      className="workspace-files-app"
+      data-asp-lsp-theme={payload.settings?.theme === "light" ? "light" : "dark"}
+    >
       <style>{styles}</style>
       <header className="workspace-files-toolbar">
-        <div>
+        <div className="toolbar-title">
           <h1>{text(payload.mode === "excel" ? "mode.excel" : "mode.view")}</h1>
           <p>
             {text("fileCount", { count: payload.stats.files })} · {text("totalSize")}{" "}
@@ -215,12 +267,56 @@ function App(): React.ReactElement {
           ) : null}
         </div>
       </header>
+      <section className="filter-strip" aria-label={text("filters")}>
+        <label className="glob-field">
+          <span>{text("includeGlobs")}</span>
+          <textarea
+            value={includeGlobs}
+            onChange={(event) => setIncludeGlobs(event.currentTarget.value)}
+            spellCheck={false}
+          />
+        </label>
+        <label className="glob-field">
+          <span>{text("excludeGlobs")}</span>
+          <textarea
+            value={excludeGlobs}
+            onChange={(event) => setExcludeGlobs(event.currentTarget.value)}
+            spellCheck={false}
+          />
+        </label>
+        <div className="filter-actions">
+          <label className="checkbox-row">
+            <input
+              type="checkbox"
+              checked={respectGitIgnore}
+              onChange={(event) => setRespectGitIgnore(event.currentTarget.checked)}
+            />
+            <span>{text("respectGitIgnore")}</span>
+          </label>
+          <button type="button" onClick={preview} disabled={busy}>
+            {text("action.preview")}
+          </button>
+        </div>
+      </section>
       {payload.truncated ? (
         <div className="notice">{text("truncated", { reason: payload.truncated.reason })}</div>
       ) : null}
       {error ? <div className="notice danger">{error}</div> : null}
       <main className="workspace-files-main">
         <section className="tree-pane" aria-label={text("files")}>
+          <div className="tree-pane-heading">
+            <div>
+              <h2>{text("projectRoot")}</h2>
+              <p>{rootLabel}</p>
+            </div>
+            <span>{text("fileCount", { count: payload.stats.files })}</span>
+          </div>
+          <div className="tree-table-header" aria-hidden="true">
+            <span>{text("name")}</span>
+            <span>{text("type")}</span>
+            <span>{text("size")}</span>
+            <span>{text("lastModified")}</span>
+          </div>
           {rows.length === 0 ? (
             <div className="empty-state">{text("empty")}</div>
           ) : (
@@ -233,8 +329,10 @@ function App(): React.ReactElement {
               maxHeight={720}
               renderItem={(row) => (
                 <TreeRowView
+                  locale={locale}
                   row={row}
                   selected={row.kind === "file" && row.file.uri === selectedFile?.uri}
+                  text={text}
                   onSelect={() => {
                     if (row.kind === "file") {
                       setSelectedUri(row.file.uri);
@@ -247,46 +345,56 @@ function App(): React.ReactElement {
           )}
         </section>
         <aside className="side-pane">
-          <section className="panel-section">
-            <h2>{text("filters")}</h2>
-            <label>
-              <span>{text("includeGlobs")}</span>
-              <textarea
-                value={includeGlobs}
-                onChange={(event) => setIncludeGlobs(event.currentTarget.value)}
-                spellCheck={false}
+          <section className="panel-section overview-section">
+            <h2>{text("analysisOverview")}</h2>
+            <div className="overview-grid">
+              <MetricCard
+                detail={`ASP: ${summary.aspFiles} · INC: ${summary.incFiles} · ASA: ${summary.asaFiles}`}
+                label={text("files")}
+                value={formatNumber(payload.stats.files, locale)}
               />
-            </label>
-            <label>
-              <span>{text("excludeGlobs")}</span>
-              <textarea
-                value={excludeGlobs}
-                onChange={(event) => setExcludeGlobs(event.currentTarget.value)}
-                spellCheck={false}
+              <MetricCard
+                label={text("foldersScanned")}
+                value={formatNumber(summary.folders, locale)}
               />
-            </label>
-            <label className="checkbox-row">
-              <input
-                type="checkbox"
-                checked={respectGitIgnore}
-                onChange={(event) => setRespectGitIgnore(event.currentTarget.checked)}
+              <MetricCard label={text("totalSize")} value={formatBytes(payload.stats.totalBytes)} />
+              <MetricCard
+                detail={
+                  summary.latestModifiedMs > 0 ? formatDate(summary.latestModifiedMs, locale) : ""
+                }
+                label={text("lastScanned")}
+                value={
+                  summary.latestModifiedMs > 0
+                    ? formatDateShort(summary.latestModifiedMs, locale)
+                    : "-"
+                }
               />
-              <span>{text("respectGitIgnore")}</span>
-            </label>
-            <button type="button" onClick={preview} disabled={busy}>
-              {text("action.preview")}
-            </button>
+            </div>
           </section>
           <section className="panel-section">
+            <h2>{text("currentFilters")}</h2>
+            <GlobChips label={text("includeGlobs")} none={text("none")} values={includeList} />
+            <GlobChips
+              label={text("excludeGlobs")}
+              none={text("none")}
+              tone="danger"
+              values={excludeList}
+            />
+          </section>
+          <section className="panel-section selected-section">
             <h2>{text("selectedFile")}</h2>
             {selectedFile ? (
               <dl className="details-list">
-                <dt>{text("files")}</dt>
-                <dd>{selectedFile.displayPath ?? selectedFile.relativePath}</dd>
+                <dt>{text("type")}</dt>
+                <dd>{fileType(selectedFile)}</dd>
                 <dt>{text("size")}</dt>
                 <dd>{formatBytes(selectedFile.size)}</dd>
                 <dt>{text("lastModified")}</dt>
-                <dd>{new Date(selectedFile.mtimeMs).toLocaleString(locale)}</dd>
+                <dd>{formatDate(selectedFile.mtimeMs, locale)}</dd>
+                <dt>{text("relativePath")}</dt>
+                <dd>{selectedFile.displayPath ?? selectedFile.relativePath}</dd>
+                <dt>{text("fullPath")}</dt>
+                <dd>{selectedFile.fileName}</dd>
               </dl>
             ) : (
               <p className="muted">{text("noSelection")}</p>
@@ -300,35 +408,104 @@ function App(): React.ReactElement {
               </button>
             ) : null}
           </section>
+          {payload.mode === "excel" ? (
+            <section className="panel-section export-section">
+              <button
+                type="button"
+                className="primary-button export-button"
+                onClick={exportExcel}
+                disabled={busy || fileUris.length === 0}
+              >
+                {text("action.export")}
+              </button>
+            </section>
+          ) : null}
         </aside>
       </main>
     </div>
   );
 }
 
+function MetricCard({
+  detail,
+  label,
+  value,
+}: {
+  detail?: string;
+  label: string;
+  value: string;
+}): React.ReactElement {
+  return (
+    <div className="metric-card">
+      <span>{label}</span>
+      <strong>{value}</strong>
+      {detail ? <small>{detail}</small> : null}
+    </div>
+  );
+}
+
+function GlobChips({
+  label,
+  none,
+  tone = "default",
+  values,
+}: {
+  label: string;
+  none: string;
+  tone?: "danger" | "default";
+  values: string[];
+}): React.ReactElement {
+  return (
+    <div className="filter-chip-row">
+      <span>{label}:</span>
+      <div>
+        {values.length === 0 ? (
+          <em>{none}</em>
+        ) : (
+          values.map((value) => (
+            <code className={`filter-chip ${tone}`} key={value}>
+              {value}
+            </code>
+          ))
+        )}
+      </div>
+    </div>
+  );
+}
+
 function TreeRowView({
+  locale,
   row,
   selected,
+  text,
   onSelect,
 }: {
+  locale: Locale;
   row: TreeRow;
   selected: boolean;
+  text(key: TextKey, params?: Record<string, string | number>): string;
   onSelect(): void;
 }): React.ReactElement {
   const className = `tree-row ${row.kind}${selected ? " selected" : ""}`;
   return (
-    <button
-      type="button"
-      className={className}
-      style={{ paddingLeft: `${12 + row.depth * 18}px` }}
-      onClick={onSelect}
-      title={row.detail}
-    >
-      <span className="tree-icon" aria-hidden="true">
-        {row.kind === "file" ? "ASP" : row.kind === "folder" ? "/" : "WS"}
+    <button type="button" className={className} onClick={onSelect} title={row.detail}>
+      <span className="tree-name" style={{ paddingLeft: `${10 + row.depth * 18}px` }}>
+        <span className="tree-icon" aria-hidden="true">
+          {row.kind === "file" ? fileType(row.file) : row.kind === "folder" ? "/" : "WS"}
+        </span>
+        <span className="tree-label">{row.label}</span>
       </span>
-      <span className="tree-label">{row.label}</span>
-      {row.detail ? <span className="tree-detail">{row.detail}</span> : null}
+      <span className="tree-type">
+        {row.kind === "file"
+          ? fileType(row.file)
+          : row.kind === "folder"
+            ? text("folder")
+            : text("workspace")}
+      </span>
+      <span className="tree-size">{row.kind === "file" ? formatBytes(row.file.size) : "-"}</span>
+      <span className="tree-modified">
+        {row.kind === "file" ? formatDateShort(row.file.mtimeMs, locale) : "-"}
+      </span>
     </button>
   );
 }
@@ -385,11 +562,67 @@ function treeRows(payload: WorkspaceFilesPayload, search: string): TreeRow[] {
   return rows;
 }
 
+function summarizePayload(payload: WorkspaceFilesPayload): Summary {
+  const folders = new Set<string>();
+  let aspFiles = 0;
+  let asaFiles = 0;
+  let incFiles = 0;
+  let latestModifiedMs = 0;
+  for (const root of payload.roots) {
+    for (const file of root.files) {
+      const type = fileType(file);
+      if (type === "ASP") {
+        aspFiles += 1;
+      } else if (type === "ASA") {
+        asaFiles += 1;
+      } else if (type === "INC") {
+        incFiles += 1;
+      }
+      latestModifiedMs = Math.max(latestModifiedMs, file.mtimeMs);
+      const parts = file.relativePath.split("/");
+      for (let index = 0; index < parts.length - 1; index += 1) {
+        folders.add(`${root.uri}:${parts.slice(0, index + 1).join("/")}`);
+      }
+    }
+  }
+  return { asaFiles, aspFiles, folders: folders.size, incFiles, latestModifiedMs };
+}
+
+function globText(globs: string[]): string {
+  return globs.join(", ");
+}
+
 function globLines(value: string): string[] {
-  return value
-    .split(/\r?\n/)
-    .map((line) => line.trim())
-    .filter((line) => line.length > 0);
+  const globs: string[] = [];
+  let current = "";
+  let braceDepth = 0;
+  const flush = (): void => {
+    const glob = current.trim();
+    if (glob.length > 0) {
+      globs.push(glob);
+    }
+    current = "";
+  };
+  for (const char of value) {
+    if (char === "{") {
+      braceDepth += 1;
+      current += char;
+    } else if (char === "}") {
+      braceDepth = Math.max(0, braceDepth - 1);
+      current += char;
+    } else if ((char === "," && braceDepth === 0) || char === "\n" || char === "\r") {
+      flush();
+    } else {
+      current += char;
+    }
+  }
+  flush();
+  return globs;
+}
+
+function fileType(file: WorkspaceFilesFile): string {
+  const extension = file.relativePath.split(".").at(-1)?.toUpperCase();
+  return extension && extension !== file.relativePath.toUpperCase() ? extension : "ASP";
 }
 
 function formatBytes(value: number): string {
@@ -405,6 +638,22 @@ function formatBytes(value: number): string {
     amount /= 1024;
   }
   return `${value} B`;
+}
+
+function formatDate(value: number, locale: Locale): string {
+  return new Date(value).toLocaleString(locale);
+}
+
+function formatDateShort(value: number, locale: Locale): string {
+  return new Date(value).toLocaleDateString(locale, {
+    day: "2-digit",
+    month: "2-digit",
+    year: "numeric",
+  });
+}
+
+function formatNumber(value: number, locale: Locale): string {
+  return new Intl.NumberFormat(locale).format(value);
 }
 
 function emptyPayload(): WorkspaceFilesPayload {
