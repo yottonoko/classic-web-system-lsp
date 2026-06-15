@@ -2,6 +2,7 @@ import React, { useMemo, useState } from "react";
 import { createRoot } from "react-dom/client";
 import { VirtualList } from "./virtual-list";
 import styles from "./workspace-files.css?inline";
+import { cn } from "../lib/utils";
 import type {
   WorkspaceFilesFile,
   WorkspaceFilesGlobStat,
@@ -542,7 +543,7 @@ function GlobEditor({
         {items.map((item, index) => {
           const count = globStatCount(stats, index, item.value);
           return (
-            <div className={`glob-row ${kind}`} key={item.id}>
+            <div className={cn("glob-row", kind)} key={item.id}>
               <input
                 aria-label={`${label} ${index + 1}`}
                 value={item.value}
@@ -589,7 +590,7 @@ function GlobChips({
           <em>{none}</em>
         ) : (
           values.map((value, index) => (
-            <code className={`filter-chip ${tone}`} key={`${value}:${index}`}>
+            <code className={cn("filter-chip", tone)} key={`${value}:${index}`}>
               {value}
               <span>{globCountText(globStatCount(stats, index, value), text)}</span>
             </code>
@@ -613,7 +614,7 @@ function TreeRowView({
   text(key: TextKey, params?: Record<string, string | number>): string;
   onSelect(): void;
 }): React.ReactElement {
-  const className = `tree-row ${row.kind}${selected ? " selected" : ""}`;
+  const className = cn("tree-row", row.kind, selected && "selected");
   return (
     <button type="button" className={className} onClick={onSelect} title={row.detail}>
       <span className="tree-name" style={{ paddingLeft: `${10 + row.depth * 18}px` }}>

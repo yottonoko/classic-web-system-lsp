@@ -2,6 +2,7 @@ import React, { useCallback, useEffect, useRef, useState } from "react";
 import type { AspFlowchartLabelMode } from "@asp-lsp/core";
 import { flowchartLabelModeTitleSuffix } from "./flowchart-model";
 import { useElementSize } from "./flowchart-dom";
+import { cn } from "../lib/utils";
 import type {
   FlowchartToolbarMenuKind,
   FlowchartToolbarMenuState,
@@ -151,11 +152,12 @@ export function FlowchartToolbar({
             <button
               key={mode}
               aria-pressed={labelMode === mode}
-              className={`h-7 min-w-[58px] border-r border-[#3b4a5f] px-2 text-xs last:border-r-0 ${
+              className={cn(
+                "h-7 min-w-[58px] border-r border-[#3b4a5f] px-2 text-xs last:border-r-0",
                 labelMode === mode
                   ? "bg-[#17324a] text-white"
-                  : "text-[#c4d4e8] hover:bg-[#172131] hover:text-white"
-              }`}
+                  : "text-[#c4d4e8] hover:bg-[#172131] hover:text-white",
+              )}
               title={text(`labelMode${flowchartLabelModeTitleSuffix(mode)}`)}
               type="button"
               onClick={() => onLabelModeChange(mode)}
@@ -166,9 +168,10 @@ export function FlowchartToolbar({
         </div>
         <button
           aria-pressed={sourcePanelVisible}
-          className={`${flowchartToolbarButtonClass} ${
-            sourcePanelVisible ? "bg-[#17324a] text-white" : ""
-          }`}
+          className={cn(
+            flowchartToolbarButtonClass,
+            sourcePanelVisible && "bg-[#17324a] text-white",
+          )}
           title={sourcePanelVisible ? text("hideSource") : text("showSource")}
           type="button"
           onClick={() => onSourcePanelVisibleChange(!sourcePanelVisible)}

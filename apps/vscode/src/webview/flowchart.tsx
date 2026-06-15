@@ -5,6 +5,7 @@ import type { AnnotationHandler, CodeAnnotation, HighlightedCode } from "codehik
 import mermaid from "mermaid";
 import tailwindStyles from "./flowchart.css?inline";
 import { VirtualList } from "./virtual-list";
+import { cn } from "../lib/utils";
 import {
   attachSvgNodeHandlers,
   clampedContextMenuPosition,
@@ -45,7 +46,6 @@ import {
   flowchartSectionHint,
   flowchartSvgLayerStyle,
   flowchartSwatchStyle,
-  flowchartViewportStyle,
   flowchartZoomRange,
   maxFlowchartInfoPanelWidthForLayout,
   maxFlowchartSourcePanelWidthForLayout,
@@ -178,27 +178,35 @@ function App(): React.ReactElement {
     "--flowchart-source-panel-width": `${clampedSourcePanelWidth}px`,
   } as React.CSSProperties;
   const showSourcePanel = sourcePanelVisible;
-  const layoutClassName = showSourcePanel
-    ? infoPanelPosition === "right"
-      ? "asp-lsp-flowchart-shell grid h-full grid-cols-[var(--flowchart-source-panel-width)_6px_minmax(0,1fr)_6px_var(--flowchart-panel-width)] bg-[#101419] text-[#d9e0ea]"
-      : "asp-lsp-flowchart-shell grid h-full grid-cols-[var(--flowchart-panel-width)_6px_minmax(0,1fr)_6px_var(--flowchart-source-panel-width)] bg-[#101419] text-[#d9e0ea]"
-    : infoPanelPosition === "right"
-      ? "asp-lsp-flowchart-shell grid h-full grid-cols-[minmax(0,1fr)_6px_var(--flowchart-panel-width)] bg-[#101419] text-[#d9e0ea]"
-      : "asp-lsp-flowchart-shell grid h-full grid-cols-[var(--flowchart-panel-width)_6px_minmax(0,1fr)] bg-[#101419] text-[#d9e0ea]";
-  const infoPanelClassName =
+  const layoutClassName = cn(
+    "asp-lsp-flowchart-shell grid h-full bg-[#101419] text-[#d9e0ea]",
+    showSourcePanel
+      ? infoPanelPosition === "right"
+        ? "grid-cols-[var(--flowchart-source-panel-width)_6px_minmax(0,1fr)_6px_var(--flowchart-panel-width)]"
+        : "grid-cols-[var(--flowchart-panel-width)_6px_minmax(0,1fr)_6px_var(--flowchart-source-panel-width)]"
+      : infoPanelPosition === "right"
+        ? "grid-cols-[minmax(0,1fr)_6px_var(--flowchart-panel-width)]"
+        : "grid-cols-[var(--flowchart-panel-width)_6px_minmax(0,1fr)]",
+  );
+  const infoPanelClassName = cn(
+    "flex min-h-0 flex-col bg-[#151b23]",
     infoPanelPosition === "right"
-      ? `${showSourcePanel ? "order-5" : "order-3"} flex min-h-0 flex-col border-l border-[#263140] bg-[#151b23]`
-      : "order-1 flex min-h-0 flex-col border-r border-[#263140] bg-[#151b23]";
-  const canvasClassName =
-    infoPanelPosition === "right" ? (showSourcePanel ? "order-3" : "order-1") : "order-3";
-  const resizeHandleClassName =
-    infoPanelPosition === "right" && showSourcePanel ? "order-4" : "order-2";
+      ? [showSourcePanel ? "order-5" : "order-3", "border-l border-[#263140]"]
+      : "order-1 border-r border-[#263140]",
+  );
+  const canvasClassName = cn(
+    infoPanelPosition === "right" ? (showSourcePanel ? "order-3" : "order-1") : "order-3",
+  );
+  const resizeHandleClassName = cn(
+    infoPanelPosition === "right" && showSourcePanel ? "order-4" : "order-2",
+  );
   const sourceResizeHandleClassName = infoPanelPosition === "right" ? "order-2" : "order-4";
   const sourcePanelPosition: InfoPanelPosition = infoPanelPosition === "right" ? "left" : "right";
-  const sourcePanelClassName =
+  const sourcePanelClassName = cn(
     infoPanelPosition === "right"
       ? "order-1 border-r border-[#263140]"
-      : "order-5 border-l border-[#263140]";
+      : "order-5 border-l border-[#263140]",
+  );
   const locale = payload.locale ?? "en";
   const text = useCallback(
     (key: string): string => flowchartMessages[locale][key] ?? flowchartMessages.en[key] ?? key,
@@ -436,7 +444,7 @@ function App(): React.ReactElement {
       data-asp-lsp-theme={theme}
       style={layoutStyle}
     >
-      <aside className={`${infoPanelClassName} min-w-0 overflow-hidden`}>
+      <aside className={cn(infoPanelClassName, "min-w-0 overflow-hidden")}>
         <header className="border-b border-[#263140] px-4 py-3">
           <div
             className="overflow-hidden text-ellipsis whitespace-nowrap text-sm font-semibold text-[#f1f5f9]"
@@ -728,12 +736,14 @@ function FlowchartHint({ hint, label }: { hint: string; label: string }): React.
         <span
           ref={tooltipRef}
           role="tooltip"
-          className="pointer-events-none fixed z-[1000] rounded-md border border-[#405068] bg-[#0d1117] px-2 py-1.5 text-[11px] leading-[1.35] whitespace-normal text-[#d7dde8] shadow-[0_10px_24px_rgb(0_0_0_/_35%)]"
+          className={cn(
+            "pointer-events-none fixed z-[1000] rounded-md border border-[#405068] bg-[#0d1117] px-2 py-1.5 text-[11px] leading-[1.35] whitespace-normal text-[#d7dde8] shadow-[0_10px_24px_rgb(0_0_0_/_35%)]",
+            position ? "visible" : "invisible",
+          )}
           style={{
             left: position?.left ?? -9999,
             top: position?.top ?? -9999,
             maxWidth: position?.maxWidth ?? tooltipMaximumWidth(),
-            visibility: position ? "visible" : "hidden",
           }}
         >
           {hint}
@@ -897,9 +907,10 @@ function FlowSection({
   const activeNodeIndex = visibleNodes.findIndex((node) => node.id === activeSearchNodeId);
   return (
     <div
-      className={`mb-3 min-w-0 overflow-hidden rounded border bg-[#101820] ${
-        selected ? "border-[#6fb6ff]" : "border-[#263140]"
-      }`}
+      className={cn(
+        "mb-3 min-w-0 overflow-hidden rounded border bg-[#101820]",
+        selected ? "border-[#6fb6ff]" : "border-[#263140]",
+      )}
     >
       <div className="flex items-center gap-2 border-b border-[#263140] px-2 py-1.5">
         <button
@@ -959,13 +970,12 @@ function FlowSection({
                 const nodeStyle = themePalette.nodeKindStyles[node.kind];
                 return (
                   <div
-                    className={`rounded px-1 py-1 hover:bg-[#223044] ${
+                    className={cn(
+                      "rounded px-1 py-1 hover:bg-[#223044]",
                       isActiveSearchMatch
                         ? "bg-[#17324a] ring-1 ring-[#7dd3fc]"
-                        : isSearchMatch
-                          ? "bg-[#2b2b18] ring-1 ring-[#f6c177]"
-                          : ""
-                    }`}
+                        : isSearchMatch && "bg-[#2b2b18] ring-1 ring-[#f6c177]",
+                    )}
                   >
                     <div className="grid grid-cols-[minmax(0,1fr)_auto_auto] items-center gap-1">
                       <button
@@ -1135,7 +1145,10 @@ function FlowchartPaneResizeHandle({
       aria-valuemax={maxWidth}
       aria-valuenow={width}
       title={label}
-      className={`relative ${className ?? "order-2"} cursor-col-resize bg-[#101820] outline-none before:absolute before:inset-y-0 before:left-1/2 before:w-px before:-translate-x-1/2 before:bg-[#263140] hover:bg-[#172131] focus:bg-[#172131] focus:before:bg-[#7dd3fc]`}
+      className={cn(
+        "relative cursor-col-resize bg-[#101820] outline-none before:absolute before:inset-y-0 before:left-1/2 before:w-px before:-translate-x-1/2 before:bg-[#263140] hover:bg-[#172131] focus:bg-[#172131] focus:before:bg-[#7dd3fc]",
+        className ?? "order-2",
+      )}
       onKeyDown={handleKeyDown}
       onPointerDown={handlePointerDown}
     />
@@ -1289,7 +1302,7 @@ function FlowchartSourcePanel({
   }, [highlightedCodeWithActiveRange, scrollLineNumber, scrollTarget]);
 
   return (
-    <aside className={`${className ?? ""} flex min-h-0 min-w-0 flex-col bg-[#101820]`}>
+    <aside className={cn(className, "flex min-h-0 min-w-0 flex-col bg-[#101820]")}>
       <header className="border-b border-[#263140] px-3 py-2">
         <div className="flex min-w-0 items-center gap-2">
           <div className="min-w-0 flex-1 truncate text-xs font-semibold uppercase tracking-wide text-[#9fb0c5]">
@@ -1313,7 +1326,7 @@ function FlowchartSourcePanel({
               code={highlightedCodeWithActiveRange}
               handlers={handlers}
               className="asp-lsp-source-code h-full overflow-auto bg-[#0c1117] p-3 text-xs leading-5"
-              style={flowchartSourceCodeStyle(highlightedCodeWithActiveRange)}
+              style={highlightedCodeWithActiveRange.style}
             />
           ) : (
             <pre
@@ -1427,13 +1440,6 @@ function flowchartSourceActiveBlockClassName(kind: FlowchartSourceActiveKind): s
 
 function flowchartSourceActiveLineClassName(kind: FlowchartSourceActiveKind): string {
   return `asp-lsp-source-active-line asp-lsp-source-active-line--${kind}`;
-}
-
-function flowchartSourceCodeStyle(code: HighlightedCode | undefined): React.CSSProperties {
-  return {
-    ...code?.style,
-    background: "var(--asp-lsp-input)",
-  };
 }
 
 function scrollSourceLineIntoView(container: HTMLElement, lineNumber: number): boolean {
@@ -1949,7 +1955,7 @@ function FlowchartCanvas({
   const canFitFlowchartWidth = Boolean(svgSize);
   return (
     <section
-      className={`${className ?? ""} grid min-h-0 grid-rows-[auto_1fr] overflow-hidden bg-[#0d1117]`}
+      className={cn(className, "grid min-h-0 grid-rows-[auto_1fr] overflow-hidden bg-[#0d1117]")}
     >
       <header className="flex min-w-0 items-center gap-2 border-b border-[#263140] px-4 py-3">
         <div
@@ -1981,8 +1987,10 @@ function FlowchartCanvas({
       </header>
       <div
         ref={viewportRef}
-        className={`min-h-0 overflow-auto p-4 ${isPanning ? "cursor-grabbing" : "cursor-grab"}`}
-        style={flowchartViewportStyle}
+        className={cn(
+          "min-h-0 overflow-auto p-4 [scrollbar-gutter:stable] [touch-action:none]",
+          isPanning ? "cursor-grabbing" : "cursor-grab",
+        )}
         onPointerCancel={endCanvasPan}
         onPointerDown={beginCanvasPan}
         onPointerMove={moveCanvasPan}

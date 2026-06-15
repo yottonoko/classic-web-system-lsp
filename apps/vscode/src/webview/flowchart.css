@@ -1,6 +1,8 @@
 @import "tailwindcss";
 
 @source "./flowchart.tsx";
+@source "./flowchart-toolbar.tsx";
+@source "./virtual-list.tsx";
 
 @layer base {
   :root {

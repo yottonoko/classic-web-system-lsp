@@ -48,6 +48,7 @@ import classicAspTagInjectionGrammarJson from "../../syntaxes/classic-asp-tag-in
 import vbscriptGrammarJson from "../../syntaxes/vbscript.tmLanguage.json";
 import tailwindStyles from "./include-graph.css?inline";
 import { VirtualList } from "./virtual-list";
+import { cn } from "../lib/utils";
 import {
   applyPositionSyncTo2d,
   applyPositionSyncTo3d,
@@ -376,10 +377,12 @@ function App(): React.ReactElement {
   const layoutStyle = {
     "--inspector-width": `${clampedInspectorWidth}px`,
   } as React.CSSProperties;
-  const layoutClassName =
+  const layoutClassName = cn(
+    "relative grid min-h-0 overflow-hidden max-[780px]:grid-cols-1 max-[780px]:grid-rows-[minmax(0,1fr)]",
     inspectorPosition === "left"
-      ? "relative grid min-h-0 grid-cols-[var(--inspector-width)_6px_minmax(0,1fr)] overflow-hidden max-[780px]:grid-cols-1 max-[780px]:grid-rows-[minmax(0,1fr)]"
-      : "relative grid min-h-0 grid-cols-[minmax(0,1fr)_6px_var(--inspector-width)] overflow-hidden max-[780px]:grid-cols-1 max-[780px]:grid-rows-[minmax(0,1fr)]";
+      ? "grid-cols-[var(--inspector-width)_6px_minmax(0,1fr)]"
+      : "grid-cols-[minmax(0,1fr)_6px_var(--inspector-width)]",
+  );
   const truncatedGraphText = graph?.truncated
     ? graphText("toolbar.truncated", {
         reason: graph.truncated.reason,
@@ -397,10 +400,10 @@ function App(): React.ReactElement {
     : graph?.pending
       ? graphText("toolbar.updating")
       : undefined;
-  const surfaceClassName =
-    inspectorPosition === "left"
-      ? "relative order-3 min-h-0 min-w-0 overflow-hidden max-[780px]:order-1 [&_canvas]:block"
-      : "relative order-1 min-h-0 min-w-0 overflow-hidden [&_canvas]:block";
+  const surfaceClassName = cn(
+    "relative min-h-0 min-w-0 overflow-hidden [&_canvas]:block",
+    inspectorPosition === "left" ? "order-3 max-[780px]:order-1" : "order-1",
+  );
   const canFitGraph =
     filteredGraphData.nodes.length > 0 && surfaceSize.width > 0 && surfaceSize.height > 0;
   const toggleNodeCategory = useCallback((category: NodeColorCategory) => {
@@ -827,11 +830,10 @@ function App(): React.ReactElement {
         >
           <button
             type="button"
-            className={
-              mode === "3d"
-                ? "h-7 min-w-[42px] cursor-pointer border-0 bg-[#89ddff] text-[#11151c]"
-                : "h-7 min-w-[42px] cursor-pointer border-0 bg-[#151a22] text-[#b5c0d0]"
-            }
+            className={cn(
+              "h-7 min-w-[42px] cursor-pointer border-0",
+              mode === "3d" ? "bg-[#89ddff] text-[#11151c]" : "bg-[#151a22] text-[#b5c0d0]",
+            )}
             title={graphText("toolbar.graphModeDescription")}
             onClick={() => switchGraphMode("3d")}
           >
@@ -839,11 +841,10 @@ function App(): React.ReactElement {
           </button>
           <button
             type="button"
-            className={
-              mode === "2d"
-                ? "h-7 min-w-[42px] cursor-pointer border-0 bg-[#89ddff] text-[#11151c]"
-                : "h-7 min-w-[42px] cursor-pointer border-0 bg-[#151a22] text-[#b5c0d0]"
-            }
+            className={cn(
+              "h-7 min-w-[42px] cursor-pointer border-0",
+              mode === "2d" ? "bg-[#89ddff] text-[#11151c]" : "bg-[#151a22] text-[#b5c0d0]",
+            )}
             title={graphText("toolbar.graphModeDescription")}
             onClick={() => switchGraphMode("2d")}
           >
@@ -2332,7 +2333,10 @@ function SourceCodeSnippet({
   const language = snippetLanguageForSourceItem(item);
   return (
     <pre
-      className={`m-0 overflow-auto rounded border border-[#253041] bg-[#0d1117] p-2 font-mono text-[11px] leading-[1.45] whitespace-pre-wrap text-[#d7dde8] [tab-size:2] ${className}`}
+      className={cn(
+        "m-0 overflow-auto rounded border border-[#253041] bg-[#0d1117] p-2 font-mono text-[11px] leading-[1.45] whitespace-pre-wrap text-[#d7dde8] [tab-size:2]",
+        className,
+      )}
     >
       {source?.text && highlightState.status === "ready" ? (
         <HighlightedSourceText
@@ -2803,7 +2807,10 @@ function OpenLocationButton({
   return (
     <button
       type="button"
-      className={`cursor-pointer rounded-md border border-[#405068] bg-[#c3e88d] text-xs text-[#11151c] disabled:cursor-not-allowed disabled:bg-[#202735] disabled:text-[#717b8c] ${className ?? ""}`}
+      className={cn(
+        "cursor-pointer rounded-md border border-[#405068] bg-[#c3e88d] text-xs text-[#11151c] disabled:cursor-not-allowed disabled:bg-[#202735] disabled:text-[#717b8c]",
+        className,
+      )}
       disabled={disabled || !uri}
       title={label}
       onClick={(event) => {
@@ -2834,7 +2841,10 @@ function OpenFlowchartButton({
   return (
     <button
       type="button"
-      className={`cursor-pointer rounded-md border border-[#405068] bg-[#89ddff] text-xs text-[#11151c] disabled:cursor-not-allowed disabled:bg-[#202735] disabled:text-[#717b8c] ${className ?? ""}`}
+      className={cn(
+        "cursor-pointer rounded-md border border-[#405068] bg-[#89ddff] text-xs text-[#11151c] disabled:cursor-not-allowed disabled:bg-[#202735] disabled:text-[#717b8c]",
+        className,
+      )}
       disabled={disabled || !uri}
       title={label}
       onClick={(event) => {
@@ -3271,12 +3281,14 @@ function TooltipText({
         <span
           ref={tooltipRef}
           role="tooltip"
-          className="pointer-events-none fixed z-[1000] rounded-md border border-[#405068] bg-[#0d1117] px-2 py-1.5 text-[11px] leading-[1.35] whitespace-normal text-[#d7dde8] shadow-[0_10px_24px_rgb(0_0_0_/_35%)]"
+          className={cn(
+            "pointer-events-none fixed z-[1000] rounded-md border border-[#405068] bg-[#0d1117] px-2 py-1.5 text-[11px] leading-[1.35] whitespace-normal text-[#d7dde8] shadow-[0_10px_24px_rgb(0_0_0_/_35%)]",
+            position ? "visible" : "invisible",
+          )}
           style={{
             left: position?.left ?? -9999,
             top: position?.top ?? -9999,
             maxWidth: position?.maxWidth ?? tooltipMaximumWidth(),
-            visibility: position ? "visible" : "hidden",
           }}
         >
           {tooltipText}
@@ -3331,12 +3343,14 @@ function DetailHint({ hint, label }: { hint: string; label: string }): React.Rea
         <span
           ref={tooltipRef}
           role="tooltip"
-          className="pointer-events-none fixed z-[1000] rounded-md border border-[#405068] bg-[#0d1117] px-2 py-1.5 text-[11px] leading-[1.35] whitespace-normal text-[#d7dde8] shadow-[0_10px_24px_rgb(0_0_0_/_35%)]"
+          className={cn(
+            "pointer-events-none fixed z-[1000] rounded-md border border-[#405068] bg-[#0d1117] px-2 py-1.5 text-[11px] leading-[1.35] whitespace-normal text-[#d7dde8] shadow-[0_10px_24px_rgb(0_0_0_/_35%)]",
+            position ? "visible" : "invisible",
+          )}
           style={{
             left: position?.left ?? -9999,
             top: position?.top ?? -9999,
             maxWidth: position?.maxWidth ?? tooltipMaximumWidth(),
-            visibility: position ? "visible" : "hidden",
           }}
         >
           {hint}

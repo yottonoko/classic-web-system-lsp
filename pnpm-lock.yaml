@@ -38,6 +38,9 @@ importers:
       '@tanstack/react-virtual':
         specifier: ^3.14.2
         version: 3.14.2(react-dom@19.2.7(react@19.2.7))(react@19.2.7)
+      clsx:
+        specifier: ^2.1.1
+        version: 2.1.1
       codehike:
         specifier: ^1.1.0
         version: 1.1.0
@@ -56,6 +59,9 @@ importers:
       react-force-graph-3d:
         specifier: 1.29.1
         version: 1.29.1(react@19.2.7)
+      tailwind-merge:
+        specifier: ^3.6.0
+        version: 3.6.0
       three-spritetext:
         specifier: 1.10.0
         version: 1.10.0(three@0.184.0)
@@ -1381,6 +1387,10 @@ packages:
 
   chownr@1.1.4:
     resolution: {integrity: sha512-jJ0bqzaylmJtVnNgzTeSOs8DPavpbYgEr/b0YL8/2GO3xJEhInFmhKMUnEJQjZumK7KXGFhUy89PrsJWlakBVg==}
+
+  clsx@2.1.1:
+    resolution: {integrity: sha512-eYm0QWBtUrBWZWG0d386OGAw16Z995PiOVo2B7bjWSbHedGl5e0ZWaq65kOGgUSNesEIDkB9ISbTg/JK9dhCZA==}
+    engines: {node: '>=6'}
 
   cockatiel@3.2.1:
     resolution: {integrity: sha512-gfrHV6ZPkquExvMh9IOkKsBzNDk6sDuZ6DdBGUBkvFnTCqCxzpuq48RySgP0AnaqQkw2zynOFj9yly6T1Q2G5Q==}
@@ -2857,6 +2867,9 @@ packages:
   table@6.9.0:
     resolution: {integrity: sha512-9kY+CygyYM6j02t5YFHbNz2FN5QmYGv9zAjVp4lCDjlCw7amdckXlEt/bjMhUIfj4ThGRE4gCUH5+yGnNuPo5A==}
     engines: {node: '>=10.0.0'}
+
+  tailwind-merge@3.6.0:
+    resolution: {integrity: sha512-uxL7qAVQriqRQPAyK3pj66VqskWqoZ37PW94jwOTwNfq/z9oyu1V+eqrZqtR2+fCiXdYOZe/Modt8GtvqNzu+w==}
 
   tailwindcss@4.3.0:
     resolution: {integrity: sha512-y6nxMGB1nMW9R6k96e5gdIFzcfL/gTJRNaqGes1YvkLnPVXzWgbqFF2yLC0T8G774n24cx3Pe8XrKoniCOAH+Q==}
@@ -4379,6 +4392,8 @@ snapshots:
 
   chownr@1.1.4:
     optional: true
+
+  clsx@2.1.1: {}
 
   cockatiel@3.2.1: {}
 
@@ -6081,6 +6096,8 @@ snapshots:
       slice-ansi: 4.0.0
       string-width: 4.2.3
       strip-ansi: 6.0.1
+
+  tailwind-merge@3.6.0: {}
 
   tailwindcss@4.3.0: {}
 

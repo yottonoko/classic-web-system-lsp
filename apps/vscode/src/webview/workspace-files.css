@@ -1,3 +1,8 @@
+@import "tailwindcss";
+
+@source "./workspace-files.tsx";
+@source "./virtual-list.tsx";
+
 * {
   box-sizing: border-box;
 }

@@ -1,5 +1,6 @@
 import React, { useEffect, useMemo, useRef } from "react";
 import { useVirtualizer } from "@tanstack/react-virtual";
+import { cn } from "../lib/utils";
 
 export interface VirtualListProps<TItem> {
   className?: string;
@@ -83,16 +84,11 @@ export function VirtualList<TItem>({
   }
 
   return (
-    <div
-      ref={parentRef}
-      className={className}
-      style={{ maxHeight, overflow: "auto", paddingRight: 4 }}
-    >
+    <div ref={parentRef} className={cn(className, "overflow-auto pr-1")} style={{ maxHeight }}>
       <div
+        className="relative w-full"
         style={{
           height: `${virtualizer.getTotalSize()}px`,
-          position: "relative",
-          width: "100%",
         }}
       >
         {virtualItems.map((virtualItem) => {
@@ -105,15 +101,10 @@ export function VirtualList<TItem>({
               key={virtualItem.key}
               ref={virtualizer.measureElement}
               data-index={virtualItem.index}
-              className={itemClassName}
+              className={cn("absolute top-0 left-0 box-border w-full", itemClassName)}
               style={{
-                boxSizing: "border-box",
-                left: 0,
                 paddingBottom: gap,
-                position: "absolute",
-                top: 0,
                 transform: `translateY(${virtualItem.start}px)`,
-                width: "100%",
               }}
             >
               {renderItem(item, virtualItem.index)}

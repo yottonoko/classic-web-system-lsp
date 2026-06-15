@@ -57,6 +57,8 @@ describe("VS Code extension package", () => {
     };
     expect(manifest.dependencies?.["@asp-lsp/language-server"]).toBe("workspace:*");
     expect(manifest.dependencies?.["@tanstack/react-virtual"]).toBe("^3.14.2");
+    expect(manifest.dependencies?.["clsx"]).toBeDefined();
+    expect(manifest.dependencies?.["tailwind-merge"]).toBeDefined();
     expect(manifest.devDependencies?.["@asp-lsp/language-server"]).toBeUndefined();
   });
 
@@ -192,8 +194,9 @@ describe("VS Code extension package", () => {
     expect(virtualListSource).toContain("function VirtualList");
     expect(virtualListSource).toContain("items.length > threshold");
     expect(virtualListSource).toContain("virtualizer.measureElement");
-    expect(virtualListSource).toContain('position: "relative"');
-    expect(virtualListSource).toContain('overflow: "auto"');
+    expect(virtualListSource).toContain('className={cn(className, "overflow-auto pr-1")}');
+    expect(virtualListSource).toContain('className="relative w-full"');
+    expect(virtualListSource).toContain('"absolute top-0 left-0 box-border w-full"');
     expect(flowchartSource).toContain(
       "flowchartForSection(payload, selectedSectionId, themePalette)",
     );
@@ -268,7 +271,7 @@ describe("VS Code extension package", () => {
     expect(flowchartSource).not.toContain(
       "text-left text-xs font-semibold uppercase tracking-wide text-[#9fb0c5] hover:text-[#f1f5f9]",
     );
-    expect(flowchartSource).toContain('scrollbarGutter: "stable"');
+    expect(flowchartSource).toContain("[scrollbar-gutter:stable]");
     expect(flowchartSource).toContain("new ResizeObserver(updateViewportSize)");
     expect(flowchartSource).toContain("centerFlowchartHorizontally");
     expect(flowchartSource).toContain("flowchartHorizontalPanGutter");
@@ -385,6 +388,8 @@ describe("VS Code extension package", () => {
     expect(webviewSource).toContain("globStats");
     expect(webviewSource).toContain("GlobEditor");
     expect(webviewSource).toContain("glob-count");
+    expect(webviewSource).toContain('@import "tailwindcss";');
+    expect(webviewSource).toContain('from "../lib/utils"');
     expect(webviewSource).toContain("grid-template-columns: minmax(540px, 1fr)");
   });
 

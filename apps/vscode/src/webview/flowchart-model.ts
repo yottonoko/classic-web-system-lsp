@@ -527,11 +527,6 @@ interface FlowchartZoomRange {
   maximum: number;
 }
 
-export const flowchartViewportStyle: React.CSSProperties = {
-  scrollbarGutter: "stable",
-  touchAction: "none",
-};
-
 export function flowchartZoomRange(payload: FlowchartPayload): FlowchartZoomRange {
   const minimum = positiveFiniteNumber(payload.settings?.minZoom, defaultMinimumFlowchartZoom);
   const maximum = positiveFiniteNumber(payload.settings?.maxZoom, defaultMaximumFlowchartZoom);
@@ -568,7 +563,6 @@ export function flowchartSvgLayerStyle(
 ): React.CSSProperties {
   const style: React.CSSProperties = {
     transform: `scale(${zoom})`,
-    transformOrigin: "top left",
   };
   if (!svgSize) {
     return style;
