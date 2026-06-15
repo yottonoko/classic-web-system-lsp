@@ -180,11 +180,15 @@ function App(): React.ReactElement {
   );
   const [respectGitIgnore, setRespectGitIgnore] = useState(payload.respectGitIgnore);
   const [search, setSearch] = useState("");
+  const [collapsedTreeIds, setCollapsedTreeIds] = useState<ReadonlySet<string>>(() => new Set());
   const [selectedUri, setSelectedUri] = useState<string | undefined>();
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | undefined>();
   const allFiles = useMemo(() => payload.roots.flatMap((root) => root.files), [payload]);
-  const rows = useMemo(() => treeRows(payload, search), [payload, search]);
+  const rows = useMemo(() => visibleTreeRows(treeRows(payload), collapsedTreeIds), [
+    payload,
+    collapsedTreeIds,
+  ]);
   const summary = useMemo(() => summarizePayload(payload), [payload]);
   const selectedFile =
     allFiles.find((file) => file.uri === selectedUri) ?? allFiles[0] ?? undefined;
@@ -205,6 +209,17 @@ function App(): React.ReactElement {
     excludeGlobs: excludeList,
     respectGitIgnore,
   });
+  const toggleTreeRow = (id: string): void => {
+    setCollapsedTreeIds((ids) => {
+      const next = new Set(ids);
+      if (next.has(id)) {
+        next.delete(id);
+      } else {
+        next.add(id);
+      }
+      return next;
+    });
+  };
 
   const updateGlobItem = (kind: GlobKind, id: string, value: string): void => {
     const update = (item: GlobInputItem): GlobInputItem =>
@@ -258,6 +273,7 @@ function App(): React.ReactElement {
         setIncludeGlobItems(globItems(message.payload.includeGlobs, "include"));
         setExcludeGlobItems(globItems(message.payload.excludeGlobs, "exclude"));
         setSelectedUri(undefined);
+        setCollapsedTreeIds(new Set());
       } else {
         setError(text("previewFailed", { error: message.error ?? "unknown" }));
       }
@@ -391,11 +407,15 @@ function App(): React.ReactElement {
                 <TreeRowView
                   locale={locale}
                   row={row}
+                  search={search}
                   selected={row.kind === "file" && row.file.uri === selectedFile?.uri}
                   text={text}
+                  collapsed={isCollapsibleTreeRow(row) && collapsedTreeIds.has(row.id)}
                   onSelect={() => {
                     if (row.kind === "file") {
                       setSelectedUri(row.file.uri);
+                    } else {
+                      toggleTreeRow(row.id);
                     }
                   }}
                 />
@@ -602,26 +622,42 @@ function GlobChips({
 }
 
 function TreeRowView({
+  collapsed,
   locale,
   row,
+  search,
   selected,
   text,
   onSelect,
 }: {
+  collapsed: boolean;
   locale: Locale;
   row: TreeRow;
+  search: string;
   selected: boolean;
   text(key: TextKey, params?: Record<string, string | number>): string;
   onSelect(): void;
 }): React.ReactElement {
   const className = cn("tree-row", row.kind, selected && "selected");
+  const collapsible = isCollapsibleTreeRow(row);
   return (
-    <button type="button" className={className} onClick={onSelect} title={row.detail}>
+    <button
+      type="button"
+      aria-expanded={collapsible ? !collapsed : undefined}
+      className={className}
+      onClick={onSelect}
+      title={row.detail ?? row.label}
+    >
       <span className="tree-name" style={{ paddingLeft: `${10 + row.depth * 18}px` }}>
+        <span className="tree-disclosure" aria-hidden="true">
+          {collapsible ? (collapsed ? "+" : "-") : ""}
+        </span>
         <span className="tree-icon" aria-hidden="true">
           {row.kind === "file" ? fileType(row.file) : row.kind === "folder" ? "/" : "WS"}
         </span>
-        <span className="tree-label">{row.label}</span>
+        <span className="tree-label">
+          <HighlightedText query={search} text={row.label} />
+        </span>
       </span>
       <span className="tree-type">
         {row.kind === "file"
@@ -638,17 +674,78 @@ function TreeRowView({
   );
 }
 
-function treeRows(payload: WorkspaceFilesPayload, search: string): TreeRow[] {
-  const query = search.trim().toLowerCase();
+function HighlightedText({ query, text }: { query: string; text: string }): React.ReactElement {
+  const normalizedQuery = query.trim().toLowerCase();
+  if (!normalizedQuery) {
+    return <>{text}</>;
+  }
+
+  const ranges = highlightRanges(text, normalizedQuery);
+  if (ranges.length === 0) {
+    return <>{text}</>;
+  }
+
+  const parts: React.ReactNode[] = [];
+  let cursor = 0;
+  for (const [start, end] of ranges) {
+    if (cursor < start) {
+      parts.push(text.slice(cursor, start));
+    }
+    parts.push(
+      <mark className="tree-match" key={`${start}:${end}`}>
+        {text.slice(start, end)}
+      </mark>,
+    );
+    cursor = end;
+  }
+  if (cursor < text.length) {
+    parts.push(text.slice(cursor));
+  }
+  return <>{parts}</>;
+}
+
+function highlightRanges(text: string, normalizedQuery: string): Array<[number, number]> {
+  const normalizedText = text.toLowerCase();
+  const ranges: Array<[number, number]> = [];
+  let cursor = 0;
+  while (cursor < normalizedText.length) {
+    const start = normalizedText.indexOf(normalizedQuery, cursor);
+    if (start < 0) {
+      break;
+    }
+    const end = start + normalizedQuery.length;
+    ranges.push([start, end]);
+    cursor = end;
+  }
+  return ranges;
+}
+
+function isCollapsibleTreeRow(row: TreeRow): boolean {
+  return row.kind === "folder" || row.kind === "root";
+}
+
+function visibleTreeRows(rows: TreeRow[], collapsedIds: ReadonlySet<string>): TreeRow[] {
+  const visibleRows: TreeRow[] = [];
+  let collapsedDepth: number | undefined;
+  for (const row of rows) {
+    if (collapsedDepth !== undefined) {
+      if (row.depth > collapsedDepth) {
+        continue;
+      }
+      collapsedDepth = undefined;
+    }
+    visibleRows.push(row);
+    if (isCollapsibleTreeRow(row) && collapsedIds.has(row.id)) {
+      collapsedDepth = row.depth;
+    }
+  }
+  return visibleRows;
+}
+
+function treeRows(payload: WorkspaceFilesPayload): TreeRow[] {
   const rows: TreeRow[] = [];
   for (const root of payload.roots) {
-    const files = root.files.filter(
-      (file) =>
-        !query ||
-        file.relativePath.toLowerCase().includes(query) ||
-        file.displayPath?.toLowerCase().includes(query),
-    );
-    if (files.length === 0) {
+    if (root.files.length === 0) {
       continue;
     }
     rows.push({
@@ -656,10 +753,10 @@ function treeRows(payload: WorkspaceFilesPayload, search: string): TreeRow[] {
       kind: "root",
       depth: 0,
       label: root.displayPath ?? root.name,
-      detail: `${files.length}`,
+      detail: `${root.files.length}`,
     });
     const folderIds = new Set<string>();
-    for (const file of files.sort((left, right) =>
+    for (const file of [...root.files].sort((left, right) =>
       left.relativePath.localeCompare(right.relativePath),
     )) {
       const parts = file.relativePath.split("/");

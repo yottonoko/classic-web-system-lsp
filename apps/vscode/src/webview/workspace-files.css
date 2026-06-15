@@ -365,8 +365,17 @@ button:disabled {
 .tree-name {
   align-items: center;
   display: flex;
-  gap: 9px;
+  gap: 6px;
   min-width: 0;
+}
+
+.tree-disclosure {
+  color: var(--asp-lsp-text-muted);
+  flex: 0 0 16px;
+  font-size: 12px;
+  font-weight: 700;
+  line-height: 20px;
+  text-align: center;
 }
 
 .tree-icon {
@@ -385,6 +394,13 @@ button:disabled {
 
 .tree-row.folder .tree-icon {
   color: #c4b5fd;
+}
+
+.tree-match {
+  background: var(--vscode-editor-findMatchHighlightBackground, #515c1d);
+  border-radius: 3px;
+  color: var(--vscode-editor-foreground, inherit);
+  padding: 0 1px;
 }
 
 .tree-label,

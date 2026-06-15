@@ -391,6 +391,12 @@ describe("VS Code extension package", () => {
     expect(webviewSource).toContain('@import "tailwindcss";');
     expect(webviewSource).toContain('from "../lib/utils"');
     expect(webviewSource).toContain("grid-template-columns: minmax(540px, 1fr)");
+    expect(webviewSource).toContain("visibleTreeRows(treeRows(payload), collapsedTreeIds)");
+    expect(webviewSource).toContain("function HighlightedText");
+    expect(webviewSource).toContain('className="tree-match"');
+    expect(webviewSource).toContain("aria-expanded={collapsible ? !collapsed : undefined}");
+    expect(webviewSource).not.toContain("treeRows(payload, search)");
+    expect(webviewSource).not.toContain("root.files.filter");
   });
 
   it("keeps graph search responsive and keyboard-accessible", () => {
