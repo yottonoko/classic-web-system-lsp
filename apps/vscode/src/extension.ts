@@ -619,6 +619,7 @@ async function requestWorkspaceFilesPreview(
                   includeGlobs: request.includeGlobs,
                   excludeGlobs: request.excludeGlobs,
                   respectGitIgnore: request.respectGitIgnore,
+                  showUnmatched: request.showUnmatched,
                 },
               ]
             : undefined,
@@ -636,6 +637,7 @@ function defaultWorkspaceFilesPreviewRequest(): WorkspaceFilesPreviewRequest {
     ]),
     excludeGlobs: workspaceGlobConfiguration(configuration.get<unknown>("workspace.excludes"), []),
     respectGitIgnore: configuration.get<boolean>("workspace.respectGitIgnore", false),
+    showUnmatched: true,
   };
 }
 
@@ -654,6 +656,7 @@ async function exportSelectedWorkspaceFileAnalysisExcel(
     includeGlobs: request.includeGlobs,
     excludeGlobs: request.excludeGlobs,
     respectGitIgnore: request.respectGitIgnore,
+    showUnmatched: request.showUnmatched,
   });
 }
 

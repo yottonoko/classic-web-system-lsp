@@ -21,13 +21,28 @@ declare global {
 }
 
 type TreeRow =
-  | { id: string; kind: "root"; depth: number; label: string; detail?: string }
-  | { id: string; kind: "folder"; depth: number; label: string; detail?: string }
+  | {
+      id: string;
+      kind: "root";
+      depth: number;
+      label: string;
+      matchesFilter: boolean;
+      detail?: string;
+    }
+  | {
+      id: string;
+      kind: "folder";
+      depth: number;
+      label: string;
+      matchesFilter: boolean;
+      detail?: string;
+    }
   | {
       id: string;
       kind: "file";
       depth: number;
       label: string;
+      matchesFilter: boolean;
       detail?: string;
       file: WorkspaceFilesFile;
     };
@@ -47,9 +62,16 @@ type GlobInputItem = {
 
 type GlobKind = "exclude" | "include";
 
+type TreeContextMenu = {
+  x: number;
+  y: number;
+  pattern: string;
+};
+
 type Locale = "en" | "ja";
 type TextKey =
   | "action.addGlob"
+  | "action.excludePattern"
   | "action.export"
   | "action.removeGlob"
   | "analysisOverview"
@@ -76,6 +98,7 @@ type TextKey =
   | "respectGitIgnore"
   | "search"
   | "selectedFile"
+  | "showUnmatched"
   | "size"
   | "title"
   | "totalSize"
@@ -90,6 +113,7 @@ let nextGlobItemId = 0;
 const messages: Record<Locale, Record<TextKey, string>> = {
   en: {
     "action.addGlob": "Add glob",
+    "action.excludePattern": "Add exclude glob: {pattern}",
     "action.export": "Export Excel",
     "action.removeGlob": "Remove glob",
     analysisOverview: "Analysis overview",
@@ -116,6 +140,7 @@ const messages: Record<Locale, Record<TextKey, string>> = {
     respectGitIgnore: "Respect .gitignore",
     search: "Search files",
     selectedFile: "Selected file",
+    showUnmatched: "Show unmatched files",
     size: "Size",
     title: "Analysis files",
     totalSize: "Total size",
@@ -125,6 +150,7 @@ const messages: Record<Locale, Record<TextKey, string>> = {
   },
   ja: {
     "action.addGlob": "glob 追加",
+    "action.excludePattern": "Exclude glob に追加: {pattern}",
     "action.export": "Excel export",
     "action.removeGlob": "glob 削除",
     analysisOverview: "解析 overview",
@@ -151,6 +177,7 @@ const messages: Record<Locale, Record<TextKey, string>> = {
     respectGitIgnore: ".gitignore を尊重",
     search: "Search files...",
     selectedFile: "Selected File",
+    showUnmatched: "対象外 file も表示",
     size: "Size",
     title: "Analysis Files",
     totalSize: "Total Size",
@@ -181,6 +208,7 @@ function previewRequestSignature(request: WorkspaceFilesPreviewRequest): string 
     includeGlobs: request.includeGlobs,
     excludeGlobs: request.excludeGlobs,
     respectGitIgnore: request.respectGitIgnore,
+    showUnmatched: request.showUnmatched,
   });
 }
 
@@ -194,9 +222,11 @@ function App(): React.ReactElement {
     globItems(payload.excludeGlobs, "exclude"),
   );
   const [respectGitIgnore, setRespectGitIgnore] = useState(payload.respectGitIgnore);
+  const [showUnmatched, setShowUnmatched] = useState(payload.showUnmatched !== false);
   const [search, setSearch] = useState("");
   const [collapsedTreeIds, setCollapsedTreeIds] = useState<ReadonlySet<string>>(() => new Set());
   const [selectedUri, setSelectedUri] = useState<string | undefined>();
+  const [contextMenu, setContextMenu] = useState<TreeContextMenu | undefined>();
   const [previewBusy, setPreviewBusy] = useState(false);
   const [exportBusy, setExportBusy] = useState(false);
   const [error, setError] = useState<string | undefined>();
@@ -217,8 +247,9 @@ function App(): React.ReactElement {
       includeGlobs: includeList,
       excludeGlobs: excludeList,
       respectGitIgnore,
+      showUnmatched,
     }),
-    [excludeList, includeList, respectGitIgnore],
+    [excludeList, includeList, respectGitIgnore, showUnmatched],
   );
   const previewSignature = useMemo(() => previewRequestSignature(previewRequest), [previewRequest]);
   const busy = previewBusy || exportBusy;
@@ -268,11 +299,13 @@ function App(): React.ReactElement {
             includeGlobs: message.payload.includeGlobs,
             excludeGlobs: message.payload.excludeGlobs,
             respectGitIgnore: message.payload.respectGitIgnore,
+            showUnmatched: message.payload.showUnmatched,
           });
           setPayload(message.payload);
           setIncludeGlobItems(globItems(message.payload.includeGlobs, "include"));
           setExcludeGlobItems(globItems(message.payload.excludeGlobs, "exclude"));
           setRespectGitIgnore(message.payload.respectGitIgnore);
+          setShowUnmatched(message.payload.showUnmatched !== false);
           setSelectedUri(undefined);
           setCollapsedTreeIds(new Set());
         } else {
@@ -293,6 +326,28 @@ function App(): React.ReactElement {
       }
     };
   }, [locale, previewRequest, previewSignature]);
+
+  useEffect(() => {
+    if (!contextMenu) {
+      return;
+    }
+    const close = (): void => setContextMenu(undefined);
+    const onKeyDown = (event: KeyboardEvent): void => {
+      if (event.key === "Escape") {
+        close();
+      }
+    };
+    window.addEventListener("mousedown", close);
+    window.addEventListener("blur", close);
+    window.addEventListener("scroll", close, true);
+    window.addEventListener("keydown", onKeyDown);
+    return () => {
+      window.removeEventListener("mousedown", close);
+      window.removeEventListener("blur", close);
+      window.removeEventListener("scroll", close, true);
+      window.removeEventListener("keydown", onKeyDown);
+    };
+  }, [contextMenu]);
 
   const toggleTreeRow = (id: string): void => {
     setCollapsedTreeIds((ids) => {
@@ -335,6 +390,32 @@ function App(): React.ReactElement {
     } else {
       setExcludeGlobItems(remove);
     }
+  };
+
+  const addExcludeGlobPattern = (pattern: string): void => {
+    setExcludeGlobItems((items) => {
+      if (items.some((item) => item.value.trim() === pattern)) {
+        return items;
+      }
+      const emptyIndex = items.findIndex((item) => item.value.trim().length === 0);
+      if (emptyIndex >= 0) {
+        return items.map((item, index) =>
+          index === emptyIndex ? { ...item, value: pattern } : item,
+        );
+      }
+      return [...items, createGlobItem("exclude", pattern)];
+    });
+    setContextMenu(undefined);
+  };
+
+  const openTreeContextMenu = (row: TreeRow, event: React.MouseEvent): void => {
+    const pattern = excludePatternForTreeRow(row);
+    if (!pattern) {
+      return;
+    }
+    event.preventDefault();
+    event.stopPropagation();
+    setContextMenu({ x: event.clientX, y: event.clientY, pattern });
   };
 
   function exportSelectedExcel(): void {
@@ -415,6 +496,14 @@ function App(): React.ReactElement {
             />
             <span>{text("respectGitIgnore")}</span>
           </label>
+          <label className="checkbox-row">
+            <input
+              type="checkbox"
+              checked={showUnmatched}
+              onChange={(event) => setShowUnmatched(event.currentTarget.checked)}
+            />
+            <span>{text("showUnmatched")}</span>
+          </label>
         </div>
       </section>
       {payload.truncated ? (
@@ -461,6 +550,7 @@ function App(): React.ReactElement {
                       toggleTreeRow(row.id);
                     }
                   }}
+                  onContextMenu={(event) => openTreeContextMenu(row, event)}
                 />
               )}
               threshold={80}
@@ -551,6 +641,23 @@ function App(): React.ReactElement {
           </section>
         </aside>
       </main>
+      {contextMenu ? (
+        <div
+          className="context-menu fixed z-50 min-w-[220px] rounded-md border border-[var(--asp-lsp-border)] bg-[var(--asp-lsp-panel)] p-1 shadow-[0_14px_30px_rgb(0_0_0_/_35%)]"
+          style={{ left: contextMenu.x, top: contextMenu.y }}
+          onMouseDown={(event) => event.stopPropagation()}
+          role="menu"
+        >
+          <button
+            type="button"
+            className="w-full justify-start border-0 bg-transparent px-2 py-1 text-left text-xs text-[var(--asp-lsp-text-strong)] hover:bg-[var(--vscode-list-hoverBackground)]"
+            onClick={() => addExcludeGlobPattern(contextMenu.pattern)}
+            role="menuitem"
+          >
+            {text("action.excludePattern", { pattern: contextMenu.pattern })}
+          </button>
+        </div>
+      ) : null}
     </div>
   );
 }
@@ -669,6 +776,7 @@ function TreeRowView({
   search,
   selected,
   text,
+  onContextMenu,
   onSelect,
 }: {
   collapsed: boolean;
@@ -677,15 +785,22 @@ function TreeRowView({
   search: string;
   selected: boolean;
   text(key: TextKey, params?: Record<string, string | number>): string;
+  onContextMenu(event: React.MouseEvent): void;
   onSelect(): void;
 }): React.ReactElement {
-  const className = cn("tree-row", row.kind, selected && "selected");
+  const className = cn(
+    "tree-row",
+    row.kind,
+    selected && "selected",
+    !selected && !row.matchesFilter && "opacity-50",
+  );
   const collapsible = isCollapsibleTreeRow(row);
   return (
     <button
       type="button"
       aria-expanded={collapsible ? !collapsed : undefined}
       className={className}
+      onContextMenu={onContextMenu}
       onClick={onSelect}
       title={row.detail ?? row.label}
     >
@@ -765,6 +880,13 @@ function isCollapsibleTreeRow(row: TreeRow): boolean {
   return row.kind === "folder" || row.kind === "root";
 }
 
+function excludePatternForTreeRow(row: TreeRow): string | undefined {
+  if (row.kind === "file") {
+    return row.file.relativePath;
+  }
+  return row.kind === "folder" && row.detail ? `${row.detail}/**` : undefined;
+}
+
 function visibleTreeRows(rows: TreeRow[], collapsedIds: ReadonlySet<string>): TreeRow[] {
   const visibleRows: TreeRow[] = [];
   let collapsedDepth: number | undefined;
@@ -789,11 +911,22 @@ function treeRows(payload: WorkspaceFilesPayload): TreeRow[] {
     if (root.files.length === 0) {
       continue;
     }
+    const folderMatches = new Map<string, boolean>();
+    for (const file of root.files) {
+      if (!file.matchesFilter) {
+        continue;
+      }
+      const parts = file.relativePath.split("/");
+      for (let index = 0; index < parts.length - 1; index += 1) {
+        folderMatches.set(parts.slice(0, index + 1).join("/"), true);
+      }
+    }
     rows.push({
       id: `root:${root.uri}`,
       kind: "root",
       depth: 0,
       label: root.displayPath ?? root.name,
+      matchesFilter: root.files.some((file) => file.matchesFilter),
       detail: `${root.files.length}`,
     });
     const folderIds = new Set<string>();
@@ -811,6 +944,7 @@ function treeRows(payload: WorkspaceFilesPayload): TreeRow[] {
             kind: "folder",
             depth: index + 1,
             label: parts[index],
+            matchesFilter: folderMatches.get(folderPath) === true,
             detail: folderPath,
           });
         }
@@ -820,6 +954,7 @@ function treeRows(payload: WorkspaceFilesPayload): TreeRow[] {
         kind: "file",
         depth: parts.length,
         label: parts.at(-1) ?? file.relativePath,
+        matchesFilter: file.matchesFilter,
         detail: file.relativePath,
         file,
       });
@@ -934,6 +1069,7 @@ function emptyPayload(): WorkspaceFilesPayload {
     },
     respectGitIgnore: false,
     roots: [],
+    showUnmatched: true,
     stats: { files: 0, totalBytes: 0 },
   };
 }

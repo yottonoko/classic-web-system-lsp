@@ -12,6 +12,7 @@ export interface WorkspaceFilesPayload {
   globStats?: WorkspaceFilesGlobStats;
   respectGitIgnore: boolean;
   roots: WorkspaceFilesRoot[];
+  showUnmatched: boolean;
   stats: {
     files: number;
     totalBytes: number;
@@ -45,6 +46,7 @@ export interface WorkspaceFilesRoot {
 export interface WorkspaceFilesFile {
   uri: string;
   fileName: string;
+  matchesFilter: boolean;
   relativePath: string;
   displayPath?: string;
   size: number;
@@ -55,6 +57,7 @@ export interface WorkspaceFilesPreviewRequest {
   includeGlobs: string[];
   excludeGlobs: string[];
   respectGitIgnore: boolean;
+  showUnmatched: boolean;
 }
 
 export interface WorkspaceFilesSelectedExportRequest extends WorkspaceFilesPreviewRequest {

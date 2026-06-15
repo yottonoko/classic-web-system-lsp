@@ -397,6 +397,15 @@ describe("VS Code extension package", () => {
     expect(webviewSource).toContain("globStats");
     expect(webviewSource).toContain("GlobEditor");
     expect(webviewSource).toContain("glob-count");
+    expect(webviewSource).toContain("showUnmatched");
+    expect(webviewSource).toContain("matchesFilter");
+    expect(webviewSource).toContain("onContextMenu");
+    expect(webviewSource).toContain("context-menu");
+    expect(webviewSource).toContain("excludePatternForTreeRow");
+    expect(webviewSource).toContain(
+      'return row.kind === "folder" && row.detail ? `${row.detail}/**`',
+    );
+    expect(webviewSource).toContain("opacity-50");
     expect(webviewSource).toContain("previewRequestSignature");
     expect(webviewSource).not.toContain("relation-descendant");
     expect(webviewSource).not.toContain("relation-ancestor");

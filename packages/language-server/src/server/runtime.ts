@@ -1114,6 +1114,7 @@ interface WorkspaceScanFilter {
 interface WorkspaceFilePreviewFile {
   uri: string;
   fileName: string;
+  matchesFilter: boolean;
   relativePath: string;
   size: number;
   mtimeMs: number;
@@ -1132,6 +1133,7 @@ interface WorkspaceFilePreviewPayload {
   globStats: WorkspaceFilePreviewGlobStats;
   respectGitIgnore: boolean;
   roots: WorkspaceFilePreviewRoot[];
+  showUnmatched: boolean;
   stats: {
     files: number;
     totalBytes: number;
@@ -21352,6 +21354,7 @@ async function previewWorkspaceFilesForCommand(
     "respectGitIgnore",
     workspaceSettings.respectGitIgnore === true,
   );
+  const showUnmatched = previewWorkspaceBooleanArgument(argument, "showUnmatched", true);
   const maxFiles = previewWorkspacePositiveIntegerArgument(
     argument,
     "maxFiles",
@@ -21367,6 +21370,7 @@ async function previewWorkspaceFilesForCommand(
       includeGlobs,
       excludeGlobs,
       respectGitIgnore,
+      showUnmatched,
       maxFiles,
       cancellation,
       task,
@@ -21425,6 +21429,7 @@ async function previewWorkspaceFilesAsync(
   includeGlobs: string[],
   excludeGlobs: string[],
   respectGitIgnore: boolean,
+  showUnmatched: boolean,
   maxFiles: number,
   cancellation: AnalysisCancellation,
   progress?: AspLspProgressTaskHandle,
@@ -21435,6 +21440,7 @@ async function previewWorkspaceFilesAsync(
   const previewRoots: WorkspaceFilePreviewRoot[] = [];
   const globStats = createWorkspacePreviewGlobStats(includeGlobs, excludeGlobs);
   let files = 0;
+  let visibleFiles = 0;
   let totalBytes = 0;
   let truncated = false;
   for (const root of roots) {
@@ -21442,7 +21448,7 @@ async function previewWorkspaceFilesAsync(
     const normalizedRoot = normalizeFileName(root);
     progress?.update({
       label: "workspace.previewFiles",
-      current: files,
+      current: visibleFiles,
       total: maxFiles,
       detail: progressFileLabel(normalizedRoot),
     });
@@ -21455,15 +21461,19 @@ async function previewWorkspaceFilesAsync(
     const rootFiles = await previewWorkspaceRootFilesAsync(filter, settings, {
       maxFiles,
       get files() {
-        return files;
+        return visibleFiles;
       },
       addFile(file): void {
-        files += 1;
-        totalBytes += file.size;
+        visibleFiles += 1;
+        if (file.matchesFilter) {
+          files += 1;
+          totalBytes += file.size;
+        }
       },
       cancellation,
       globStats,
       progress,
+      showUnmatched,
     });
     if (rootFiles.truncated) {
       truncated = true;
@@ -21481,6 +21491,7 @@ async function previewWorkspaceFilesAsync(
     globStats,
     respectGitIgnore,
     roots: previewRoots,
+    showUnmatched,
     stats: {
       files,
       totalBytes,
@@ -21499,6 +21510,7 @@ async function previewWorkspaceRootFilesAsync(
     cancellation: AnalysisCancellation;
     globStats: WorkspaceFilePreviewGlobStats;
     progress?: AspLspProgressTaskHandle;
+    showUnmatched: boolean;
   },
 ): Promise<{ files: WorkspaceFilePreviewFile[]; truncated: boolean }> {
   const stat = await fsGateway.statAsync(filter.root);
@@ -21519,7 +21531,7 @@ async function previewWorkspaceRootFilesAsync(
     const batches = await mapWithConcurrency(batch, concurrency, async (directory) => {
       const listing = await fsGateway.readdirAsync(directory);
       const childDirectories: string[] = [];
-      const childFiles: string[] = [];
+      const childFiles: Array<{ fileName: string; matchesFilter: boolean }> = [];
       for (const entry of [...(listing?.entries ?? [])].sort((left, right) =>
         left.name.localeCompare(right.name),
       )) {
@@ -21538,38 +21550,38 @@ async function previewWorkspaceRootFilesAsync(
             continue;
           }
           const includeIndexes = workspacePatternMatchIndexes(filter.includes, relative, false);
-          if (includeIndexes.length === 0) {
-            continue;
-          }
+          const includeMatched = includeIndexes.length > 0;
           for (const index of includeIndexes) {
             state.globStats.include[index].files += 1;
           }
-          const excludeIndexes = workspacePatternExcludesPathIndexes(
-            filter.excludes,
-            relative,
-            false,
-          );
+          const excludeIndexes = includeMatched
+            ? workspacePatternExcludesPathIndexes(filter.excludes, relative, false)
+            : [];
           for (const index of excludeIndexes) {
             state.globStats.exclude[index].files += 1;
           }
-          if (excludeIndexes.length === 0) {
-            childFiles.push(fullPath);
+          const matchesFilter = includeMatched && excludeIndexes.length === 0;
+          if (matchesFilter || state.showUnmatched) {
+            childFiles.push({ fileName: fullPath, matchesFilter });
           }
         }
       }
       return { childDirectories, childFiles };
     });
-    const childFiles: string[] = [];
+    const childFiles: Array<{ fileName: string; matchesFilter: boolean }> = [];
     for (const item of batches) {
       directories.push(...item.childDirectories);
       childFiles.push(...item.childFiles);
     }
-    for (const fileName of childFiles.sort((left, right) => left.localeCompare(right))) {
+    for (const candidate of childFiles.sort((left, right) =>
+      left.fileName.localeCompare(right.fileName),
+    )) {
       throwIfGraphCancelled(state.cancellation);
       if (state.files >= state.maxFiles) {
         truncated = true;
         break;
       }
+      const fileName = candidate.fileName;
       const fileStat = await fsGateway.statAsync(fileName);
       if (!fileStat?.isFile()) {
         continue;
@@ -21582,6 +21594,7 @@ async function previewWorkspaceRootFilesAsync(
       const file: WorkspaceFilePreviewFile = {
         uri: pathToFileUri(normalized),
         fileName: normalized,
+        matchesFilter: candidate.matchesFilter,
         relativePath,
         size: fileStat.size,
         mtimeMs: fileStat.mtimeMs,

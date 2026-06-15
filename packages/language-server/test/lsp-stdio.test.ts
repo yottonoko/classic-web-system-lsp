@@ -9606,6 +9606,97 @@ End Sub
       }
     });
 
+    it("previews workspace files with unmatched visibility", async () => {
+      const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "asp-lsp-workspace-files-"));
+      const includesDir = path.join(tempDir, "includes");
+      const legacyDir = path.join(tempDir, "legacy");
+      fs.mkdirSync(includesDir, { recursive: true });
+      fs.mkdirSync(legacyDir, { recursive: true });
+      fs.writeFileSync(path.join(tempDir, "default.asp"), `<%\nResponse.Write "ok"\n%>`, "utf8");
+      fs.writeFileSync(
+        path.join(includesDir, "common.inc"),
+        `<%\nConst CommonValue = 1\n%>`,
+        "utf8",
+      );
+      fs.writeFileSync(path.join(legacyDir, "old.asp"), `<%\nResponse.Write "old"\n%>`, "utf8");
+      fs.writeFileSync(path.join(tempDir, "notes.txt"), `ignored`, "utf8");
+      const includeGlobs = ["**/*.asp"];
+      const excludeGlobs = ["legacy/**"];
+      const server = new RpcServer();
+      const previewFiles = (payload: {
+        roots?: Array<{ files?: Array<{ relativePath?: string; matchesFilter?: boolean }> }>;
+      }): Array<{ relativePath?: string; matchesFilter?: boolean }> =>
+        payload.roots?.flatMap((root) => root.files ?? []) ?? [];
+      try {
+        await server.start();
+        await server.request("initialize", {
+          processId: process.pid,
+          rootUri: pathToFileURL(tempDir).toString(),
+          capabilities: {},
+        });
+
+        const visible = (await server.request("workspace/executeCommand", {
+          command: "aspLsp.server.previewWorkspaceFiles",
+          arguments: [
+            {
+              includeGlobs,
+              excludeGlobs,
+              respectGitIgnore: false,
+              showUnmatched: true,
+              maxFiles: 64,
+            },
+          ],
+        })) as {
+          showUnmatched?: boolean;
+          globStats?: { include?: Array<{ files?: number }>; exclude?: Array<{ files?: number }> };
+          roots?: Array<{ files?: Array<{ relativePath?: string; matchesFilter?: boolean }> }>;
+          stats?: { files?: number };
+        };
+
+        expect(visible.showUnmatched).toBe(true);
+        expect(visible.stats?.files).toBe(1);
+        expect(visible.globStats?.include?.[0]?.files).toBe(2);
+        expect(visible.globStats?.exclude?.[0]?.files).toBe(1);
+        expect(previewFiles(visible)).toEqual(
+          expect.arrayContaining([
+            expect.objectContaining({ relativePath: "default.asp", matchesFilter: true }),
+            expect.objectContaining({ relativePath: "includes/common.inc", matchesFilter: false }),
+            expect.objectContaining({ relativePath: "legacy/old.asp", matchesFilter: false }),
+          ]),
+        );
+        expect(previewFiles(visible).map((file) => file.relativePath)).not.toContain("notes.txt");
+
+        const matchedOnly = (await server.request("workspace/executeCommand", {
+          command: "aspLsp.server.previewWorkspaceFiles",
+          arguments: [
+            {
+              includeGlobs,
+              excludeGlobs,
+              respectGitIgnore: false,
+              showUnmatched: false,
+              maxFiles: 64,
+            },
+          ],
+        })) as {
+          showUnmatched?: boolean;
+          roots?: Array<{ files?: Array<{ relativePath?: string; matchesFilter?: boolean }> }>;
+          stats?: { files?: number };
+        };
+
+        expect(matchedOnly.showUnmatched).toBe(false);
+        expect(matchedOnly.stats?.files).toBe(1);
+        expect(previewFiles(matchedOnly)).toEqual([
+          expect.objectContaining({ relativePath: "default.asp", matchesFilter: true }),
+        ]);
+
+        await server.request("shutdown", null);
+        server.notify("exit", undefined);
+      } finally {
+        server.stop();
+        fs.rmSync(tempDir, { recursive: true, force: true });
+      }
+    });
+
     it("exports the active document analysis workbook from the server command", async () => {
       const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "asp-lsp-analysis-excel-"));
       const page = path.join(tempDir, "default.asp");
