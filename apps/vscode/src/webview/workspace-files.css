@@ -17,8 +17,7 @@ body {
 }
 
 button,
-input,
-textarea {
+input {
   font: inherit;
 }
 
@@ -130,7 +129,7 @@ button:disabled {
 }
 
 .search-input,
-textarea {
+.glob-row input {
   background: var(--vscode-input-background, #141b24);
   border: 1px solid var(--vscode-input-border, #354052);
   border-radius: 4px;
@@ -145,13 +144,13 @@ textarea {
 }
 
 .search-input:focus,
-textarea:focus {
+.glob-row input:focus {
   border-color: var(--vscode-focusBorder, #4e94ce);
   box-shadow: 0 0 0 1px color-mix(in srgb, var(--vscode-focusBorder, #4e94ce) 80%, transparent);
 }
 
 .filter-strip {
-  align-items: end;
+  align-items: start;
   border-bottom: 1px solid var(--asp-lsp-border-muted);
   display: grid;
   gap: 14px;
@@ -159,28 +158,77 @@ textarea:focus {
   padding: 12px 22px 14px;
 }
 
-.glob-field {
+.glob-editor {
   display: grid;
-  gap: 6px;
+  gap: 8px;
+  min-width: 0;
 }
 
-.glob-field span,
+.glob-editor-heading {
+  align-items: center;
+  display: flex;
+  gap: 10px;
+  justify-content: space-between;
+}
+
+.glob-editor-heading > span,
 .checkbox-row span,
 .details-list dt {
   color: var(--asp-lsp-text-muted);
   font-size: 12px;
 }
 
-textarea {
-  line-height: 1.35;
-  min-height: 42px;
-  padding: 8px 10px;
-  resize: vertical;
-  width: 100%;
+.glob-editor-heading button {
+  min-height: 24px;
+  padding: 2px 8px;
+}
+
+.glob-editor-list {
+  display: grid;
+  gap: 6px;
+}
+
+.glob-row {
+  display: grid;
+  gap: 8px;
+  grid-template-columns: minmax(0, 1fr) minmax(86px, auto) 30px;
+}
+
+.glob-row input {
+  min-height: 32px;
+  min-width: 0;
+  padding: 6px 10px;
+}
+
+.glob-count {
+  align-items: center;
+  background: var(--asp-lsp-chip);
+  border: 1px solid var(--asp-lsp-chip-border);
+  border-radius: 999px;
+  color: #b9d2ff;
+  display: inline-flex;
+  font-size: 12px;
+  justify-content: center;
+  min-height: 28px;
+  padding: 2px 10px;
+  white-space: nowrap;
+}
+
+.glob-row.exclude .glob-count {
+  background: var(--asp-lsp-danger-chip);
+  border-color: var(--asp-lsp-danger-border);
+  color: #ffb4bd;
+}
+
+.icon-button {
+  font-family: var(--vscode-editor-font-family, ui-monospace, SFMono-Regular, Menlo, monospace);
+  min-height: 30px;
+  min-width: 30px;
+  padding: 0;
 }
 
 .filter-actions {
-  align-items: end;
+  align-items: stretch;
   display: grid;
   gap: 8px;
   min-width: 170px;
@@ -443,15 +491,24 @@ textarea {
 }
 
 .filter-chip {
+  align-items: center;
   background: var(--asp-lsp-chip);
   border: 1px solid var(--asp-lsp-chip-border);
   border-radius: 6px;
   color: #b9d2ff;
+  display: inline-flex;
   font-family: var(--vscode-editor-font-family, ui-monospace, SFMono-Regular, Menlo, monospace);
   font-size: 12px;
+  gap: 8px;
   line-height: 1.35;
   overflow-wrap: anywhere;
   padding: 2px 8px;
+}
+
+.filter-chip span {
+  color: var(--asp-lsp-text-muted);
+  font-family: var(--vscode-font-family, Inter, system-ui, sans-serif);
+  white-space: nowrap;
 }
 
 .filter-chip.danger {

@@ -4,6 +4,7 @@ import { VirtualList } from "./virtual-list";
 import styles from "./workspace-files.css?inline";
 import type {
   WorkspaceFilesFile,
+  WorkspaceFilesGlobStat,
   WorkspaceFilesPayload,
   WorkspaceFilesPreviewRequest,
 } from "../workspace-files-webview";
@@ -38,11 +39,20 @@ type Summary = {
   latestModifiedMs: number;
 };
 
+type GlobInputItem = {
+  id: string;
+  value: string;
+};
+
+type GlobKind = "exclude" | "include";
+
 type Locale = "en" | "ja";
 type TextKey =
+  | "action.addGlob"
   | "action.export"
   | "action.preview"
   | "action.refresh"
+  | "action.removeGlob"
   | "analysisOverview"
   | "currentFilters"
   | "empty"
@@ -53,6 +63,7 @@ type TextKey =
   | "folder"
   | "foldersScanned"
   | "fullPath"
+  | "globPending"
   | "includeGlobs"
   | "lastModified"
   | "lastScanned"
@@ -76,12 +87,15 @@ type TextKey =
 
 const vscode = acquireVsCodeApi();
 const initialPayload = window.__ASP_LSP_WORKSPACE_FILES__;
+let nextGlobItemId = 0;
 
 const messages: Record<Locale, Record<TextKey, string>> = {
   en: {
+    "action.addGlob": "Add glob",
     "action.export": "Export Excel",
     "action.preview": "Preview",
     "action.refresh": "Refresh",
+    "action.removeGlob": "Remove glob",
     analysisOverview: "Analysis overview",
     currentFilters: "Current filters",
     empty: "No Classic ASP files match the current filters.",
@@ -92,6 +106,7 @@ const messages: Record<Locale, Record<TextKey, string>> = {
     folder: "Folder",
     foldersScanned: "Folders scanned",
     fullPath: "Full path",
+    globPending: "Preview required",
     includeGlobs: "Include globs",
     lastModified: "Modified",
     lastScanned: "Last scanned",
@@ -114,9 +129,11 @@ const messages: Record<Locale, Record<TextKey, string>> = {
     workspace: "Workspace",
   },
   ja: {
+    "action.addGlob": "glob 追加",
     "action.export": "Excel export",
     "action.preview": "Preview",
     "action.refresh": "更新",
+    "action.removeGlob": "glob 削除",
     analysisOverview: "解析 overview",
     currentFilters: "現在の filter",
     empty: "現在の filter に一致する Classic ASP file はありません。",
@@ -127,6 +144,7 @@ const messages: Record<Locale, Record<TextKey, string>> = {
     folder: "Folder",
     foldersScanned: "Folders scanned",
     fullPath: "Full path",
+    globPending: "Preview 待ち",
     includeGlobs: "Include globs",
     lastModified: "Modified",
     lastScanned: "Last scanned",
@@ -153,8 +171,12 @@ const messages: Record<Locale, Record<TextKey, string>> = {
 function App(): React.ReactElement {
   const [payload, setPayload] = useState<WorkspaceFilesPayload>(initialPayload ?? emptyPayload());
   const locale: Locale = payload.locale === "ja" ? "ja" : "en";
-  const [includeGlobs, setIncludeGlobs] = useState(globText(payload.includeGlobs));
-  const [excludeGlobs, setExcludeGlobs] = useState(globText(payload.excludeGlobs));
+  const [includeGlobItems, setIncludeGlobItems] = useState(() =>
+    globItems(payload.includeGlobs, "include"),
+  );
+  const [excludeGlobItems, setExcludeGlobItems] = useState(() =>
+    globItems(payload.excludeGlobs, "exclude"),
+  );
   const [respectGitIgnore, setRespectGitIgnore] = useState(payload.respectGitIgnore);
   const [search, setSearch] = useState("");
   const [selectedUri, setSelectedUri] = useState<string | undefined>();
@@ -166,8 +188,8 @@ function App(): React.ReactElement {
   const selectedFile =
     allFiles.find((file) => file.uri === selectedUri) ?? allFiles[0] ?? undefined;
   const fileUris = allFiles.map((file) => file.uri);
-  const includeList = globLines(includeGlobs);
-  const excludeList = globLines(excludeGlobs);
+  const includeList = globValues(includeGlobItems);
+  const excludeList = globValues(excludeGlobItems);
   const text = (key: TextKey, params: Record<string, string | number> = {}): string => {
     let message = messages[locale][key] ?? messages.en[key];
     for (const [name, value] of Object.entries(params)) {
@@ -182,6 +204,37 @@ function App(): React.ReactElement {
     excludeGlobs: excludeList,
     respectGitIgnore,
   });
+
+  const updateGlobItem = (kind: GlobKind, id: string, value: string): void => {
+    const update = (item: GlobInputItem): GlobInputItem =>
+      item.id === id ? { ...item, value } : item;
+    if (kind === "include") {
+      setIncludeGlobItems((items) => items.map(update));
+    } else {
+      setExcludeGlobItems((items) => items.map(update));
+    }
+  };
+
+  const addGlobItem = (kind: GlobKind): void => {
+    const item = createGlobItem(kind, "");
+    if (kind === "include") {
+      setIncludeGlobItems((items) => [...items, item]);
+    } else {
+      setExcludeGlobItems((items) => [...items, item]);
+    }
+  };
+
+  const removeGlobItem = (kind: GlobKind, id: string): void => {
+    const remove = (items: GlobInputItem[]): GlobInputItem[] => {
+      const next = items.filter((item) => item.id !== id);
+      return next.length > 0 ? next : [createGlobItem(kind, "")];
+    };
+    if (kind === "include") {
+      setIncludeGlobItems(remove);
+    } else {
+      setExcludeGlobItems(remove);
+    }
+  };
 
   function preview(): void {
     const requestId = `${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`;
@@ -201,6 +254,8 @@ function App(): React.ReactElement {
       setBusy(false);
       if (message.payload) {
         setPayload(message.payload);
+        setIncludeGlobItems(globItems(message.payload.includeGlobs, "include"));
+        setExcludeGlobItems(globItems(message.payload.excludeGlobs, "exclude"));
         setSelectedUri(undefined);
       } else {
         setError(text("previewFailed", { error: message.error ?? "unknown" }));
@@ -268,22 +323,26 @@ function App(): React.ReactElement {
         </div>
       </header>
       <section className="filter-strip" aria-label={text("filters")}>
-        <label className="glob-field">
-          <span>{text("includeGlobs")}</span>
-          <textarea
-            value={includeGlobs}
-            onChange={(event) => setIncludeGlobs(event.currentTarget.value)}
-            spellCheck={false}
-          />
-        </label>
-        <label className="glob-field">
-          <span>{text("excludeGlobs")}</span>
-          <textarea
-            value={excludeGlobs}
-            onChange={(event) => setExcludeGlobs(event.currentTarget.value)}
-            spellCheck={false}
-          />
-        </label>
+        <GlobEditor
+          items={includeGlobItems}
+          kind="include"
+          label={text("includeGlobs")}
+          stats={payload.globStats?.include}
+          text={text}
+          onAdd={() => addGlobItem("include")}
+          onChange={(id, value) => updateGlobItem("include", id, value)}
+          onRemove={(id) => removeGlobItem("include", id)}
+        />
+        <GlobEditor
+          items={excludeGlobItems}
+          kind="exclude"
+          label={text("excludeGlobs")}
+          stats={payload.globStats?.exclude}
+          text={text}
+          onAdd={() => addGlobItem("exclude")}
+          onChange={(id, value) => updateGlobItem("exclude", id, value)}
+          onRemove={(id) => removeGlobItem("exclude", id)}
+        />
         <div className="filter-actions">
           <label className="checkbox-row">
             <input
@@ -373,10 +432,18 @@ function App(): React.ReactElement {
           </section>
           <section className="panel-section">
             <h2>{text("currentFilters")}</h2>
-            <GlobChips label={text("includeGlobs")} none={text("none")} values={includeList} />
+            <GlobChips
+              label={text("includeGlobs")}
+              none={text("none")}
+              stats={payload.globStats?.include}
+              text={text}
+              values={includeList}
+            />
             <GlobChips
               label={text("excludeGlobs")}
               none={text("none")}
+              stats={payload.globStats?.exclude}
+              text={text}
               tone="danger"
               values={excludeList}
             />
@@ -444,14 +511,73 @@ function MetricCard({
   );
 }
 
+function GlobEditor({
+  items,
+  kind,
+  label,
+  stats,
+  text,
+  onAdd,
+  onChange,
+  onRemove,
+}: {
+  items: GlobInputItem[];
+  kind: GlobKind;
+  label: string;
+  stats: WorkspaceFilesGlobStat[] | undefined;
+  text(key: TextKey, params?: Record<string, string | number>): string;
+  onAdd(): void;
+  onChange(id: string, value: string): void;
+  onRemove(id: string): void;
+}): React.ReactElement {
+  return (
+    <section className="glob-editor">
+      <div className="glob-editor-heading">
+        <span>{label}</span>
+        <button type="button" onClick={onAdd}>
+          {text("action.addGlob")}
+        </button>
+      </div>
+      <div className="glob-editor-list">
+        {items.map((item, index) => {
+          const count = globStatCount(stats, index, item.value);
+          return (
+            <div className={`glob-row ${kind}`} key={item.id}>
+              <input
+                aria-label={`${label} ${index + 1}`}
+                value={item.value}
+                onChange={(event) => onChange(item.id, event.currentTarget.value)}
+                spellCheck={false}
+              />
+              <span className="glob-count">{globCountText(count, text)}</span>
+              <button
+                type="button"
+                className="icon-button"
+                title={text("action.removeGlob")}
+                onClick={() => onRemove(item.id)}
+              >
+                x
+              </button>
+            </div>
+          );
+        })}
+      </div>
+    </section>
+  );
+}
+
 function GlobChips({
   label,
   none,
+  stats,
+  text,
   tone = "default",
   values,
 }: {
   label: string;
   none: string;
+  stats: WorkspaceFilesGlobStat[] | undefined;
+  text(key: TextKey, params?: Record<string, string | number>): string;
   tone?: "danger" | "default";
   values: string[];
 }): React.ReactElement {
@@ -462,9 +588,10 @@ function GlobChips({
         {values.length === 0 ? (
           <em>{none}</em>
         ) : (
-          values.map((value) => (
-            <code className={`filter-chip ${tone}`} key={value}>
+          values.map((value, index) => (
+            <code className={`filter-chip ${tone}`} key={`${value}:${index}`}>
               {value}
+              <span>{globCountText(globStatCount(stats, index, value), text)}</span>
             </code>
           ))
         )}
@@ -588,36 +715,38 @@ function summarizePayload(payload: WorkspaceFilesPayload): Summary {
   return { asaFiles, aspFiles, folders: folders.size, incFiles, latestModifiedMs };
 }
 
-function globText(globs: string[]): string {
-  return globs.join(", ");
+function globItems(globs: string[], kind: GlobKind): GlobInputItem[] {
+  const items = globs.map((glob) => createGlobItem(kind, glob));
+  return items.length > 0 ? items : [createGlobItem(kind, "")];
 }
 
-function globLines(value: string): string[] {
-  const globs: string[] = [];
-  let current = "";
-  let braceDepth = 0;
-  const flush = (): void => {
-    const glob = current.trim();
-    if (glob.length > 0) {
-      globs.push(glob);
-    }
-    current = "";
-  };
-  for (const char of value) {
-    if (char === "{") {
-      braceDepth += 1;
-      current += char;
-    } else if (char === "}") {
-      braceDepth = Math.max(0, braceDepth - 1);
-      current += char;
-    } else if ((char === "," && braceDepth === 0) || char === "\n" || char === "\r") {
-      flush();
-    } else {
-      current += char;
-    }
+function createGlobItem(kind: GlobKind, value: string): GlobInputItem {
+  nextGlobItemId += 1;
+  return { id: `${kind}:${nextGlobItemId}`, value };
+}
+
+function globValues(items: GlobInputItem[]): string[] {
+  return items.map((item) => item.value.trim()).filter((value) => value.length > 0);
+}
+
+function globStatCount(
+  stats: WorkspaceFilesGlobStat[] | undefined,
+  index: number,
+  value: string,
+): number | undefined {
+  const glob = value.trim();
+  if (glob.length === 0) {
+    return 0;
   }
-  flush();
-  return globs;
+  const stat = stats?.[index];
+  return stat?.glob === glob ? stat.files : undefined;
+}
+
+function globCountText(
+  count: number | undefined,
+  text: (key: TextKey, params?: Record<string, string | number>) => string,
+): string {
+  return count === undefined ? text("globPending") : text("fileCount", { count });
 }
 
 function fileType(file: WorkspaceFilesFile): string {
@@ -661,6 +790,10 @@ function emptyPayload(): WorkspaceFilesPayload {
     mode: "view",
     includeGlobs: ["**/*.{asp,asa,inc}"],
     excludeGlobs: [],
+    globStats: {
+      include: [{ glob: "**/*.{asp,asa,inc}", files: 0 }],
+      exclude: [],
+    },
     respectGitIgnore: false,
     roots: [],
     stats: { files: 0, totalBytes: 0 },

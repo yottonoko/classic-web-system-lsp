@@ -11,6 +11,7 @@ export interface WorkspaceFilesPayload {
   locale?: WorkspaceFilesLocale;
   includeGlobs: string[];
   excludeGlobs: string[];
+  globStats?: WorkspaceFilesGlobStats;
   respectGitIgnore: boolean;
   roots: WorkspaceFilesRoot[];
   stats: {
@@ -23,6 +24,16 @@ export interface WorkspaceFilesPayload {
   settings?: {
     theme?: WorkspaceFilesThemeSetting;
   };
+}
+
+export interface WorkspaceFilesGlobStats {
+  include: WorkspaceFilesGlobStat[];
+  exclude: WorkspaceFilesGlobStat[];
+}
+
+export interface WorkspaceFilesGlobStat {
+  glob: string;
+  files: number;
 }
 
 export interface WorkspaceFilesRoot {

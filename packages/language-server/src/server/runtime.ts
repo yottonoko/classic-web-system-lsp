@@ -1129,6 +1129,7 @@ interface WorkspaceFilePreviewRoot {
 interface WorkspaceFilePreviewPayload {
   includeGlobs: string[];
   excludeGlobs: string[];
+  globStats: WorkspaceFilePreviewGlobStats;
   respectGitIgnore: boolean;
   roots: WorkspaceFilePreviewRoot[];
   stats: {
@@ -1138,6 +1139,16 @@ interface WorkspaceFilePreviewPayload {
   truncated?: {
     reason: string;
   };
+}
+
+interface WorkspaceFilePreviewGlobStats {
+  include: WorkspaceFilePreviewGlobStat[];
+  exclude: WorkspaceFilePreviewGlobStat[];
+}
+
+interface WorkspaceFilePreviewGlobStat {
+  glob: string;
+  files: number;
 }
 
 function aspFileOperationFilter() {
@@ -15379,12 +15390,40 @@ function workspaceScanFilterShouldVisitDirectory(
   );
 }
 
+function workspacePreviewShouldVisitDirectory(
+  filter: WorkspaceScanFilter,
+  directory: string,
+): boolean {
+  const normalized = normalizeFileName(directory);
+  if (normalized === filter.root) {
+    return true;
+  }
+  if (isHardExcludedWorkspaceDirectory(path.basename(normalized), normalized)) {
+    return false;
+  }
+  const relative = workspaceRelativePath(filter.root, normalized);
+  if (!relative) {
+    return false;
+  }
+  return !workspaceGitIgnoreRulesIgnorePath(filter.gitIgnoreRules, relative, true);
+}
+
 function workspacePatternListMatches(
   patterns: WorkspaceGlobPattern[],
   relativePath: string,
   isDirectory: boolean,
 ): boolean {
   return patterns.some((pattern) => workspacePatternMatches(pattern, relativePath, isDirectory));
+}
+
+function workspacePatternMatchIndexes(
+  patterns: WorkspaceGlobPattern[],
+  relativePath: string,
+  isDirectory: boolean,
+): number[] {
+  return patterns.flatMap((pattern, index) =>
+    workspacePatternMatches(pattern, relativePath, isDirectory) ? [index] : [],
+  );
 }
 
 function workspacePatternListExcludesPath(
@@ -15396,6 +15435,19 @@ function workspacePatternListExcludesPath(
     (pattern) =>
       workspacePatternMatches(pattern, relativePath, isDirectory) ||
       workspacePatternMatchesAncestorDirectory(pattern, relativePath),
+  );
+}
+
+function workspacePatternExcludesPathIndexes(
+  patterns: WorkspaceGlobPattern[],
+  relativePath: string,
+  isDirectory: boolean,
+): number[] {
+  return patterns.flatMap((pattern, index) =>
+    workspacePatternMatches(pattern, relativePath, isDirectory) ||
+    workspacePatternMatchesAncestorDirectory(pattern, relativePath)
+      ? [index]
+      : [],
   );
 }
 
@@ -21306,6 +21358,7 @@ async function previewWorkspaceFilesAsync(
     normalizeFileName(left).localeCompare(normalizeFileName(right)),
   );
   const previewRoots: WorkspaceFilePreviewRoot[] = [];
+  const globStats = createWorkspacePreviewGlobStats(includeGlobs, excludeGlobs);
   let files = 0;
   let totalBytes = 0;
   let truncated = false;
@@ -21334,6 +21387,7 @@ async function previewWorkspaceFilesAsync(
         totalBytes += file.size;
       },
       cancellation,
+      globStats,
       progress,
     });
     if (rootFiles.truncated) {
@@ -21349,6 +21403,7 @@ async function previewWorkspaceFilesAsync(
   return {
     includeGlobs,
     excludeGlobs,
+    globStats,
     respectGitIgnore,
     roots: previewRoots,
     stats: {
@@ -21367,6 +21422,7 @@ async function previewWorkspaceRootFilesAsync(
     readonly files: number;
     addFile(file: WorkspaceFilePreviewFile): void;
     cancellation: AnalysisCancellation;
+    globStats: WorkspaceFilePreviewGlobStats;
     progress?: AspLspProgressTaskHandle;
   },
 ): Promise<{ files: WorkspaceFilePreviewFile[]; truncated: boolean }> {
@@ -21395,15 +21451,35 @@ async function previewWorkspaceRootFilesAsync(
         throwIfGraphCancelled(state.cancellation);
         const fullPath = path.join(directory, entry.name);
         if (entry.isDirectory()) {
-          if (workspaceScanFilterShouldVisitDirectory(filter, fullPath)) {
+          if (workspacePreviewShouldVisitDirectory(filter, fullPath)) {
             childDirectories.push(fullPath);
           }
-        } else if (
-          entry.isFile() &&
-          isAspWorkspaceFile(fullPath) &&
-          workspaceScanFilterIncludesFile(filter, fullPath)
-        ) {
-          childFiles.push(fullPath);
+        } else if (entry.isFile() && isAspWorkspaceFile(fullPath)) {
+          const relative = workspaceRelativePath(filter.root, normalizeFileName(fullPath));
+          if (
+            !relative ||
+            workspaceGitIgnoreRulesIgnorePath(filter.gitIgnoreRules, relative, false)
+          ) {
+            continue;
+          }
+          const includeIndexes = workspacePatternMatchIndexes(filter.includes, relative, false);
+          if (includeIndexes.length === 0) {
+            continue;
+          }
+          for (const index of includeIndexes) {
+            state.globStats.include[index].files += 1;
+          }
+          const excludeIndexes = workspacePatternExcludesPathIndexes(
+            filter.excludes,
+            relative,
+            false,
+          );
+          for (const index of excludeIndexes) {
+            state.globStats.exclude[index].files += 1;
+          }
+          if (excludeIndexes.length === 0) {
+            childFiles.push(fullPath);
+          }
         }
       }
       return { childDirectories, childFiles };
@@ -21447,6 +21523,16 @@ async function previewWorkspaceRootFilesAsync(
     await yieldToEventLoop();
   }
   return { files, truncated };
+}
+
+function createWorkspacePreviewGlobStats(
+  includeGlobs: string[],
+  excludeGlobs: string[],
+): WorkspaceFilePreviewGlobStats {
+  return {
+    include: includeGlobs.map((glob) => ({ glob, files: 0 })),
+    exclude: excludeGlobs.map((glob) => ({ glob, files: 0 })),
+  };
 }
 
 async function buildAspGraphFromExcelFileUrisAsync(

@@ -380,7 +380,10 @@ describe("VS Code extension package", () => {
     expect(webviewSource).toContain('type: "preview"');
     expect(webviewSource).toContain('type: "exportExcel"');
     expect(webviewSource).toContain("VirtualList");
-    expect(webviewSource).toContain("grid-template-columns: minmax(320px, 1fr)");
+    expect(webviewSource).toContain("globStats");
+    expect(webviewSource).toContain("GlobEditor");
+    expect(webviewSource).toContain("glob-count");
+    expect(webviewSource).toContain("grid-template-columns: minmax(540px, 1fr)");
   });
 
   it("keeps graph search responsive and keyboard-accessible", () => {
