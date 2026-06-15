@@ -32,6 +32,7 @@ import {
   type WorkspaceFilesPreviewRequest,
   type WorkspaceFilesSelectedExportRequest,
 } from "./workspace-files-webview";
+import { showAspSettingsWebview } from "./settings-webview";
 import { getServerModulePath } from "./server-path";
 
 const maxCrashRestartCount = 4;
@@ -161,6 +162,9 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
       executeServerCommand(clearProcessCacheServerCommand),
     ),
     vscode.commands.registerCommand("aspLsp.openOutput", () => outputChannel?.show()),
+    vscode.commands.registerCommand("aspLsp.openSettings", () =>
+      showAspSettingsWebview(context, extensionLocale(), webviewThemeSetting()),
+    ),
     vscode.commands.registerCommand("aspLsp.showProgressDetails", async () =>
       showProgressDetails(),
     ),

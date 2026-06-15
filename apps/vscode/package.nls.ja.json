@@ -1,5 +1,6 @@
 {
   "extension.description": "asp-lsp による Classic ASP language support です。",
+  "command.openSettings.title": "Classic ASP: 設定を開く",
   "configuration.title": "Classic ASP LSP",
   "configuration.locale.description": "asp-lsp が生成する diagnostics、code actions、CodeLens、extension message の表示言語です。auto は VS Code または LSP client の locale に従います。",
   "configuration.defaultLanguage.description": "Classic ASP page の既定 server-side script language です。",

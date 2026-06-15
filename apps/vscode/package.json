@@ -1195,6 +1195,11 @@
         "title": "%command.openOutput.title%"
       },
       {
+        "command": "aspLsp.openSettings",
+        "title": "%command.openSettings.title%",
+        "icon": "$(settings-gear)"
+      },
+      {
         "command": "aspLsp.showProgressDetails",
         "title": "%command.showProgressDetails.title%"
       },
@@ -1330,6 +1335,7 @@
   "activationEvents": [
     "onCommand:aspLsp.exportCurrentFileAnalysisExcel",
     "onCommand:aspLsp.exportCurrentFileFlowchart",
+    "onCommand:aspLsp.openSettings",
     "onCommand:aspLsp.showCurrentFileFlowchart",
     "onCommand:aspLsp.showCurrentFileGraph",
     "onCommand:aspLsp.showFolderGraph",

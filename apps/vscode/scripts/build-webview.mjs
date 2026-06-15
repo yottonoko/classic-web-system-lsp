@@ -26,6 +26,7 @@ await buildWebview(
   "workspace-files.js",
   false,
 );
+await buildWebview("settings.tsx", "AspLspSettingsWebview", "settings.js", false);
 
 async function buildWebview(entry, name, fileName, emptyOutDir) {
   await build({
