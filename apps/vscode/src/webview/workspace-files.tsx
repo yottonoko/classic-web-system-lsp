@@ -1,5 +1,6 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
+import { ImeSafeInput } from "./ime-safe-input";
 import { VirtualList } from "./virtual-list";
 import styles from "./workspace-files.css?inline";
 import { cn } from "../lib/utils";
@@ -457,12 +458,12 @@ function App(): React.ReactElement {
           </p>
         </div>
         <div className="toolbar-actions">
-          <input
+          <ImeSafeInput
             aria-label={text("search")}
             className="search-input"
             placeholder={text("search")}
             value={search}
-            onChange={(event) => setSearch(event.currentTarget.value)}
+            onValueChange={setSearch}
           />
         </div>
       </header>
@@ -712,10 +713,10 @@ function GlobEditor({
           const count = globStatCount(stats, index, item.value);
           return (
             <div className={cn("glob-row", kind)} key={item.id}>
-              <input
+              <ImeSafeInput
                 aria-label={`${label} ${index + 1}`}
                 value={item.value}
-                onChange={(event) => onChange(item.id, event.currentTarget.value)}
+                onValueChange={(value) => onChange(item.id, value)}
                 spellCheck={false}
               />
               <span className="glob-count">{globCountText(count, text)}</span>

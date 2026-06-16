@@ -194,6 +194,21 @@ describe("VS Code extension package", () => {
     expect(graphWebviewSource).toContain('graphText("toolbar.searchNodes")');
   });
 
+  it("avoids controlled text writes during IME composition in webviews", () => {
+    const imeInputSource = fs.readFileSync("src/webview/ime-safe-input.tsx", "utf8");
+
+    expect(imeInputSource).toContain("isComposingRef.current = true");
+    expect(imeInputSource).toContain("isComposingRef.current = false");
+    expect(imeInputSource).toContain("defaultValue={value}");
+    expect(imeInputSource).toContain("element.value = value");
+    expect(imeInputSource).not.toContain("value={value}");
+    expect(readSettingsWebviewSource()).toContain("ImeSafeTextarea");
+    expect(readSettingsWebviewSource()).toContain("ImeSafeInput");
+    expect(readWorkspaceFilesWebviewSource()).toContain("ImeSafeInput");
+    expect(readGraphWebviewSource()).toContain("ImeSafeInput");
+    expect(readFlowchartWebviewSource()).toContain("ImeSafeInput");
+  });
+
   it("keeps flowchart rendering focused on the selected section", () => {
     const flowchartSource = readFlowchartWebviewSource();
     const flowchartStyles = fs.readFileSync("src/webview/flowchart.css", "utf8");

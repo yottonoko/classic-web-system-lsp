@@ -5,6 +5,7 @@ import type { AnnotationHandler, CodeAnnotation, HighlightedCode } from "codehik
 import mermaid from "mermaid";
 import tailwindStyles from "./flowchart.css?inline";
 import { VirtualList } from "./virtual-list";
+import { ImeSafeInput } from "./ime-safe-input";
 import { cn } from "../lib/utils";
 import {
   attachSvgNodeHandlers,
@@ -462,15 +463,15 @@ function App(): React.ReactElement {
         </header>
         <div className="border-b border-[#263140] px-3 py-2">
           <div className="flex items-center gap-1">
-            <input
+            <ImeSafeInput
               ref={searchInputRef}
               aria-label={text("searchNodes")}
               className="h-7 min-w-0 flex-1 rounded border border-[#334255] bg-[#0c1117] px-2 text-xs text-[#d9e0ea] outline-none placeholder:text-[#6f7e91] focus:border-[#7dd3fc]"
               placeholder={text("searchPlaceholder")}
               type="search"
               value={searchQuery}
-              onChange={(event) => {
-                setSearchQuery(event.target.value);
+              onValueChange={(value) => {
+                setSearchQuery(value);
                 setFocusedFlowchartNodeId(undefined);
               }}
               onKeyDown={handleSearchKeyDown}

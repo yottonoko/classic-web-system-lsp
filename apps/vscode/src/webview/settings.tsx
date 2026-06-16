@@ -1,6 +1,7 @@
 import React, { useEffect, useMemo, useState } from "react";
 import { createRoot } from "react-dom/client";
 import styles from "./settings.css?inline";
+import { ImeSafeInput, ImeSafeTextarea } from "./ime-safe-input";
 import { cn } from "../lib/utils";
 import type {
   AspSettingsTarget,
@@ -322,9 +323,9 @@ function Sidebar(props: {
   return (
     <aside className="flex min-h-0 flex-col border-r border-[#263140] bg-[#151b23]">
       <div className="border-b border-[#263140] p-3">
-        <input
+        <ImeSafeInput
           className="w-full rounded border border-[#263140] bg-[#0c1117] px-3 py-2 text-sm text-[#d9e0ea] outline-none focus:border-[#7dd3fc]"
-          onChange={(event) => props.setSearch(event.currentTarget.value)}
+          onValueChange={props.setSearch}
           placeholder={text(props.locale, "filterPlaceholder")}
           type="search"
           value={props.search}
@@ -595,12 +596,12 @@ function SettingControl(props: {
   }
   if (props.metadata.type === "array") {
     return (
-      <textarea
+      <ImeSafeTextarea
         className="min-h-[86px] w-full rounded border border-[#263140] bg-[#0c1117] px-3 py-2 font-mono text-sm text-[#d9e0ea]"
-        onChange={(event) =>
+        onValueChange={(input) =>
           props.onUpdate(
             props.metadata.key,
-            event.currentTarget.value
+            input
               .split("\n")
               .map((line) => line.trim())
               .filter(Boolean),
@@ -623,9 +624,9 @@ function SettingControl(props: {
     );
   }
   return (
-    <input
+    <ImeSafeInput
       className="w-full rounded border border-[#263140] bg-[#0c1117] px-3 py-2 text-sm text-[#d9e0ea]"
-      onChange={(event) => props.onUpdate(props.metadata.key, event.currentTarget.value)}
+      onValueChange={(value) => props.onUpdate(props.metadata.key, value)}
       type="text"
       value={String(props.value ?? "")}
     />
@@ -699,13 +700,12 @@ function ObjectSettingControl(props: {
           value={objectValue}
         />
       ) : null}
-      <textarea
+      <ImeSafeTextarea
         className={cn(
           "min-h-[150px] w-full rounded border bg-[#0c1117] px-3 py-2 font-mono text-xs leading-5 text-[#d9e0ea]",
           props.jsonError ? "border-[#ff9fb4]" : "border-[#263140]",
         )}
-        onChange={(event) => {
-          const nextText = event.currentTarget.value;
+        onValueChange={(nextText) => {
           setJsonText(nextText);
           try {
             const parsed = nextText.trim() ? (JSON.parse(nextText) as unknown) : {};

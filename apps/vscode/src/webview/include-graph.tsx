@@ -14,6 +14,7 @@ import { INITIAL, Registry, parseRawGrammar } from "vscode-textmate";
 import { graphMessages } from "./include-graph-i18n";
 import { graphThemePalettes } from "./include-graph-theme";
 import { isFileLikeGraphNode } from "./include-graph-types";
+import { ImeSafeInput } from "./ime-safe-input";
 import type { GraphTextKey, GraphTextParams } from "./include-graph-i18n";
 import type {
   GraphData,
@@ -796,14 +797,14 @@ function App(): React.ReactElement {
           ) : null}
         </div>
         <div className="grid min-w-0 grid-cols-[minmax(0,1fr)_auto] items-center gap-2">
-          <input
+          <ImeSafeInput
             ref={searchInputRef}
             type="search"
             className="h-7 min-w-0 rounded-md border border-[#394456] bg-[#11151c] px-2.5 text-xs text-[#d7dde8] outline-none placeholder:text-[#717b8c] focus:border-[#89ddff]"
             aria-label={graphText("toolbar.searchNodes")}
             placeholder={graphText("toolbar.searchNodes")}
             value={searchInput}
-            onChange={(event) => updateSearchInput(event.currentTarget.value)}
+            onValueChange={updateSearchInput}
           />
           <label
             className="inline-flex h-7 cursor-pointer select-none items-center gap-1.5 whitespace-nowrap rounded-md border border-[#394456] bg-[#151a22] px-2 text-[11px] text-[#b5c0d0]"
