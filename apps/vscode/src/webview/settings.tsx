@@ -2,11 +2,9 @@ import React, { useEffect, useMemo, useState } from "react";
 import { createRoot } from "react-dom/client";
 import styles from "./settings.css?inline";
 import { ImeSafeInput, ImeSafeTextarea } from "./ime-safe-input";
+import { isFormatterPreviewSetting, settingsFormatterPreview } from "./settings-preview";
 import { cn } from "../lib/utils";
-import type {
-  AspSettingsTarget,
-  AspSettingsWebviewPayload,
-} from "../settings-webview";
+import type { AspSettingsTarget, AspSettingsWebviewPayload } from "../settings-webview";
 import type {
   AspSettingsLocale,
   SettingsMetadata,
@@ -66,14 +64,23 @@ const messages: Record<AspSettingsLocale, Record<string, string>> = {
     arrayEmpty: "No entries",
     cancelReset: "Cancel reset",
     defaultValue: "Default",
+    details: "Details",
+    discard: "Discard edit",
     dirty: "{count} unsaved",
     effective: "Effective",
+    featurePreview: "Setting effect",
     filterPlaceholder: "Search settings",
+    formattedPreview: "Formatter preview",
     folder: "Folder",
     global: "Global",
     inheritedFrom: "Inherited from {source}",
+    input: "Input",
     jsonInvalid: "Invalid JSON: {error}",
+    modified: "Modified",
     noMatches: "No settings match the current search.",
+    noSettingSelected: "Select a setting to edit it.",
+    output: "Output",
+    overview: "Overview",
     reset: "Reset in this scope",
     resetPending: "Reset pending",
     save: "Save changes",
@@ -83,6 +90,8 @@ const messages: Record<AspSettingsLocale, Record<string, string>> = {
     selectFolder: "Select folder",
     target: "Target value",
     title: "Classic ASP settings",
+    type: "Type",
+    unchanged: "Unchanged",
     workspace: "Workspace",
     workspaceFolder: "Folder",
     workspaceFolderUnavailable: "Open a workspace folder to use folder settings.",
@@ -93,14 +102,23 @@ const messages: Record<AspSettingsLocale, Record<string, string>> = {
     arrayEmpty: "項目なし",
     cancelReset: "reset を取り消す",
     defaultValue: "既定値",
+    details: "詳細",
+    discard: "編集を戻す",
     dirty: "未保存 {count} 件",
     effective: "有効値",
+    featurePreview: "設定の効果",
     filterPlaceholder: "設定を検索",
+    formattedPreview: "formatter preview",
     folder: "フォルダー",
     global: "グローバル",
     inheritedFrom: "{source} から継承",
+    input: "入力",
     jsonInvalid: "JSON が不正です: {error}",
+    modified: "変更あり",
     noMatches: "現在の検索に一致する設定はありません。",
+    noSettingSelected: "編集する設定を選択してください。",
+    output: "出力",
+    overview: "一覧",
     reset: "この scope の値を削除",
     resetPending: "reset 待ち",
     save: "変更を保存",
@@ -110,6 +128,8 @@ const messages: Record<AspSettingsLocale, Record<string, string>> = {
     selectFolder: "folder を選択",
     target: "保存対象の値",
     title: "Classic ASP 設定",
+    type: "型",
+    unchanged: "変更なし",
     workspace: "ワークスペース",
     workspaceFolder: "フォルダー",
     workspaceFolderUnavailable: "folder 設定を使うには workspace folder を開いてください。",
@@ -124,6 +144,9 @@ function App(): React.ReactElement {
   const locale = payload.locale === "ja" ? "ja" : "en";
   const [activeCategory, setActiveCategory] = useState("all");
   const [search, setSearch] = useState("");
+  const [selectedKey, setSelectedKey] = useState<string | undefined>(
+    initialPayload?.settings[0]?.key,
+  );
   const [drafts, setDrafts] = useState<Drafts>({});
   const [jsonErrors, setJsonErrors] = useState<JsonErrors>({});
   const [status, setStatus] = useState<string | undefined>();
@@ -135,7 +158,9 @@ function App(): React.ReactElement {
   const dirtyKeys = useMemo(
     () =>
       payload.settings
-        .filter((setting) => draftIsDirty(setting, drafts[setting.key], payload.values[setting.key]))
+        .filter((setting) =>
+          draftIsDirty(setting, drafts[setting.key], payload.values[setting.key]),
+        )
         .map((setting) => setting.key),
     [drafts, payload.settings, payload.values],
   );
@@ -145,15 +170,24 @@ function App(): React.ReactElement {
       const categoryMatches = activeCategory === "all" || setting.category === activeCategory;
       const searchMatches =
         !normalizedSearch ||
-        `${setting.key} ${setting.title} ${setting.description}`.toLowerCase().includes(
-          normalizedSearch,
-        );
+        `${setting.key} ${setting.title} ${setting.description}`
+          .toLowerCase()
+          .includes(normalizedSearch);
       return categoryMatches && searchMatches;
     });
   }, [activeCategory, payload.settings, search]);
-  const selectedSetting = filteredSettings[0] ?? payload.settings[0];
+  const selectedSetting = useMemo(
+    () => filteredSettings.find((setting) => setting.key === selectedKey) ?? filteredSettings[0],
+    [filteredSettings, selectedKey],
+  );
   const hasJsonErrors = Object.values(jsonErrors).some(Boolean);
   const target = payload.selectedScope;
+
+  useEffect(() => {
+    if (selectedSetting && selectedSetting.key !== selectedKey) {
+      setSelectedKey(selectedSetting.key);
+    }
+  }, [selectedKey, selectedSetting]);
 
   useEffect(() => {
     const listener = (event: MessageEvent<HostMessage>) => {
@@ -232,32 +266,37 @@ function App(): React.ReactElement {
       data-asp-lsp-theme={themeForPayload(payload)}
     >
       <style>{styles}</style>
-      <header className="flex min-h-[72px] items-center justify-between border-b border-[#263140] bg-[#151b23] px-5">
-        <div>
-          <h1 className="text-lg font-semibold text-[#f1f5f9]">{text(locale, "title")}</h1>
-          <div className="mt-1 flex flex-wrap items-center gap-2 text-xs text-[#9fb0c5]">
-            <span>{payload.settings.length} settings</span>
-            <span>{scopeLabel(locale, target.scope)}</span>
-            {dirtyKeys.length > 0 ? (
-              <span className="rounded border border-[#334255] px-2 py-0.5 text-[#f6c177]">
-                {formatText(locale, "dirty", { count: dirtyKeys.length })}
-              </span>
+      <header className="border-b border-[#263140] bg-[#151b23] px-5 py-4">
+        <div className="flex flex-wrap items-start justify-between gap-4">
+          <div>
+            <h1 className="text-lg font-semibold text-[#f1f5f9]">{text(locale, "title")}</h1>
+            <div className="mt-1 flex flex-wrap items-center gap-2 text-xs text-[#9fb0c5]">
+              <span>{payload.settings.length} settings</span>
+              <span>{scopeLabel(locale, target.scope)}</span>
+              {dirtyKeys.length > 0 ? (
+                <span className="rounded border border-[#334255] px-2 py-0.5 text-[#f6c177]">
+                  {formatText(locale, "dirty", { count: dirtyKeys.length })}
+                </span>
+              ) : null}
+            </div>
+          </div>
+          <div className="flex min-w-[240px] flex-1 flex-wrap items-center justify-end gap-3">
+            <ScopePicker locale={locale} onChange={reload} payload={payload} target={target} />
+            {status ? (
+              <span className="max-w-[260px] truncate text-xs text-[#9fb0c5]">{status}</span>
             ) : null}
+            <button
+              className="rounded border border-[#7dd3fc] bg-[#17324a] px-3 py-2 text-sm font-medium text-[#f1f5f9] disabled:cursor-not-allowed disabled:opacity-50"
+              disabled={dirtyKeys.length === 0 || hasJsonErrors || saving}
+              onClick={save}
+              type="button"
+            >
+              {saving ? text(locale, "saving") : text(locale, "save")}
+            </button>
           </div>
         </div>
-        <div className="flex items-center gap-3">
-          {status ? <span className="max-w-[320px] truncate text-xs text-[#9fb0c5]">{status}</span> : null}
-          <button
-            className="rounded border border-[#7dd3fc] bg-[#17324a] px-3 py-2 text-sm font-medium text-[#f1f5f9] disabled:cursor-not-allowed disabled:opacity-50"
-            disabled={dirtyKeys.length === 0 || hasJsonErrors || saving}
-            onClick={save}
-            type="button"
-          >
-            {saving ? text(locale, "saving") : text(locale, "save")}
-          </button>
-        </div>
       </header>
-      <section className="grid min-h-0 flex-1 grid-cols-[260px_minmax(420px,1fr)_minmax(340px,420px)] overflow-hidden max-[1050px]:grid-cols-[220px_minmax(360px,1fr)]">
+      <section className="grid min-h-0 flex-1 grid-cols-[260px_minmax(380px,1fr)_minmax(380px,480px)] overflow-hidden max-[1080px]:grid-cols-[220px_minmax(360px,1fr)] max-[760px]:grid-cols-1">
         <Sidebar
           activeCategory={activeCategory}
           dirtyKeys={dirtyKeys}
@@ -267,35 +306,26 @@ function App(): React.ReactElement {
           search={search}
           setSearch={setSearch}
         />
-        <div className="settings-scrollbar min-h-0 overflow-auto border-r border-[#263140]">
-          <ScopePicker locale={locale} onChange={reload} payload={payload} target={target} />
-          <div className="space-y-3 p-4">
-            {filteredSettings.length === 0 ? (
-              <div className="rounded border border-[#263140] bg-[#101820] p-5 text-sm text-[#9fb0c5]">
-                {text(locale, "noMatches")}
-              </div>
-            ) : (
-              filteredSettings.map((setting) => (
-                <SettingRow
-                  clearDraft={clearDraft}
-                  draft={drafts[setting.key]}
-                  jsonError={jsonErrors[setting.key]}
-                  key={setting.key}
-                  locale={locale}
-                  metadata={setting}
-                  onJsonError={updateJsonError}
-                  onReset={resetDraft}
-                  onUpdate={updateDraft}
-                  state={payload.values[setting.key]}
-                />
-              ))
-            )}
-          </div>
-        </div>
-        <PreviewPanel
+        <SettingsList
           drafts={drafts}
+          filteredSettings={filteredSettings}
+          jsonErrors={jsonErrors}
           locale={locale}
-          selectedSetting={selectedSetting}
+          onSelect={setSelectedKey}
+          selectedKey={selectedSetting?.key}
+          values={payload.values}
+        />
+        <SettingsDetailPanel
+          clearDraft={clearDraft}
+          draft={selectedSetting ? drafts[selectedSetting.key] : undefined}
+          drafts={drafts}
+          jsonError={selectedSetting ? jsonErrors[selectedSetting.key] : undefined}
+          locale={locale}
+          metadata={selectedSetting}
+          onJsonError={updateJsonError}
+          onReset={resetDraft}
+          onUpdate={updateDraft}
+          settingState={selectedSetting ? payload.values[selectedSetting.key] : undefined}
           settingsByKey={settingsByKey}
           values={payload.values}
         />
@@ -325,6 +355,8 @@ function Sidebar(props: {
       <div className="border-b border-[#263140] p-3">
         <ImeSafeInput
           className="w-full rounded border border-[#263140] bg-[#0c1117] px-3 py-2 text-sm text-[#d9e0ea] outline-none focus:border-[#7dd3fc]"
+          id="asp-lsp-settings-search"
+          name="asp-lsp-settings-search"
           onValueChange={props.setSearch}
           placeholder={text(props.locale, "filterPlaceholder")}
           type="search"
@@ -388,10 +420,10 @@ function ScopePicker(props: {
   const folderDisabled = !props.payload.scopes.workspaceFolderAvailable;
   const workspaceDisabled = !props.payload.scopes.workspaceAvailable;
   return (
-    <div className="sticky top-0 z-10 border-b border-[#263140] bg-[#101419]/95 p-4 backdrop-blur">
-      <div className="mb-2 text-xs font-semibold uppercase tracking-wide text-[#8190a4]">
+    <div className="flex flex-wrap items-center gap-2">
+      <span className="mr-1 text-xs font-semibold uppercase tracking-wide text-[#8190a4]">
         {text(props.locale, "scope")}
-      </div>
+      </span>
       <div className="flex flex-wrap gap-2">
         <ScopeButton
           active={props.target.scope === "global"}
@@ -415,6 +447,8 @@ function ScopePicker(props: {
         <select
           className="min-w-[180px] rounded border border-[#263140] bg-[#0c1117] px-3 py-2 text-sm text-[#d9e0ea] disabled:opacity-50"
           disabled={folderDisabled}
+          id="asp-lsp-settings-folder"
+          name="asp-lsp-settings-folder"
           onChange={(event) =>
             props.onChange({ ...props.target, folderUri: event.currentTarget.value })
           }
@@ -460,32 +494,179 @@ function ScopeButton(props: {
   );
 }
 
+function SettingsList(props: {
+  drafts: Drafts;
+  filteredSettings: SettingsMetadata[];
+  jsonErrors: JsonErrors;
+  locale: AspSettingsLocale;
+  onSelect(key: string): void;
+  selectedKey: string | undefined;
+  values: Record<string, SettingsValueState>;
+}): React.ReactElement {
+  return (
+    <section className="flex min-h-0 flex-col border-r border-[#263140] bg-[#101419] max-[760px]:border-r-0">
+      <div className="flex items-center justify-between border-b border-[#263140] px-4 py-3">
+        <div>
+          <div className="text-xs font-semibold uppercase tracking-wide text-[#8190a4]">
+            {text(props.locale, "overview")}
+          </div>
+          <div className="mt-1 text-sm text-[#d9e0ea]">
+            {props.filteredSettings.length} settings
+          </div>
+        </div>
+      </div>
+      <div className="settings-scrollbar min-h-0 flex-1 overflow-auto p-3">
+        {props.filteredSettings.length === 0 ? (
+          <div className="rounded border border-[#263140] bg-[#101820] p-5 text-sm text-[#9fb0c5]">
+            {text(props.locale, "noMatches")}
+          </div>
+        ) : (
+          <div className="space-y-2">
+            {props.filteredSettings.map((setting) => (
+              <SettingRow
+                active={props.selectedKey === setting.key}
+                draft={props.drafts[setting.key]}
+                jsonError={props.jsonErrors[setting.key]}
+                key={setting.key}
+                locale={props.locale}
+                metadata={setting}
+                onSelect={props.onSelect}
+                state={props.values[setting.key]}
+              />
+            ))}
+          </div>
+        )}
+      </div>
+    </section>
+  );
+}
+
 function SettingRow(props: {
-  clearDraft(key: string): void;
+  active: boolean;
   draft: DraftEntry | undefined;
   jsonError: string | undefined;
   locale: AspSettingsLocale;
   metadata: SettingsMetadata;
-  onJsonError(key: string, error: string | undefined): void;
-  onReset(key: string): void;
-  onUpdate(key: string, value: unknown): void;
+  onSelect(key: string): void;
   state: SettingsValueState | undefined;
 }): React.ReactElement {
   const value = currentSettingValue(props.metadata, props.state, props.draft);
   const dirty = draftIsDirty(props.metadata, props.draft, props.state);
   return (
-    <article
+    <button
       className={cn(
-        "rounded border bg-[#151b23] p-4",
-        dirty ? "border-[#7dd3fc]" : "border-[#263140]",
+        "block w-full rounded border bg-[#151b23] p-3 text-left hover:bg-[#172131]",
+        props.active ? "border-[#7dd3fc]" : "border-[#263140]",
       )}
+      onClick={() => props.onSelect(props.metadata.key)}
+      type="button"
     >
-      <div className="mb-3 flex items-start justify-between gap-4">
+      <div className="flex items-start justify-between gap-3">
         <div className="min-w-0">
           <div className="flex flex-wrap items-center gap-2">
-            <h2 className="break-words text-sm font-semibold text-[#f1f5f9]">{props.metadata.title}</h2>
-            {props.metadata.tags.map((tag) => (
-              <span className="rounded bg-[#101820] px-2 py-0.5 text-[11px] text-[#9fb0c5]" key={tag}>
+            <span className="truncate text-sm font-semibold text-[#f1f5f9]">
+              {props.metadata.title}
+            </span>
+            {dirty ? (
+              <span className="rounded border border-[#334255] px-2 py-0.5 text-[11px] text-[#f6c177]">
+                {props.draft?.kind === "reset"
+                  ? text(props.locale, "resetPending")
+                  : text(props.locale, "modified")}
+              </span>
+            ) : null}
+            {props.jsonError ? (
+              <span className="rounded border border-[#ff9fb4] px-2 py-0.5 text-[11px] text-[#ff9fb4]">
+                JSON
+              </span>
+            ) : null}
+          </div>
+          <code className="mt-1 block truncate text-xs text-[#7dd3fc]">{props.metadata.key}</code>
+        </div>
+        <span className="shrink-0 rounded bg-[#101820] px-2 py-0.5 text-[11px] text-[#9fb0c5]">
+          {props.metadata.type}
+        </span>
+      </div>
+      <div className="mt-3 grid grid-cols-[minmax(0,1fr)_auto] gap-3 text-xs">
+        <code className="truncate text-[#d9e0ea]">{compactValue(value)}</code>
+        <span className="text-[#8190a4]">
+          {sourceLabel(props.locale, props.state?.inheritedFrom ?? "default")}
+        </span>
+      </div>
+    </button>
+  );
+}
+
+function SettingsDetailPanel(props: {
+  clearDraft(key: string): void;
+  draft: DraftEntry | undefined;
+  drafts: Drafts;
+  jsonError: string | undefined;
+  locale: AspSettingsLocale;
+  metadata: SettingsMetadata | undefined;
+  onJsonError(key: string, error: string | undefined): void;
+  onReset(key: string): void;
+  onUpdate(key: string, value: unknown): void;
+  settingState: SettingsValueState | undefined;
+  settingsByKey: Map<string, SettingsMetadata>;
+  values: Record<string, SettingsValueState>;
+}): React.ReactElement {
+  const metadata = props.metadata;
+  if (!metadata) {
+    return (
+      <aside className="settings-scrollbar min-h-0 overflow-auto bg-[#101820] p-4 max-[1080px]:hidden">
+        <div className="rounded border border-[#263140] bg-[#151b23] p-5 text-sm text-[#9fb0c5]">
+          {text(props.locale, "noSettingSelected")}
+        </div>
+      </aside>
+    );
+  }
+  const value = currentSettingValue(metadata, props.settingState, props.draft);
+  const dirty = draftIsDirty(metadata, props.draft, props.settingState);
+  return (
+    <aside className="settings-scrollbar min-h-0 overflow-auto bg-[#101820] p-4 max-[1080px]:hidden">
+      <div className="space-y-4">
+        <section className="rounded border border-[#263140] bg-[#151b23] p-4">
+          <div className="mb-3 flex items-start justify-between gap-4">
+            <div className="min-w-0">
+              <div className="mb-1 text-xs font-semibold uppercase tracking-wide text-[#8190a4]">
+                {text(props.locale, "details")}
+              </div>
+              <h2 className="break-words text-base font-semibold text-[#f1f5f9]">
+                {metadata.title}
+              </h2>
+              <code className="mt-1 block break-all text-xs text-[#7dd3fc]">{metadata.key}</code>
+            </div>
+            <div className="flex shrink-0 flex-wrap justify-end gap-2">
+              {dirty ? (
+                <button
+                  className="rounded border border-[#263140] px-2 py-1 text-xs text-[#9fb0c5] hover:bg-[#172131]"
+                  onClick={() => props.clearDraft(metadata.key)}
+                  type="button"
+                >
+                  {props.draft?.kind === "reset"
+                    ? text(props.locale, "cancelReset")
+                    : text(props.locale, "discard")}
+                </button>
+              ) : null}
+              <button
+                className="rounded border border-[#263140] px-2 py-1 text-xs text-[#9fb0c5] hover:bg-[#172131] disabled:cursor-not-allowed disabled:opacity-50"
+                disabled={props.settingState?.targetDefined !== true}
+                onClick={() => props.onReset(metadata.key)}
+                type="button"
+              >
+                {text(props.locale, "reset")}
+              </button>
+            </div>
+          </div>
+          <div className="mb-3 flex flex-wrap gap-2">
+            <span className="rounded bg-[#101820] px-2 py-0.5 text-[11px] text-[#9fb0c5]">
+              {text(props.locale, "type")}: {metadata.type}
+            </span>
+            {metadata.tags.map((tag) => (
+              <span
+                className="rounded bg-[#101820] px-2 py-0.5 text-[11px] text-[#9fb0c5]"
+                key={tag}
+              >
                 {tag}
               </span>
             ))}
@@ -495,52 +676,41 @@ function SettingRow(props: {
               </span>
             ) : null}
           </div>
-          <code className="mt-1 block break-all text-xs text-[#7dd3fc]">{props.metadata.key}</code>
-        </div>
-        <div className="flex shrink-0 gap-2">
-          {dirty ? (
-            <button
-              className="rounded border border-[#263140] px-2 py-1 text-xs text-[#9fb0c5] hover:bg-[#172131]"
-              onClick={() => props.clearDraft(props.metadata.key)}
-              type="button"
-            >
-              {props.draft?.kind === "reset"
-                ? text(props.locale, "cancelReset")
-                : text(props.locale, "saved")}
-            </button>
-          ) : null}
-          <button
-            className="rounded border border-[#263140] px-2 py-1 text-xs text-[#9fb0c5] hover:bg-[#172131]"
-            onClick={() => props.onReset(props.metadata.key)}
-            type="button"
-          >
-            {text(props.locale, "reset")}
-          </button>
-        </div>
-      </div>
-      <p className="mb-3 text-sm leading-6 text-[#9fb0c5]">{props.metadata.description}</p>
-      <SettingControl
-        jsonError={props.jsonError}
-        locale={props.locale}
-        metadata={props.metadata}
-        onJsonError={props.onJsonError}
-        onUpdate={props.onUpdate}
-        value={value}
-      />
-      <div className="mt-3 grid grid-cols-3 gap-2 text-xs text-[#8190a4]">
-        <ValueSummary
-          label={text(props.locale, "effective")}
-          value={props.state?.effectiveValue ?? props.metadata.defaultValue}
+          <p className="mb-4 text-sm leading-6 text-[#9fb0c5]">{metadata.description}</p>
+          <SettingControl
+            jsonError={props.jsonError}
+            locale={props.locale}
+            metadata={metadata}
+            onJsonError={props.onJsonError}
+            onUpdate={props.onUpdate}
+            value={value}
+          />
+          <div className="mt-3 grid grid-cols-3 gap-2 text-xs text-[#8190a4]">
+            <ValueSummary
+              label={text(props.locale, "effective")}
+              value={props.settingState?.effectiveValue ?? metadata.defaultValue}
+            />
+            <ValueSummary
+              label={formatText(props.locale, "inheritedFrom", {
+                source: sourceLabel(props.locale, props.settingState?.inheritedFrom ?? "default"),
+              })}
+              value={props.settingState?.inheritedValue ?? metadata.defaultValue}
+            />
+            <ValueSummary
+              label={text(props.locale, "defaultValue")}
+              value={props.settingState?.defaultValue}
+            />
+          </div>
+        </section>
+        <SettingPreview
+          drafts={props.drafts}
+          locale={props.locale}
+          selectedSetting={metadata}
+          settingsByKey={props.settingsByKey}
+          values={props.values}
         />
-        <ValueSummary
-          label={formatText(props.locale, "inheritedFrom", {
-            source: sourceLabel(props.locale, props.state?.inheritedFrom ?? "default"),
-          })}
-          value={props.state?.inheritedValue ?? props.metadata.defaultValue}
-        />
-        <ValueSummary label={text(props.locale, "defaultValue")} value={props.state?.defaultValue} />
       </div>
-    </article>
+    </aside>
   );
 }
 
@@ -552,12 +722,15 @@ function SettingControl(props: {
   onUpdate(key: string, value: unknown): void;
   value: unknown;
 }): React.ReactElement {
+  const controlId = settingsControlId(props.metadata.key);
   if (props.metadata.type === "boolean") {
     return (
       <label className="inline-flex items-center gap-3 rounded border border-[#263140] bg-[#101820] px-3 py-2 text-sm">
         <input
           checked={Boolean(props.value)}
           className="h-4 w-4 accent-[#7dd3fc]"
+          id={controlId}
+          name={props.metadata.key}
           onChange={(event) => props.onUpdate(props.metadata.key, event.currentTarget.checked)}
           type="checkbox"
         />
@@ -569,6 +742,8 @@ function SettingControl(props: {
     return (
       <select
         className="w-full rounded border border-[#263140] bg-[#0c1117] px-3 py-2 text-sm text-[#d9e0ea]"
+        id={controlId}
+        name={props.metadata.key}
         onChange={(event) => props.onUpdate(props.metadata.key, event.currentTarget.value)}
         value={String(props.value ?? props.metadata.defaultValue ?? "")}
       >
@@ -584,10 +759,15 @@ function SettingControl(props: {
     return (
       <input
         className="w-full rounded border border-[#263140] bg-[#0c1117] px-3 py-2 text-sm text-[#d9e0ea]"
+        id={controlId}
         min={props.metadata.minimum}
+        name={props.metadata.key}
         onChange={(event) => {
           const input = event.currentTarget.value;
-          props.onUpdate(props.metadata.key, input === "" && props.metadata.nullable ? null : Number(input));
+          props.onUpdate(
+            props.metadata.key,
+            input === "" && props.metadata.nullable ? null : Number(input),
+          );
         }}
         type="number"
         value={props.value === null || props.value === undefined ? "" : String(props.value)}
@@ -598,6 +778,8 @@ function SettingControl(props: {
     return (
       <ImeSafeTextarea
         className="min-h-[86px] w-full rounded border border-[#263140] bg-[#0c1117] px-3 py-2 font-mono text-sm text-[#d9e0ea]"
+        id={controlId}
+        name={props.metadata.key}
         onValueChange={(input) =>
           props.onUpdate(
             props.metadata.key,
@@ -626,6 +808,8 @@ function SettingControl(props: {
   return (
     <ImeSafeInput
       className="w-full rounded border border-[#263140] bg-[#0c1117] px-3 py-2 text-sm text-[#d9e0ea]"
+      id={controlId}
+      name={props.metadata.key}
       onValueChange={(value) => props.onUpdate(props.metadata.key, value)}
       type="text"
       value={String(props.value ?? "")}
@@ -659,7 +843,11 @@ function ObjectSettingControl(props: {
               <span>{kind}</span>
               <select
                 className="w-full rounded border border-[#263140] bg-[#0c1117] px-2 py-1.5 text-sm text-[#d9e0ea]"
-                onChange={(event) => updateObject({ ...objectValue, [kind]: event.currentTarget.value })}
+                id={settingsControlId(`${props.metadata.key}.${kind}`)}
+                name={`${props.metadata.key}.${kind}`}
+                onChange={(event) =>
+                  updateObject({ ...objectValue, [kind]: event.currentTarget.value })
+                }
                 value={String(objectValue[kind] ?? "ignore")}
               >
                 {identifierCaseValues.map((value) => (
@@ -705,6 +893,8 @@ function ObjectSettingControl(props: {
           "min-h-[150px] w-full rounded border bg-[#0c1117] px-3 py-2 font-mono text-xs leading-5 text-[#d9e0ea]",
           props.jsonError ? "border-[#ff9fb4]" : "border-[#263140]",
         )}
+        id={settingsControlId(props.metadata.key)}
+        name={props.metadata.key}
         onValueChange={(nextText) => {
           setJsonText(nextText);
           try {
@@ -765,13 +955,15 @@ function SampleObjectButtons(props: {
 function ValueSummary(props: { label: string; value: unknown }): React.ReactElement {
   return (
     <div className="min-w-0 rounded border border-[#263140] bg-[#101820] p-2">
-      <div className="mb-1 truncate text-[11px] uppercase tracking-wide text-[#8190a4]">{props.label}</div>
+      <div className="mb-1 truncate text-[11px] uppercase tracking-wide text-[#8190a4]">
+        {props.label}
+      </div>
       <code className="block truncate text-[11px] text-[#d9e0ea]">{compactValue(props.value)}</code>
     </div>
   );
 }
 
-function PreviewPanel(props: {
+function SettingPreview(props: {
   drafts: Drafts;
   locale: AspSettingsLocale;
   selectedSetting: SettingsMetadata | undefined;
@@ -780,79 +972,93 @@ function PreviewPanel(props: {
 }): React.ReactElement {
   const settingValue = (key: string): unknown => {
     const metadata = props.settingsByKey.get(key);
-    return metadata ? currentSettingValue(metadata, props.values[key], props.drafts[key]) : undefined;
+    return metadata
+      ? currentSettingValue(metadata, props.values[key], props.drafts[key])
+      : undefined;
   };
   const previewKind = props.selectedSetting?.previewKind ?? "general";
+  if (previewKind === "code") {
+    return props.selectedSetting && isFormatterPreviewSetting(props.selectedSetting.key) ? (
+      <FormatterPreview locale={props.locale} settingValue={settingValue} />
+    ) : (
+      <CodeFeaturePreview
+        locale={props.locale}
+        selectedSetting={props.selectedSetting}
+        settingValue={settingValue}
+      />
+    );
+  }
+  if (previewKind === "graph") {
+    return <GraphPreview settingValue={settingValue} />;
+  }
+  if (previewKind === "flowchart") {
+    return <FlowchartPreview settingValue={settingValue} />;
+  }
+  if (previewKind === "excel") {
+    return <ExcelPreview settingValue={settingValue} />;
+  }
+  if (previewKind === "workspace") {
+    return <WorkspacePreview locale={props.locale} settingValue={settingValue} />;
+  }
+  if (previewKind === "cache") {
+    return <CachePreview settingValue={settingValue} />;
+  }
+  if (previewKind === "network") {
+    return <NetworkPreview settingValue={settingValue} />;
+  }
+  if (previewKind === "memory") {
+    return <MemoryPreview settingValue={settingValue} />;
+  }
+  if (previewKind === "iis") {
+    return <IisPreview settingValue={settingValue} />;
+  }
+  return <GeneralPreview settingValue={settingValue} />;
+}
+
+function FormatterPreview(props: {
+  locale: AspSettingsLocale;
+  settingValue(key: string): unknown;
+}): React.ReactElement {
+  const preview = settingsFormatterPreview(props.settingValue);
   return (
-    <aside className="settings-scrollbar min-h-0 overflow-auto bg-[#101820] p-4 max-[1050px]:hidden">
-      <div className="mb-3 text-xs font-semibold uppercase tracking-wide text-[#8190a4]">Preview</div>
-      {previewKind === "code" ? (
-        <CodePreview settingValue={settingValue} />
-      ) : previewKind === "graph" ? (
-        <GraphPreview settingValue={settingValue} />
-      ) : previewKind === "flowchart" ? (
-        <FlowchartPreview settingValue={settingValue} />
-      ) : previewKind === "excel" ? (
-        <ExcelPreview settingValue={settingValue} />
-      ) : previewKind === "workspace" ? (
-        <WorkspacePreview locale={props.locale} settingValue={settingValue} />
-      ) : previewKind === "cache" ? (
-        <CachePreview settingValue={settingValue} />
-      ) : previewKind === "network" ? (
-        <NetworkPreview settingValue={settingValue} />
-      ) : previewKind === "memory" ? (
-        <MemoryPreview settingValue={settingValue} />
-      ) : previewKind === "iis" ? (
-        <IisPreview settingValue={settingValue} />
-      ) : (
-        <GeneralPreview settingValue={settingValue} />
-      )}
-    </aside>
+    <PreviewCard title={text(props.locale, "formattedPreview")}>
+      <div className="mb-3 grid grid-cols-2 gap-2 text-xs text-[#8190a4]">
+        <ValueSummary label="tabSize" value={preview.options.tabSize} />
+        <ValueSummary label="insertSpaces" value={preview.options.insertSpaces} />
+      </div>
+      <div className="space-y-3">
+        <CodeBlock label={text(props.locale, "input")} text={preview.sourceText} />
+        <CodeBlock
+          label={
+            preview.formattedText === preview.sourceText
+              ? text(props.locale, "unchanged")
+              : text(props.locale, "output")
+          }
+          text={preview.formattedText}
+        />
+      </div>
+    </PreviewCard>
   );
 }
 
-function CodePreview(props: { settingValue(key: string): unknown }): React.ReactElement {
-  const indentSize = numberValue(
-    props.settingValue("aspLsp.format.indentSize"),
-    numberValue(props.settingValue("editor.tabSize"), 2),
+function CodeFeaturePreview(props: {
+  locale: AspSettingsLocale;
+  selectedSetting: SettingsMetadata | undefined;
+  settingValue(key: string): unknown;
+}): React.ReactElement {
+  return (
+    <PreviewCard title={text(props.locale, "featurePreview")}>
+      <div className="grid gap-2">
+        <StatusLine
+          label={props.selectedSetting?.key ?? "setting"}
+          value={compactValue(
+            props.selectedSetting ? props.settingValue(props.selectedSetting.key) : undefined,
+          )}
+        />
+        <StatusLine label="formatter preview" value={text(props.locale, "unchanged")} />
+      </div>
+    </PreviewCard>
   );
-  const useTabs =
-    props.settingValue("aspLsp.format.indentStyle") === "tab" ||
-    props.settingValue("editor.insertSpaces") === false;
-  const indent = useTabs ? "\t" : " ".repeat(indentSize);
-  const upper = props.settingValue("aspLsp.format.uppercaseKeywords") === true;
-  const align = props.settingValue("aspLsp.format.alignAssignments") === true;
-  const defaultLanguage = stringValue(props.settingValue("aspLsp.defaultLanguage"), "VBScript");
-  const inlayVars = props.settingValue("aspLsp.inlayHints.variableTypes") === true;
-  const inlayParams = props.settingValue("aspLsp.inlayHints.parameterNames") !== false;
-  const codeLens = props.settingValue("aspLsp.codeLens.references") !== false;
-  const jsCheck = props.settingValue("aspLsp.checkJs") === true;
-  const kw = (value: string) => (upper ? value.toUpperCase() : value);
-  const lines =
-    defaultLanguage === "JScript"
-      ? [
-          '<%@ Language="JScript" %>',
-          "<script runat=\"server\">",
-          `${indent}function total(price, tax) {`,
-          `${indent}${indent}var result = price + tax;${jsCheck ? " // checked" : ""}`,
-          `${indent}${indent}return result;`,
-          `${indent}}`,
-          "</script>",
-        ]
-      : [
-          "<%",
-          codeLens ? "' 2 references" : "' CodeLens hidden",
-          `${kw("Function")} Total(price, tax)${inlayParams ? "  ' price:, tax:" : ""}`,
-          `${indent}${kw("Dim")} result${inlayVars ? "  ' As Variant" : ""}`,
-          align
-            ? `${indent}price  = price`
-            : `${indent}price = price`,
-          align ? `${indent}result = price + tax` : `${indent}result = price + tax`,
-          `${indent}Total = result`,
-          `${kw("End Function")}`,
-          "%>",
-        ];
-  return <CodeBlock lines={lines} />;
 }
 
 function GraphPreview(props: { settingValue(key: string): unknown }): React.ReactElement {
@@ -874,8 +1080,14 @@ function GraphPreview(props: { settingValue(key: string): unknown }): React.Reac
           return <StatusChip enabled={enabled} key={name} label={name.replace("show", "")} />;
         })}
       </div>
-      <LimitMeter label="documents" value={numberValue(props.settingValue("aspLsp.graph.maxDocuments"), 5000)} />
-      <LimitMeter label="nodes" value={numberValue(props.settingValue("aspLsp.graph.maxNodes"), 5000)} />
+      <LimitMeter
+        label="documents"
+        value={numberValue(props.settingValue("aspLsp.graph.maxDocuments"), 5000)}
+      />
+      <LimitMeter
+        label="nodes"
+        value={numberValue(props.settingValue("aspLsp.graph.maxNodes"), 5000)}
+      />
       <LimitMeter
         label="include tree"
         value={numberValue(props.settingValue("aspLsp.graph.includeTreeMaxDocuments"), 256)}
@@ -890,13 +1102,19 @@ function FlowchartPreview(props: { settingValue(key: string): unknown }): React.
   return (
     <PreviewCard title="Flowchart">
       <div className="grid gap-2">
-        {["Start", labelMode === "raw" ? "If Request.QueryString(\"id\") <> \"\"" : "check id", "Render", "End"].map(
-          (label) => (
-            <div className="rounded border border-[#334255] bg-[#151b23] px-3 py-2 text-sm" key={label}>
-              {label}
-            </div>
-          ),
-        )}
+        {[
+          "Start",
+          labelMode === "raw" ? 'If Request.QueryString("id") <> ""' : "check id",
+          "Render",
+          "End",
+        ].map((label) => (
+          <div
+            className="rounded border border-[#334255] bg-[#151b23] px-3 py-2 text-sm"
+            key={label}
+          >
+            {label}
+          </div>
+        ))}
       </div>
       <div className="mt-3 rounded border border-[#263140] bg-[#101419] p-3 text-xs text-[#9fb0c5]">
         source panel: {String(sourcePanel)}
@@ -908,7 +1126,10 @@ function FlowchartPreview(props: { settingValue(key: string): unknown }): React.
 function ExcelPreview(props: { settingValue(key: string): unknown }): React.ReactElement {
   return (
     <PreviewCard title="Excel">
-      <LimitMeter label="documents" value={numberValue(props.settingValue("aspLsp.excel.maxDocuments"), 8192)} />
+      <LimitMeter
+        label="documents"
+        value={numberValue(props.settingValue("aspLsp.excel.maxDocuments"), 8192)}
+      />
       <LimitMeter
         label="include tree"
         value={numberValue(props.settingValue("aspLsp.excel.includeTreeMaxDocuments"), 1024)}
@@ -946,9 +1167,18 @@ function WorkspacePreview(props: {
 function CachePreview(props: { settingValue(key: string): unknown }): React.ReactElement {
   return (
     <PreviewCard title="Cache">
-      <StatusChip enabled={props.settingValue("aspLsp.cache.enabled") !== false} label="disk cache" />
-      <LimitMeter label="TTL hours" value={numberValue(props.settingValue("aspLsp.cache.ttlHours"), 336)} />
-      <LimitMeter label="size MB" value={numberValue(props.settingValue("aspLsp.cache.maxSizeMb"), 128)} />
+      <StatusChip
+        enabled={props.settingValue("aspLsp.cache.enabled") !== false}
+        label="disk cache"
+      />
+      <LimitMeter
+        label="TTL hours"
+        value={numberValue(props.settingValue("aspLsp.cache.ttlHours"), 336)}
+      />
+      <LimitMeter
+        label="size MB"
+        value={numberValue(props.settingValue("aspLsp.cache.maxSizeMb"), 128)}
+      />
       <div className="mt-2 break-all text-xs text-[#9fb0c5]">
         {stringValue(props.settingValue("aspLsp.cache.directory"), "(temporary directory)")}
       </div>
@@ -1016,7 +1246,10 @@ function GeneralPreview(props: { settingValue(key: string): unknown }): React.Re
   return (
     <PreviewCard title="Classic ASP LSP">
       <div className="grid gap-2">
-        <StatusLine label="locale" value={stringValue(props.settingValue("aspLsp.locale"), "auto")} />
+        <StatusLine
+          label="locale"
+          value={stringValue(props.settingValue("aspLsp.locale"), "auto")}
+        />
         <StatusLine
           label="language"
           value={stringValue(props.settingValue("aspLsp.defaultLanguage"), "VBScript")}
@@ -1043,13 +1276,19 @@ function PreviewCard(props: { children: React.ReactNode; title: string }): React
   );
 }
 
-function CodeBlock(props: { lines: string[] }): React.ReactElement {
+function CodeBlock(props: { label: string; text: string }): React.ReactElement {
+  const lines = props.text.split("\n");
   return (
-    <pre className="overflow-auto rounded border border-[#263140] bg-[#0c1117] p-4 text-xs leading-6 text-[#d9e0ea]">
-      {props.lines.map((line, index) => (
-        <div key={`${index}-${line}`}>{highlightCodeLine(line)}</div>
-      ))}
-    </pre>
+    <div>
+      <div className="mb-1 text-xs font-semibold uppercase tracking-wide text-[#8190a4]">
+        {props.label}
+      </div>
+      <pre className="overflow-auto rounded border border-[#263140] bg-[#0c1117] p-4 text-xs leading-6 text-[#d9e0ea]">
+        {lines.map((line, index) => (
+          <div key={`${index}-${line}`}>{highlightCodeLine(line)}</div>
+        ))}
+      </pre>
+    </div>
   );
 }
 
@@ -1057,7 +1296,9 @@ function highlightCodeLine(line: string): React.ReactNode {
   if (line.trimStart().startsWith("'") || line.trimStart().startsWith("//")) {
     return <span className="settings-code-comment">{line}</span>;
   }
-  const pieces = line.split(/("(?:[^"]|"")*"|Function|End Function|Dim|If|Then|End If|Return|function|var|return)/g);
+  const pieces = line.split(
+    /("(?:[^"]|"")*"|Function|End Function|Dim|If|Then|End If|Return|function|var|return)/g,
+  );
   return pieces.map((piece, index) => {
     if (/^".*"$/.test(piece)) {
       return (
@@ -1240,6 +1481,10 @@ function createRequestId(): string {
   return `${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`;
 }
 
+function settingsControlId(key: string): string {
+  return `asp-lsp-setting-${key.replace(/[^a-zA-Z0-9_-]/g, "-")}`;
+}
+
 function deepEqual(left: unknown, right: unknown): boolean {
   return JSON.stringify(left) === JSON.stringify(right);
 }
@@ -1270,7 +1515,9 @@ function stringValue(value: unknown, fallback: string): string {
 }
 
 function stringArray(value: unknown): string[] {
-  return Array.isArray(value) ? value.filter((item): item is string => typeof item === "string") : [];
+  return Array.isArray(value)
+    ? value.filter((item): item is string => typeof item === "string")
+    : [];
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

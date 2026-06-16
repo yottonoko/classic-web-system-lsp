@@ -8,6 +8,10 @@ import { INITIAL, Registry, parseRawGrammar } from "vscode-textmate";
 import { OnigScanner, OnigString, loadWASM } from "vscode-oniguruma";
 import { getServerModulePath } from "../src/server-path";
 import { allSettingsMetadata, valueStateForTarget } from "../src/settings-metadata";
+import {
+  isFormatterPreviewSetting,
+  settingsFormatterPreview,
+} from "../src/webview/settings-preview";
 
 interface JsonRpcMessage {
   id?: number;
@@ -54,6 +58,7 @@ function readSettingsWebviewSource(): string {
   return readWebviewSources(
     "src/settings-webview.ts",
     "src/settings-metadata.ts",
+    "src/webview/settings-preview.ts",
     "src/webview/settings.tsx",
     "src/webview/settings.css",
   );
@@ -493,7 +498,9 @@ describe("VS Code extension package", () => {
     ).toBe("%command.openSettings.title%");
     expect(nls["command.openSettings.title"]).toBe("Classic ASP: Open Settings");
     expect(nlsJa["command.openSettings.title"]).toBe("Classic ASP: 設定を開く");
-    expect(extensionSource).toContain("showAspSettingsWebview(context, extensionLocale(), webviewThemeSetting())");
+    expect(extensionSource).toContain(
+      "showAspSettingsWebview(context, extensionLocale(), webviewThemeSetting())",
+    );
     expect(buildScript).toContain("settings.tsx");
     expect(buildScript).toContain("settings.js");
     expect(webviewSource).toContain("__ASP_LSP_SETTINGS__");
@@ -506,10 +513,43 @@ describe("VS Code extension package", () => {
     expect(webviewSource).toContain("aspLsp.vbscript.identifierCaseByKind");
     expect(webviewSource).toContain("aspLsp.vbscript.comTypes");
     expect(webviewSource).toContain("aspLsp.vbscript.globals");
-    expect(webviewSource).toContain("CodePreview");
+    expect(webviewSource).toContain("SettingsList");
+    expect(webviewSource).toContain("SettingsDetailPanel");
+    expect(webviewSource).toContain("SettingPreview");
+    expect(webviewSource).toContain("settingsFormatterPreview");
+    expect(webviewSource).toContain("isFormatterPreviewSetting");
     expect(webviewSource).toContain("GraphPreview");
     expect(webviewSource).toContain("WorkspacePreview");
     expect(webviewSource).toContain('@import "tailwindcss";');
+  });
+
+  it("uses the real Classic ASP formatter for settings code previews", () => {
+    const defaultPreview = settingsFormatterPreview((key) => {
+      if (key === "editor.tabSize") {
+        return 2;
+      }
+      if (key === "editor.insertSpaces") {
+        return true;
+      }
+      return undefined;
+    });
+    const uppercasePreview = settingsFormatterPreview((key) => {
+      if (key === "aspLsp.format.uppercaseKeywords") {
+        return true;
+      }
+      if (key === "editor.tabSize") {
+        return 2;
+      }
+      return undefined;
+    });
+
+    expect(isFormatterPreviewSetting("aspLsp.format.alignAssignments")).toBe(true);
+    expect(isFormatterPreviewSetting("aspLsp.codeLens.references")).toBe(false);
+    expect(defaultPreview.sourceText).toContain('Response.Write "ok"');
+    expect(defaultPreview.formattedText).toContain("  If enabled Then");
+    expect(defaultPreview.formattedText).toContain("  first = 1");
+    expect(defaultPreview.formattedText).not.toContain("2 references");
+    expect(uppercasePreview.formattedText).toContain("  IF enabled THEN");
   });
 
   it("builds settings metadata for every contributed aspLsp setting and Classic ASP override", () => {

@@ -1,6 +1,13 @@
 export type AspSettingsLocale = "en" | "ja";
 export type SettingsTargetScope = "global" | "workspace" | "workspaceFolder";
-export type SettingsValueType = "array" | "boolean" | "enum" | "json" | "number" | "object" | "string";
+export type SettingsValueType =
+  | "array"
+  | "boolean"
+  | "enum"
+  | "json"
+  | "number"
+  | "object"
+  | "string";
 export type SettingsPreviewKind =
   | "cache"
   | "code"
@@ -196,8 +203,8 @@ export function valueStateForTarget(
     targetScope === "global"
       ? defaultValue
       : targetScope === "workspace"
-        ? globalValue ?? defaultValue
-        : workspaceValue ?? globalValue ?? defaultValue;
+        ? (globalValue ?? defaultValue)
+        : (workspaceValue ?? globalValue ?? defaultValue);
   const inheritedFrom =
     targetScope === "global"
       ? "default"
@@ -382,9 +389,7 @@ function titleFromKey(key: string): string {
   return key
     .split(".")
     .map((part) =>
-      part
-        .replace(/([a-z0-9])([A-Z])/g, "$1 $2")
-        .replace(/^./, (char) => char.toUpperCase()),
+      part.replace(/([a-z0-9])([A-Z])/g, "$1 $2").replace(/^./, (char) => char.toUpperCase()),
     )
     .join(" / ");
 }

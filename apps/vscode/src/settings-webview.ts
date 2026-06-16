@@ -93,7 +93,14 @@ export function showAspSettingsWebview(
   const initialTarget = defaultSettingsTarget();
   panel.webview.onDidReceiveMessage((message: WebviewMessage) => {
     if (message.type === "reloadSettings") {
-      void postSettingsPayload(context, panel.webview, locale, theme, message.target, message.requestId);
+      void postSettingsPayload(
+        context,
+        panel.webview,
+        locale,
+        theme,
+        message.target,
+        message.requestId,
+      );
     } else if (message.type === "saveSettings") {
       void saveSettings(context, panel.webview, locale, theme, message);
     }
@@ -191,8 +198,13 @@ function settingsPayload(
   };
 }
 
-function settingsMetadata(context: vscode.ExtensionContext, locale: AspSettingsLocale): SettingsMetadata[] {
-  const manifest = readJsonFile<AspSettingsManifest>(path.join(context.extensionPath, "package.json"));
+function settingsMetadata(
+  context: vscode.ExtensionContext,
+  locale: AspSettingsLocale,
+): SettingsMetadata[] {
+  const manifest = readJsonFile<AspSettingsManifest>(
+    path.join(context.extensionPath, "package.json"),
+  );
   const nlsFile = locale === "ja" ? "package.nls.ja.json" : "package.nls.json";
   const nls = readJsonFile<Record<string, string>>(path.join(context.extensionPath, nlsFile));
   return allSettingsMetadata(manifest, nls, locale);
