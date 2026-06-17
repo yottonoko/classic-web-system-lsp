@@ -2,12 +2,48 @@ import React, { useEffect, useRef } from "react";
 
 type TextControlElement = HTMLInputElement | HTMLTextAreaElement;
 
+export interface ImeCompositionSnapshot {
+  selectionEnd: number;
+  selectionStart: number;
+  value: string;
+}
+
 function assignForwardedRef<T>(ref: React.ForwardedRef<T>, value: T | null): void {
   if (typeof ref === "function") {
     ref(value);
   } else if (ref) {
     ref.current = value;
   }
+}
+
+function nativeEventIsComposing(event: React.ChangeEvent<TextControlElement>): boolean {
+  return (event.nativeEvent as Event & { isComposing?: boolean }).isComposing === true;
+}
+
+function compositionSnapshotFor(element: TextControlElement): ImeCompositionSnapshot | undefined {
+  const selectionStart = element.selectionStart;
+  const selectionEnd = element.selectionEnd;
+  if (selectionStart === null || selectionEnd === null) {
+    return undefined;
+  }
+  return {
+    selectionEnd,
+    selectionStart,
+    value: element.value,
+  };
+}
+
+export function imeSafeCompositionEndValue(
+  snapshot: ImeCompositionSnapshot | undefined,
+  committedText: string,
+  fallbackValue: string,
+): string {
+  if (!snapshot || committedText.length === 0) {
+    return fallbackValue;
+  }
+  return `${snapshot.value.slice(0, snapshot.selectionStart)}${committedText}${snapshot.value.slice(
+    snapshot.selectionEnd,
+  )}`;
 }
 
 function useImeSafeTextControl<T extends TextControlElement>(
@@ -17,10 +53,11 @@ function useImeSafeTextControl<T extends TextControlElement>(
   elementRef: React.RefObject<T | null>;
   onChange(event: React.ChangeEvent<T>): void;
   onCompositionEnd(event: React.CompositionEvent<T>): void;
-  onCompositionStart(): void;
+  onCompositionStart(event: React.CompositionEvent<T>): void;
 } {
   const elementRef = useRef<T>(null);
   const isComposingRef = useRef(false);
+  const compositionSnapshotRef = useRef<ImeCompositionSnapshot | undefined>(undefined);
 
   useEffect(() => {
     const element = elementRef.current;
@@ -33,16 +70,26 @@ function useImeSafeTextControl<T extends TextControlElement>(
   return {
     elementRef,
     onChange(event) {
-      if (!isComposingRef.current) {
+      if (!isComposingRef.current && !nativeEventIsComposing(event)) {
         onValueChange(event.currentTarget.value);
       }
     },
     onCompositionEnd(event) {
       isComposingRef.current = false;
-      onValueChange(event.currentTarget.value);
+      const nextValue = imeSafeCompositionEndValue(
+        compositionSnapshotRef.current,
+        event.data,
+        event.currentTarget.value,
+      );
+      compositionSnapshotRef.current = undefined;
+      if (event.currentTarget.value !== nextValue) {
+        event.currentTarget.value = nextValue;
+      }
+      onValueChange(nextValue);
     },
-    onCompositionStart() {
+    onCompositionStart(event) {
       isComposingRef.current = true;
+      compositionSnapshotRef.current = compositionSnapshotFor(event.currentTarget);
     },
   };
 }
@@ -71,7 +118,7 @@ export const ImeSafeInput = React.forwardRef<HTMLInputElement, ImeSafeInputProps
           onCompositionEnd?.(event);
         }}
         onCompositionStart={(event) => {
-          textControl.onCompositionStart();
+          textControl.onCompositionStart(event);
           onCompositionStart?.(event);
         }}
         ref={(element) => {
@@ -107,7 +154,7 @@ export const ImeSafeTextarea = React.forwardRef<HTMLTextAreaElement, ImeSafeText
           onCompositionEnd?.(event);
         }}
         onCompositionStart={(event) => {
-          textControl.onCompositionStart();
+          textControl.onCompositionStart(event);
           onCompositionStart?.(event);
         }}
         ref={(element) => {

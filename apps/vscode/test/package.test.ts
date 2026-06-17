@@ -6,6 +6,7 @@ import { execFileSync, spawn, type ChildProcessWithoutNullStreams } from "node:c
 import { describe, expect, it } from "vitest";
 import { INITIAL, Registry, parseRawGrammar } from "vscode-textmate";
 import { OnigScanner, OnigString, loadWASM } from "vscode-oniguruma";
+import { imeSafeCompositionEndValue } from "../src/webview/ime-safe-input";
 import { getServerModulePath } from "../src/server-path";
 import { allSettingsMetadata, valueStateForTarget } from "../src/settings-metadata";
 import {
@@ -204,6 +205,7 @@ describe("VS Code extension package", () => {
 
     expect(imeInputSource).toContain("isComposingRef.current = true");
     expect(imeInputSource).toContain("isComposingRef.current = false");
+    expect(imeInputSource).toContain("compositionSnapshotRef.current");
     expect(imeInputSource).toContain("defaultValue={value}");
     expect(imeInputSource).toContain("element.value = value");
     expect(imeInputSource).not.toContain("value={value}");
@@ -212,6 +214,24 @@ describe("VS Code extension package", () => {
     expect(readWorkspaceFilesWebviewSource()).toContain("ImeSafeInput");
     expect(readGraphWebviewSource()).toContain("ImeSafeInput");
     expect(readFlowchartWebviewSource()).toContain("ImeSafeInput");
+  });
+
+  it("replaces the original selection when IME commits text", () => {
+    expect(
+      imeSafeCompositionEndValue(
+        { selectionEnd: 3, selectionStart: 0, value: "ACC" },
+        "AC",
+        "ACCC",
+      ),
+    ).toBe("AC");
+    expect(
+      imeSafeCompositionEndValue(
+        { selectionEnd: 4, selectionStart: 1, value: "xACCz" },
+        "AC",
+        "xACCCz",
+      ),
+    ).toBe("xACz");
+    expect(imeSafeCompositionEndValue(undefined, "AC", "ACCC")).toBe("ACCC");
   });
 
   it("keeps flowchart rendering focused on the selected section", () => {
