@@ -273,6 +273,15 @@
           "default": false,
           "description": "%configuration.javascript.ignoreProjectConfig.description%"
         },
+        "aspLsp.javascript.compilerOptions": {
+          "type": "object",
+          "default": {},
+          "description": "%configuration.javascript.compilerOptions.description%",
+          "additionalProperties": true,
+          "tags": [
+            "advanced"
+          ]
+        },
         "aspLsp.virtualRoot": {
           "type": "string",
           "default": "",

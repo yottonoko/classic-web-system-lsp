@@ -14,6 +14,7 @@
   "configuration.javascript.unusedDiagnostics.description": "未使用の JavaScript / JScript local variable と parameter を hint diagnostic として報告します。",
   "configuration.javascript.autoImports.description": "TypeScript による JavaScript / JScript auto import completion と quick fix を有効にします。",
   "configuration.javascript.ignoreProjectConfig.description": "embedded JavaScript / JScript language service project を作るときに、nearest tsconfig.json / jsconfig.json を無視します。",
+  "configuration.javascript.compilerOptions.description": "embedded JavaScript / JScript language service project に追加で適用する TypeScript compiler option です。tsconfig.json / jsconfig.json を読んだ後に適用されます。allowJs、noEmit、checkJs などの browser-safe option は asp-lsp が維持します。",
   "configuration.virtualRoot.description": "virtual include path を解決する root directory です。",
   "configuration.virtualRoots.description": "virtual include path を解決する追加 root directory です。",
   "configuration.windowsPathResolution.description": "Windows と同じように Classic ASP include path を大文字小文字を区別せず解決し、include path の大文字小文字が file system と違う場合に diagnostic を報告します。無効にすると host file system の挙動だけを使います。",

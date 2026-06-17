@@ -179,6 +179,7 @@ export interface AspJavascriptSettings {
   unusedDiagnostics?: boolean;
   autoImports?: boolean;
   ignoreProjectConfig?: boolean;
+  compilerOptions?: Record<string, unknown>;
 }
 
 export interface AspInlayHintSettings {

@@ -2213,6 +2213,77 @@ docu▮
       }
     });
 
+    it("applies TypeScript compiler options from settings to embedded JavaScript projects", async () => {
+      const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "asp-lsp-js-compiler-options-"));
+      const jqueryTypes = path.join(tempDir, "node_modules", "@types", "jquery");
+      fs.mkdirSync(jqueryTypes, { recursive: true });
+      fs.writeFileSync(
+        path.join(jqueryTypes, "package.json"),
+        JSON.stringify({ name: "@types/jquery", version: "1.0.0", types: "index.d.ts" }),
+        "utf8",
+      );
+      fs.writeFileSync(
+        path.join(jqueryTypes, "index.d.ts"),
+        "declare const $: { ready(callback: () => void): void };\n",
+        "utf8",
+      );
+      const jqueryMarked = markedDocument(`<script>
+$▮
+</script>`);
+      const domMarked = markedDocument(`<script>
+docu▮
+</script>`);
+      const server = new RpcServer();
+      try {
+        await server.start();
+        await server.request("initialize", {
+          processId: process.pid,
+          rootUri: `file://${tempDir}`,
+          capabilities: {},
+        });
+        server.notify("workspace/didChangeConfiguration", {
+          settings: {
+            aspLsp: {
+              diagnostics: { debounceMs: 0 },
+              javascript: { compilerOptions: { types: [] } },
+            },
+          },
+        });
+        const uri = `file://${path.join(tempDir, "default.asp")}`;
+        server.notify("textDocument/didOpen", {
+          textDocument: {
+            uri,
+            languageId: "classic-asp",
+            version: 1,
+            text: jqueryMarked.text,
+          },
+        });
+        await server.waitForNotification("textDocument/publishDiagnostics");
+        const jqueryCompletions = await server.request("textDocument/completion", {
+          textDocument: { uri },
+          position: jqueryMarked.position,
+        });
+        expect(completionLabels(jqueryCompletions)).not.toContain("$");
+
+        server.notify("textDocument/didChange", {
+          textDocument: { uri, version: 2 },
+          contentChanges: [{ text: domMarked.text }],
+        });
+        await server.waitForNotification("textDocument/publishDiagnostics");
+        const domCompletions = await server.request("textDocument/completion", {
+          textDocument: { uri },
+          position: domMarked.position,
+        });
+        expect(completionLabels(domCompletions)).toContain("document");
+
+        await server.request("shutdown", null);
+        server.notify("exit", undefined);
+      } finally {
+        server.stop();
+        fs.rmSync(tempDir, { recursive: true, force: true });
+      }
+    });
+
     it("delegates server-side JScript navigation to TypeScript", async () => {
       const marked = markedDocument(`<%@ LANGUAGE="JScript" %>
 <%

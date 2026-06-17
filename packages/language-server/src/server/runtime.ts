@@ -15926,6 +15926,7 @@ function jsProjectSettingsIdentity(settings: AspSettings): string {
       autoImports: settings.javascript?.autoImports !== false,
       unusedDiagnostics: settings.javascript?.unusedDiagnostics !== false,
       ignoreProjectConfig: settings.javascript?.ignoreProjectConfig === true,
+      compilerOptions: settings.javascript?.compilerOptions ?? {},
     },
     roots: rootsIdentity.roots,
   });
@@ -16573,6 +16574,12 @@ function normalizeJavascriptSettings(
     unusedDiagnostics: record.unusedDiagnostics !== false,
     autoImports: record.autoImports !== false,
     ignoreProjectConfig: record.ignoreProjectConfig === true,
+    compilerOptions:
+      record.compilerOptions &&
+      typeof record.compilerOptions === "object" &&
+      !Array.isArray(record.compilerOptions)
+        ? { ...(record.compilerOptions as Record<string, unknown>) }
+        : {},
   };
 }
 
@@ -17970,8 +17977,10 @@ function browserJavaScriptCompilerOptions(
   settings: AspSettings,
   optionOverrides: Partial<ts.CompilerOptions>,
 ): ts.CompilerOptions {
+  const settingsOptions = javascriptCompilerOptionsFromSettings(settings, currentDirectory);
   const next: ts.CompilerOptions = {
     ...options,
+    ...settingsOptions,
     ...optionOverrides,
     allowJs: true,
     noEmit: true,
@@ -17981,6 +17990,17 @@ function browserJavaScriptCompilerOptions(
   next.lib = ensureBrowserJavaScriptLibs(next.lib);
   next.types = browserJavaScriptTypes(next, currentDirectory);
   return next;
+}
+
+function javascriptCompilerOptionsFromSettings(
+  settings: AspSettings,
+  currentDirectory: string,
+): ts.CompilerOptions {
+  const compilerOptions = settings.javascript?.compilerOptions;
+  if (!compilerOptions || Array.isArray(compilerOptions)) {
+    return {};
+  }
+  return ts.convertCompilerOptionsFromJson(compilerOptions, currentDirectory).options;
 }
 
 function ensureBrowserJavaScriptLibs(libs: string[] | undefined): string[] {

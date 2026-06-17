@@ -14,6 +14,7 @@
   "configuration.javascript.unusedDiagnostics.description": "Report unused JavaScript and JScript locals and parameters as hint diagnostics.",
   "configuration.javascript.autoImports.description": "Enable TypeScript-powered JavaScript and JScript auto import completions and quick fixes.",
   "configuration.javascript.ignoreProjectConfig.description": "Ignore nearest tsconfig.json or jsconfig.json when building embedded JavaScript and JScript language service projects.",
+  "configuration.javascript.compilerOptions.description": "Additional TypeScript compiler options applied to embedded JavaScript and JScript language service projects after tsconfig.json or jsconfig.json is read. asp-lsp still forces browser-safe options such as allowJs, noEmit, and checkJs.",
   "configuration.virtualRoot.description": "Root directory used to resolve virtual include paths.",
   "configuration.virtualRoots.description": "Additional root directories used to resolve virtual include paths.",
   "configuration.windowsPathResolution.description": "Resolve Classic ASP include paths case-insensitively like Windows and report diagnostics when include path casing differs from the file system. Disable to use the host file system behavior only.",

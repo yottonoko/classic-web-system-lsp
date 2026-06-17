@@ -567,7 +567,7 @@ describe("VS Code extension package", () => {
     ).filter((key) => key.startsWith("aspLsp."));
     const classicAspOverrides = metadata.filter((setting) => setting.languageOverride);
 
-    expect(aspSettings).toHaveLength(136);
+    expect(aspSettings).toHaveLength(137);
     expect(aspSettings.map((setting) => setting.key).sort()).toEqual(contributedAspSettings.sort());
     expect(classicAspOverrides.map((setting) => setting.key)).toEqual([
       "editor.defaultFormatter",
@@ -929,6 +929,11 @@ describe("VS Code extension package", () => {
     expect(
       manifest.contributes?.configuration?.properties?.["aspLsp.javascript.ignoreProjectConfig"],
     ).toBeTruthy();
+    expect(
+      manifest.contributes?.configuration?.properties?.["aspLsp.javascript.compilerOptions"],
+    ).toEqual(expect.objectContaining({ type: "object", default: {}, tags: ["advanced"] }));
+    expect(nls["configuration.javascript.compilerOptions.description"]).toBeTruthy();
+    expect(nlsJa["configuration.javascript.compilerOptions.description"]).toBeTruthy();
     expect(
       manifest.contributes?.configuration?.properties?.["aspLsp.inlayHints.implicitByRef"],
     ).toEqual(expect.objectContaining({ type: "boolean", default: false }));
