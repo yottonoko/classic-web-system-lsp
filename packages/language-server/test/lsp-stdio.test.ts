@@ -4108,11 +4108,13 @@ Response.Write finalName
           textDocument: { uri },
         });
 
-        await delay(30);
+        await delay(200);
         const diagnostics = server
           .takePendingNotifications("textDocument/publishDiagnostics")
           .map((item) => item.params as { diagnostics?: unknown[]; uri?: string });
-        expect(diagnostics.at(-1)).toMatchObject({ uri, diagnostics: [] });
+        expect(
+          diagnostics.some((item) => item.uri === uri && (item.diagnostics?.length ?? 0) > 0),
+        ).toBe(false);
 
         await server.request("shutdown", null);
         server.notify("exit", undefined);

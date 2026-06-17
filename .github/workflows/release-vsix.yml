@@ -67,7 +67,9 @@ jobs:
 
       - name: Package VSIX
         shell: bash
-        run: pnpm --config.verify-deps-before-run=false run package:vsix --out "$GITHUB_WORKSPACE/${{ steps.vsix.outputs.name }}"
+        run: |
+          pnpm --config.verify-deps-before-run=false run build
+          pnpm --filter classic-asp-lsp exec vsce package --no-dependencies --follow-symlinks --out "$GITHUB_WORKSPACE/${{ steps.vsix.outputs.name }}"
 
       - name: Upload VSIX artifact
         uses: actions/upload-artifact@v7
