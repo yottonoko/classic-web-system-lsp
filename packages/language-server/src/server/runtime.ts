@@ -16598,6 +16598,10 @@ function normalizeFormatSettings(
   const record = raw && typeof raw === "object" ? (raw as Record<string, unknown>) : {};
   const indentStyle =
     record.indentStyle === "tab" || record.indentStyle === "space" ? record.indentStyle : undefined;
+  const vbscriptIndentStyle =
+    record.vbscriptIndentStyle === "tab" || record.vbscriptIndentStyle === "space"
+      ? record.vbscriptIndentStyle
+      : undefined;
   const vbscriptBlockIndent =
     record.vbscriptBlockIndent === "alignWithDelimiter" ||
     record.vbscriptBlockIndent === "indentInsideDelimiter"
@@ -16609,6 +16613,11 @@ function normalizeFormatSettings(
         ? record.indentSize
         : undefined,
     indentStyle,
+    vbscriptIndentSize:
+      typeof record.vbscriptIndentSize === "number" && record.vbscriptIndentSize > 0
+        ? record.vbscriptIndentSize
+        : undefined,
+    vbscriptIndentStyle,
     uppercaseKeywords: record.uppercaseKeywords === true,
     alignAssignments: record.alignAssignments === true,
     onSave: record.onSave === true,

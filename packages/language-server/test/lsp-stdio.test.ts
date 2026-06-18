@@ -15589,6 +15589,74 @@ End If
       }
     });
 
+    it("uses separate VBScript indentation settings from HTML, CSS, and JavaScript", async () => {
+      const source = `<html>
+<body>
+<style>.x{color:red}</style>
+<script>
+function greet(){
+console.log("x");
+}
+</script>
+<%
+If enabled Then
+Response.Write "ok"
+End If
+%>
+</body>
+</html>`;
+      const server = new RpcServer();
+      try {
+        await server.start();
+        await server.request("initialize", {
+          processId: process.pid,
+          rootUri: "file:///tmp",
+          capabilities: {},
+        });
+        server.notify("workspace/didChangeConfiguration", {
+          settings: { aspLsp: { format: { indentSize: 4, vbscriptIndentSize: 2 } } },
+        });
+        const uri = "file:///tmp/format-vbscript-indent.asp";
+        server.notify("textDocument/didOpen", {
+          textDocument: {
+            uri,
+            languageId: "classic-asp",
+            version: 1,
+            text: source,
+          },
+        });
+        await server.waitForNotification("textDocument/publishDiagnostics");
+
+        const fullEdits = await server.request("textDocument/formatting", {
+          textDocument: { uri },
+          options: { tabSize: 2, insertSpaces: true },
+        });
+        const fullText = (fullEdits as Array<{ newText?: string }>)[0]?.newText ?? source;
+        expect(fullText).toContain(`<body>
+    <style>`);
+        expect(fullText).toContain(`    <style>
+        .x {
+            color: red
+        }
+    </style>`);
+        expect(fullText).toContain(`    <script>
+        function greet() {
+            console.log("x");
+        }
+    </script>`);
+        expect(fullText).toContain(`    <%
+      If enabled Then
+        Response.Write "ok"
+      End If
+    %>`);
+
+        await server.request("shutdown", null);
+        server.notify("exit", undefined);
+      } finally {
+        server.stop();
+      }
+    });
+
     it("formats HTML tags without rewriting ASP, CSS, or JavaScript bodies as HTML", async () => {
       const source = `<html><body><main><section><h1><%= title %></h1></section></main><style>.card{color:red}</style><script>
 function greet(){

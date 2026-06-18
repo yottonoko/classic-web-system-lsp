@@ -8605,6 +8605,70 @@ End If
 %>`);
   });
 
+  it("keeps legacy tag indent normalization without separate VBScript indentation", () => {
+    const parsed = parseAspDocument(
+      "file:///site/default.asp",
+      `<div>
+   <%
+If enabled Then
+Response.Write "ok"
+End If
+   %>
+</div>`,
+    );
+    const edits = formatAspDocument(parsed, { tabSize: 2, insertSpaces: true });
+    expect(edits[0].newText).toContain(`   <%
+    If enabled Then
+      Response.Write "ok"
+    End If
+  %>`);
+  });
+
+  it("can use a separate VBScript indent size", () => {
+    const parsed = parseAspDocument(
+      "file:///site/default.asp",
+      `<%
+If enabled Then
+Response.Write "ok"
+End If
+%>`,
+    );
+    const edits = formatAspDocument(parsed, {
+      tabSize: 4,
+      insertSpaces: true,
+      indentSize: 4,
+      vbscriptIndentSize: 2,
+    });
+    expect(edits[0].newText).toBe(`<%
+  If enabled Then
+    Response.Write "ok"
+  End If
+%>`);
+  });
+
+  it("can use a separate VBScript indent style", () => {
+    const parsed = parseAspDocument(
+      "file:///site/default.asp",
+      `<%
+If enabled Then
+Response.Write "ok"
+End If
+%>`,
+    );
+    const edits = formatAspDocument(parsed, {
+      tabSize: 4,
+      insertSpaces: true,
+      indentSize: 2,
+      indentStyle: "space",
+      vbscriptIndentStyle: "tab",
+    });
+    expect(edits[0].newText).toBe(`<%
+\tIf enabled Then
+\t\tResponse.Write "ok"
+\tEnd If
+%>`);
+  });
+
   it("can ignore tag indentation when formatting ASP blocks", () => {
     const parsed = parseAspDocument(
       "file:///site/default.asp",

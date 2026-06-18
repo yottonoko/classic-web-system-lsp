@@ -617,14 +617,32 @@ describe("VS Code extension package", () => {
       }
       return undefined;
     });
+    const vbscriptIndentPreview = settingsFormatterPreview((key) => {
+      if (key === "aspLsp.format.indentSize") {
+        return 4;
+      }
+      if (key === "aspLsp.format.vbscriptIndentSize") {
+        return 2;
+      }
+      if (key === "editor.tabSize") {
+        return 2;
+      }
+      return undefined;
+    });
 
     expect(isFormatterPreviewSetting("aspLsp.format.alignAssignments")).toBe(true);
+    expect(isFormatterPreviewSetting("aspLsp.format.vbscriptIndentSize")).toBe(true);
+    expect(isFormatterPreviewSetting("aspLsp.format.vbscriptIndentStyle")).toBe(true);
     expect(isFormatterPreviewSetting("aspLsp.codeLens.references")).toBe(false);
     expect(defaultPreview.sourceText).toContain('Response.Write "ok"');
     expect(defaultPreview.formattedText).toContain("  If enabled Then");
     expect(defaultPreview.formattedText).toContain("  first = 1");
     expect(defaultPreview.formattedText).not.toContain("2 references");
     expect(uppercasePreview.formattedText).toContain("  IF enabled THEN");
+    expect(vbscriptIndentPreview.options.indentSize).toBe(4);
+    expect(vbscriptIndentPreview.options.vbscriptIndentSize).toBe(2);
+    expect(vbscriptIndentPreview.formattedText).toContain("  If enabled Then");
+    expect(vbscriptIndentPreview.formattedText).not.toContain("    If enabled Then");
   });
 
   it("builds settings metadata for every contributed aspLsp setting and Classic ASP override", () => {
@@ -642,7 +660,7 @@ describe("VS Code extension package", () => {
     ).filter((key) => key.startsWith("aspLsp."));
     const classicAspOverrides = metadata.filter((setting) => setting.languageOverride);
 
-    expect(aspSettings).toHaveLength(131);
+    expect(aspSettings).toHaveLength(133);
     expect(aspSettings.map((setting) => setting.key).sort()).toEqual(contributedAspSettings.sort());
     expect(classicAspOverrides.map((setting) => setting.key)).toEqual([
       "editor.defaultFormatter",
@@ -1437,6 +1455,8 @@ describe("VS Code extension package", () => {
     for (const setting of [
       "aspLsp.format.indentSize",
       "aspLsp.format.indentStyle",
+      "aspLsp.format.vbscriptIndentSize",
+      "aspLsp.format.vbscriptIndentStyle",
       "aspLsp.format.vbscriptBlockIndent",
       "aspLsp.format.ignoreVbscriptTagIndent",
       "aspLsp.format.ignoreCssTagIndent",
@@ -1450,6 +1470,12 @@ describe("VS Code extension package", () => {
     expect(manifest.contributes?.configuration?.properties?.["aspLsp.format.indentSize"]).toEqual(
       expect.objectContaining({ type: ["number", "null"], default: null, minimum: 1 }),
     );
+    expect(
+      manifest.contributes?.configuration?.properties?.["aspLsp.format.vbscriptIndentSize"],
+    ).toEqual(expect.objectContaining({ type: ["number", "null"], default: null, minimum: 1 }));
+    expect(
+      manifest.contributes?.configuration?.properties?.["aspLsp.format.vbscriptIndentStyle"],
+    ).toEqual(expect.objectContaining({ type: "string", enum: ["space", "tab"] }));
     expect(
       manifest.contributes?.configuration?.properties?.["aspLsp.format.vbscriptBlockIndent"],
     ).toEqual(

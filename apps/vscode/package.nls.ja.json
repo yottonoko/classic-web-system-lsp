@@ -21,6 +21,8 @@
   "configuration.legacyEncoding.description": "開いていない include file を読むときの encoding です。既定では自動判定します。",
   "configuration.format.indentSize.description": "Classic ASP formatter の indent size です。未設定なら editor formatting option を使います。",
   "configuration.format.indentStyle.description": "Classic ASP formatter の indent style です。未設定なら editor formatting option を使います。",
+  "configuration.format.vbscriptIndentSize.description": "VBScript formatting に使う indent size です。未設定なら aspLsp.format.indentSize または editor formatting option を使います。",
+  "configuration.format.vbscriptIndentStyle.description": "VBScript formatting に使う indent style です。未設定なら aspLsp.format.indentStyle または editor formatting option を使います。",
   "configuration.format.uppercaseKeywords.description": "VBScript keyword を uppercase spelling で format します。",
   "configuration.format.alignAssignments.description": "単純な連続 VBScript assignment を align します。",
   "configuration.format.vbscriptBlockIndent.description": "multiline <% ... %> VBScript statement を delimiter と同じ高さに揃えるか、一段内側に indent するかを制御します。",

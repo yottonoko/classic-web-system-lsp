@@ -83,7 +83,7 @@ function formatRegion(
     return parsed.text.slice(start, end);
   }
   if (start !== region.start || end !== region.end) {
-    return formatVbscriptBlock(parsed.text.slice(start, end), options, 0);
+    return formatVbscriptBlock(parsed.text.slice(start, end), options, "");
   }
   if (region.kind === "asp-expression") {
     const expression = formatVbscriptLine(
@@ -102,9 +102,9 @@ function formatRegion(
     if (!content.includes("\n") && !content.includes("\r")) {
       return `<% ${formatVbscriptLine(content.trim(), options)} %>`;
     }
-    const baseIndentLevel = vbscriptTagIndentLevel(parsed.text, region, options);
-    const contentIndentLevel = baseIndentLevel + vbscriptBlockIndentOffset(options);
-    return `<%\n${formatVbscriptBlock(content, options, contentIndentLevel)}\n${indentUnit(options).repeat(baseIndentLevel)}%>`;
+    const baseIndent = vbscriptTagIndent(parsed.text, region, options);
+    const contentIndent = baseIndent + vbscriptBlockIndent(options);
+    return `<%\n${formatVbscriptBlock(content, options, contentIndent)}\n${baseIndent}%>`;
   }
   const before = parsed.text.slice(region.start, region.contentStart);
   const after = parsed.text.slice(region.contentEnd, region.end);
@@ -112,27 +112,29 @@ function formatRegion(
   if (!content.includes("\n") && !content.includes("\r")) {
     return `${before}${formatVbscriptLine(content.trim(), options)}${after}`;
   }
-  const baseIndentLevel = vbscriptTagIndentLevel(parsed.text, region, options);
+  const baseIndent = vbscriptTagIndent(parsed.text, region, options);
+  const contentIndent =
+    baseIndent + (options.ignoreVbscriptTagIndent === true ? "" : vbscriptIndentUnit(options));
   return `${before}\n${formatVbscriptBlock(
     content,
     options,
-    baseIndentLevel + (options.ignoreVbscriptTagIndent === true ? 0 : 1),
-  )}\n${indentUnit(options).repeat(baseIndentLevel)}${after}`;
+    contentIndent,
+  )}\n${baseIndent}${after}`;
 }
 
 function formatVbscriptBlock(
   text: string,
   options: AspFormattingOptions,
-  baseIndentLevel: number,
+  baseIndent: string,
 ): string {
-  const unit = indentUnit(options);
+  const unit = vbscriptIndentUnit(options);
   const lines = text
     .replace(/^\s*\r?\n/, "")
     .replace(/\r?\n\s*$/, "")
     .split(/\r?\n/);
   const trimmedLines = lines.map((line) => line.trim());
   const tokensByLine = tokenizeVbscriptLines(trimmedLines);
-  let indentLevel = baseIndentLevel;
+  let indentLevel = 0;
   const formatted: string[] = [];
   const selectIndentStack: number[] = [];
   let previousSignificantLine: string | undefined;
@@ -147,20 +149,18 @@ function formatVbscriptBlock(
       previousSignificantLine !== undefined && isLineContinuation(previousSignificantLine);
     const code = codeBeforeCommentFromTokens(trimmed, tokens);
     if (!continuesPreviousLine && /^End\s+Select\b/i.test(code)) {
-      indentLevel = selectIndentStack.pop() ?? Math.max(baseIndentLevel, indentLevel - 1);
+      indentLevel = selectIndentStack.pop() ?? Math.max(0, indentLevel - 1);
     } else if (!continuesPreviousLine && isCaseLine(code)) {
       const selectIndent = selectIndentStack.at(-1);
       if (selectIndent !== undefined) {
-        indentLevel = previousSignificantLine
-          ? selectIndent + 1
-          : Math.max(baseIndentLevel, indentLevel);
+        indentLevel = previousSignificantLine ? selectIndent + 1 : Math.max(0, indentLevel);
       }
     } else if (!continuesPreviousLine && dedentsBeforeLine(code)) {
-      indentLevel = Math.max(baseIndentLevel, indentLevel - 1);
+      indentLevel = Math.max(0, indentLevel - 1);
     }
     const lineIndentLevel = indentLevel + (continuesPreviousLine ? 1 : 0);
     const formattedLine = formatVbscriptTokens(tokens, options);
-    formatted.push(`${unit.repeat(lineIndentLevel)}${formattedLine}`);
+    formatted.push(`${baseIndent}${unit.repeat(lineIndentLevel)}${formattedLine}`);
     if (/^Select\b/i.test(code)) {
       selectIndentStack.push(indentLevel);
       indentLevel += 1;
@@ -297,12 +297,21 @@ function oneLine(text: string): string {
   return text.replace(/\s+/g, " ").trim();
 }
 
+function vbscriptIndentUnit(options: AspFormattingOptions): string {
+  const style =
+    options.vbscriptIndentStyle ?? options.indentStyle ?? (options.insertSpaces ? "space" : "tab");
+  if (style === "tab") {
+    return "\t";
+  }
+  return " ".repeat(options.vbscriptIndentSize ?? options.indentSize ?? options.tabSize);
+}
+
 function indentUnit(options: AspFormattingOptions): string {
   const style = options.indentStyle ?? (options.insertSpaces ? "space" : "tab");
   if (style === "tab") {
     return "\t";
   }
-  return " ".repeat(options.indentSize ?? options.tabSize);
+  return " ".repeat(indentSize(options));
 }
 
 function alignAssignments(lines: string[]): string[] {
@@ -341,24 +350,27 @@ function alignAssignments(lines: string[]): string[] {
   return result;
 }
 
-function vbscriptTagIndentLevel(
-  text: string,
-  region: AspRegion,
-  options: AspFormattingOptions,
-): number {
-  return options.ignoreVbscriptTagIndent === true
-    ? 0
-    : leadingIndentLevel(text, region.start, options);
+function vbscriptTagIndent(text: string, region: AspRegion, options: AspFormattingOptions): string {
+  if (options.ignoreVbscriptTagIndent === true) {
+    return "";
+  }
+  if (hasSeparateVbscriptIndent(options)) {
+    return leadingIndentText(text, region.start);
+  }
+  return indentUnit(options).repeat(leadingIndentLevel(text, region.start, options));
 }
 
-function vbscriptBlockIndentOffset(options: AspFormattingOptions): number {
-  return options.vbscriptBlockIndent === "alignWithDelimiter" ? 0 : 1;
+function vbscriptBlockIndent(options: AspFormattingOptions): string {
+  return options.vbscriptBlockIndent === "alignWithDelimiter" ? "" : vbscriptIndentUnit(options);
+}
+
+function leadingIndentText(text: string, offset: number): string {
+  const lineStart = lineStartOffset(text, offset);
+  return text.slice(lineStart, offset).match(/^[\t ]*/)?.[0] ?? "";
 }
 
 function leadingIndentLevel(text: string, offset: number, options: AspFormattingOptions): number {
-  const lineStart = lineStartOffset(text, offset);
-  const indent = text.slice(lineStart, offset).match(/^[\t ]*/)?.[0] ?? "";
-  return Math.floor(indentWidth(indent, options) / indentSize(options));
+  return Math.floor(indentWidth(leadingIndentText(text, offset), options) / indentSize(options));
 }
 
 function indentSize(options: AspFormattingOptions): number {
@@ -366,12 +378,15 @@ function indentSize(options: AspFormattingOptions): number {
 }
 
 function indentWidth(indent: string, options: AspFormattingOptions): number {
-  const tabSize = options.tabSize;
   let width = 0;
   for (const char of indent) {
-    width += char === "\t" ? tabSize : 1;
+    width += char === "\t" ? options.tabSize : 1;
   }
   return width;
+}
+
+function hasSeparateVbscriptIndent(options: AspFormattingOptions): boolean {
+  return options.vbscriptIndentSize !== undefined || options.vbscriptIndentStyle !== undefined;
 }
 
 function lineStartOffset(text: string, offset: number): number {

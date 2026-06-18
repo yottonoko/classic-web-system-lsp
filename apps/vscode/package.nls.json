@@ -21,6 +21,8 @@
   "configuration.legacyEncoding.description": "Encoding used when reading unopened include files. Auto detection is used by default.",
   "configuration.format.indentSize.description": "Indent size used by the Classic ASP formatter. When unset, editor formatting options are used.",
   "configuration.format.indentStyle.description": "Indent style used by the Classic ASP formatter. When unset, editor formatting options are used.",
+  "configuration.format.vbscriptIndentSize.description": "Indent size used by VBScript formatting. When unset, aspLsp.format.indentSize or editor formatting options are used.",
+  "configuration.format.vbscriptIndentStyle.description": "Indent style used by VBScript formatting. When unset, aspLsp.format.indentStyle or editor formatting options are used.",
   "configuration.format.uppercaseKeywords.description": "Format VBScript keywords using uppercase spelling.",
   "configuration.format.alignAssignments.description": "Align simple consecutive VBScript assignments.",
   "configuration.format.vbscriptBlockIndent.description": "Controls whether multiline <% ... %> VBScript statements align with the delimiters or are indented one level inside them.",

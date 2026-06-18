@@ -106,6 +106,8 @@ export type AspVbscriptBlockIndent = "alignWithDelimiter" | "indentInsideDelimit
 export interface AspFormatSettings {
   indentSize?: number;
   indentStyle?: "space" | "tab";
+  vbscriptIndentSize?: number;
+  vbscriptIndentStyle?: "space" | "tab";
   uppercaseKeywords?: boolean;
   alignAssignments?: boolean;
   onSave?: boolean;

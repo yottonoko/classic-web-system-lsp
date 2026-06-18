@@ -1022,6 +1022,14 @@ function FormatterPreview(props: {
       <div className="mb-3 grid grid-cols-2 gap-2 text-xs text-[#8190a4]">
         <ValueSummary label="tabSize" value={preview.options.tabSize} />
         <ValueSummary label="insertSpaces" value={preview.options.insertSpaces} />
+        <ValueSummary
+          label="vbscriptIndentSize"
+          value={preview.options.vbscriptIndentSize ?? "inherit"}
+        />
+        <ValueSummary
+          label="vbscriptIndentStyle"
+          value={preview.options.vbscriptIndentStyle ?? "inherit"}
+        />
       </div>
       <div className="space-y-3">
         <CodeBlock label={text(props.locale, "input")} text={preview.sourceText} />

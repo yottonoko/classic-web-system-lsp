@@ -27,6 +27,8 @@ longerName=2
 const formatterPreviewKeys = new Set([
   "aspLsp.format.indentSize",
   "aspLsp.format.indentStyle",
+  "aspLsp.format.vbscriptIndentSize",
+  "aspLsp.format.vbscriptIndentStyle",
   "aspLsp.format.uppercaseKeywords",
   "aspLsp.format.alignAssignments",
   "aspLsp.format.vbscriptBlockIndent",
@@ -57,8 +59,13 @@ export function settingsFormatterPreview(
 
 function settingsFormatterPreviewOptions(settingValue: SettingValueReader): AspFormattingOptions {
   const indentSize = positiveNumber(settingValue("aspLsp.format.indentSize"));
+  const vbscriptIndentSize = positiveNumber(settingValue("aspLsp.format.vbscriptIndentSize"));
   const tabSize = positiveNumber(settingValue("editor.tabSize")) ?? 2;
   const indentStyle = stringUnion(settingValue("aspLsp.format.indentStyle"), ["space", "tab"]);
+  const vbscriptIndentStyle = stringUnion(settingValue("aspLsp.format.vbscriptIndentStyle"), [
+    "space",
+    "tab",
+  ]);
   const vbscriptBlockIndent = stringUnion(settingValue("aspLsp.format.vbscriptBlockIndent"), [
     "alignWithDelimiter",
     "indentInsideDelimiter",
@@ -74,6 +81,8 @@ function settingsFormatterPreviewOptions(settingValue: SettingValueReader): AspF
     tabSize,
     uppercaseKeywords: settingValue("aspLsp.format.uppercaseKeywords") === true,
     vbscriptBlockIndent,
+    vbscriptIndentSize,
+    vbscriptIndentStyle,
   };
 }
 

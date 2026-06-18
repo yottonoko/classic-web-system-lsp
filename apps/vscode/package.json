@@ -334,6 +334,29 @@
           ],
           "description": "%configuration.format.indentStyle.description%"
         },
+        "aspLsp.format.vbscriptIndentSize": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "default": null,
+          "minimum": 1,
+          "tags": [
+            "advanced"
+          ],
+          "description": "%configuration.format.vbscriptIndentSize.description%"
+        },
+        "aspLsp.format.vbscriptIndentStyle": {
+          "type": "string",
+          "enum": [
+            "space",
+            "tab"
+          ],
+          "tags": [
+            "advanced"
+          ],
+          "description": "%configuration.format.vbscriptIndentStyle.description%"
+        },
         "aspLsp.format.uppercaseKeywords": {
           "type": "boolean",
           "default": false,
