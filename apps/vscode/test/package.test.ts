@@ -6,7 +6,11 @@ import { execFileSync, spawn, type ChildProcessWithoutNullStreams } from "node:c
 import { describe, expect, it } from "vitest";
 import { INITIAL, Registry, parseRawGrammar } from "vscode-textmate";
 import { OnigScanner, OnigString, loadWASM } from "vscode-oniguruma";
-import { imeSafeCompositionEndValue } from "../src/webview/ime-safe-input";
+import {
+  imeSafeCommittedText,
+  imeSafeCompositionEndValue,
+  imeSafeCompositionStartSnapshot,
+} from "../src/webview/ime-safe-input";
 import { getServerModulePath } from "../src/server-path";
 import { allSettingsMetadata, valueStateForTarget } from "../src/settings-metadata";
 import {
@@ -206,6 +210,10 @@ describe("VS Code extension package", () => {
     expect(imeInputSource).toContain("isComposingRef.current = true");
     expect(imeInputSource).toContain("isComposingRef.current = false");
     expect(imeInputSource).toContain("compositionSnapshotRef.current");
+    expect(imeInputSource).toContain("latestCompositionTextRef.current");
+    expect(imeInputSource).toContain("previousSelectionSnapshotRef.current");
+    expect(imeInputSource).toContain('inputType === "insertCompositionText"');
+    expect(imeInputSource).toContain("onCompositionUpdate");
     expect(imeInputSource).toContain("defaultValue={value}");
     expect(imeInputSource).toContain("element.value = value");
     expect(imeInputSource).not.toContain("value={value}");
@@ -232,6 +240,48 @@ describe("VS Code extension package", () => {
       ),
     ).toBe("xACz");
     expect(imeSafeCompositionEndValue(undefined, "AC", "ACCC")).toBe("ACCC");
+  });
+
+  it("uses the latest IME update when compositionend has no committed text", () => {
+    expect(imeSafeCommittedText("", "AC")).toBe("AC");
+    expect(
+      imeSafeCompositionEndValue(
+        { selectionEnd: 3, selectionStart: 0, value: "ACC" },
+        imeSafeCommittedText("", "AC"),
+        "ACCC",
+      ),
+    ).toBe("AC");
+  });
+
+  it("recovers the previous selected range when compositionstart sees a collapsed selection", () => {
+    expect(
+      imeSafeCompositionStartSnapshot(
+        { selectionEnd: 1, selectionStart: 1, value: "ACC" },
+        { selectionEnd: 3, selectionStart: 0, value: "ACC" },
+        "ACC",
+        "",
+      ),
+    ).toEqual({ selectionEnd: 3, selectionStart: 0, value: "ACC" });
+    expect(
+      imeSafeCompositionStartSnapshot(
+        { selectionEnd: 1, selectionStart: 1, value: "ACC" },
+        undefined,
+        "ACC",
+        "ACC",
+      ),
+    ).toEqual({ selectionEnd: 3, selectionStart: 0, value: "ACC" });
+  });
+
+  it("keeps the previous full selection when compositionstart exposes a short IME range", () => {
+    const snapshot = imeSafeCompositionStartSnapshot(
+      { selectionEnd: 1, selectionStart: 0, value: "ACC" },
+      { selectionEnd: 3, selectionStart: 0, value: "ACC" },
+      "ACC",
+      "A",
+    );
+
+    expect(snapshot).toEqual({ selectionEnd: 3, selectionStart: 0, value: "ACC" });
+    expect(imeSafeCompositionEndValue(snapshot, imeSafeCommittedText("", "AC"), "ACCC")).toBe("AC");
   });
 
   it("keeps flowchart rendering focused on the selected section", () => {

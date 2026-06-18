@@ -20,6 +20,20 @@ function nativeEventIsComposing(event: React.ChangeEvent<TextControlElement>): b
   return (event.nativeEvent as Event & { isComposing?: boolean }).isComposing === true;
 }
 
+function inputEventCompositionText(event: React.FormEvent<TextControlElement>): string | undefined {
+  const nativeEvent = event.nativeEvent as Event & {
+    data?: string | null;
+    inputType?: string;
+    isComposing?: boolean;
+  };
+  return nativeEvent.isComposing === true &&
+    nativeEvent.inputType === "insertCompositionText" &&
+    typeof nativeEvent.data === "string" &&
+    nativeEvent.data.length > 0
+    ? nativeEvent.data
+    : undefined;
+}
+
 function compositionSnapshotFor(element: TextControlElement): ImeCompositionSnapshot | undefined {
   const selectionStart = element.selectionStart;
   const selectionEnd = element.selectionEnd;
@@ -31,6 +45,74 @@ function compositionSnapshotFor(element: TextControlElement): ImeCompositionSnap
     selectionStart,
     value: element.value,
   };
+}
+
+function snapshotHasSelection(
+  snapshot: ImeCompositionSnapshot | undefined,
+): snapshot is ImeCompositionSnapshot {
+  return snapshot !== undefined && snapshot.selectionStart !== snapshot.selectionEnd;
+}
+
+function snapshotSelectionLength(snapshot: ImeCompositionSnapshot): number {
+  return snapshot.selectionEnd - snapshot.selectionStart;
+}
+
+function shouldUsePreviousSelectionSnapshot(
+  currentSnapshot: ImeCompositionSnapshot | undefined,
+  previousSelectionSnapshot: ImeCompositionSnapshot | undefined,
+  currentValue: string,
+): previousSelectionSnapshot is ImeCompositionSnapshot {
+  if (
+    !snapshotHasSelection(previousSelectionSnapshot) ||
+    previousSelectionSnapshot.value !== currentValue
+  ) {
+    return false;
+  }
+  if (!snapshotHasSelection(currentSnapshot)) {
+    return true;
+  }
+  if (currentSnapshot.value !== currentValue) {
+    return false;
+  }
+  return (
+    snapshotSelectionLength(previousSelectionSnapshot) > snapshotSelectionLength(currentSnapshot) &&
+    previousSelectionSnapshot.selectionStart <= currentSnapshot.selectionStart &&
+    previousSelectionSnapshot.selectionEnd >= currentSnapshot.selectionEnd
+  );
+}
+
+export function imeSafeCompositionStartSnapshot(
+  currentSnapshot: ImeCompositionSnapshot | undefined,
+  previousSelectionSnapshot: ImeCompositionSnapshot | undefined,
+  currentValue: string,
+  selectedText: string,
+): ImeCompositionSnapshot | undefined {
+  if (
+    shouldUsePreviousSelectionSnapshot(currentSnapshot, previousSelectionSnapshot, currentValue)
+  ) {
+    return previousSelectionSnapshot;
+  }
+  if (snapshotHasSelection(currentSnapshot)) {
+    return currentSnapshot;
+  }
+  if (selectedText.length > 0) {
+    const selectionStart = currentValue.indexOf(selectedText);
+    if (selectionStart >= 0) {
+      return {
+        selectionEnd: selectionStart + selectedText.length,
+        selectionStart,
+        value: currentValue,
+      };
+    }
+  }
+  return currentSnapshot;
+}
+
+export function imeSafeCommittedText(
+  compositionEndText: string,
+  latestCompositionText: string | undefined,
+): string {
+  return compositionEndText.length > 0 ? compositionEndText : (latestCompositionText ?? "");
 }
 
 export function imeSafeCompositionEndValue(
@@ -51,13 +133,18 @@ function useImeSafeTextControl<T extends TextControlElement>(
   onValueChange: (value: string) => void,
 ): {
   elementRef: React.RefObject<T | null>;
+  onBeforeInput(event: React.FormEvent<T>): void;
   onChange(event: React.ChangeEvent<T>): void;
   onCompositionEnd(event: React.CompositionEvent<T>): void;
   onCompositionStart(event: React.CompositionEvent<T>): void;
+  onCompositionUpdate(event: React.CompositionEvent<T>): void;
+  onSelect(event: React.SyntheticEvent<T>): void;
 } {
   const elementRef = useRef<T>(null);
   const isComposingRef = useRef(false);
   const compositionSnapshotRef = useRef<ImeCompositionSnapshot | undefined>(undefined);
+  const latestCompositionTextRef = useRef<string | undefined>(undefined);
+  const previousSelectionSnapshotRef = useRef<ImeCompositionSnapshot | undefined>(undefined);
 
   useEffect(() => {
     const element = elementRef.current;
@@ -69,8 +156,15 @@ function useImeSafeTextControl<T extends TextControlElement>(
 
   return {
     elementRef,
+    onBeforeInput(event) {
+      const nextText = inputEventCompositionText(event);
+      if (nextText !== undefined) {
+        latestCompositionTextRef.current = nextText;
+      }
+    },
     onChange(event) {
       if (!isComposingRef.current && !nativeEventIsComposing(event)) {
+        previousSelectionSnapshotRef.current = undefined;
         onValueChange(event.currentTarget.value);
       }
     },
@@ -78,10 +172,12 @@ function useImeSafeTextControl<T extends TextControlElement>(
       isComposingRef.current = false;
       const nextValue = imeSafeCompositionEndValue(
         compositionSnapshotRef.current,
-        event.data,
+        imeSafeCommittedText(event.data, latestCompositionTextRef.current),
         event.currentTarget.value,
       );
       compositionSnapshotRef.current = undefined;
+      latestCompositionTextRef.current = undefined;
+      previousSelectionSnapshotRef.current = undefined;
       if (event.currentTarget.value !== nextValue) {
         event.currentTarget.value = nextValue;
       }
@@ -89,7 +185,22 @@ function useImeSafeTextControl<T extends TextControlElement>(
     },
     onCompositionStart(event) {
       isComposingRef.current = true;
-      compositionSnapshotRef.current = compositionSnapshotFor(event.currentTarget);
+      latestCompositionTextRef.current = undefined;
+      compositionSnapshotRef.current = imeSafeCompositionStartSnapshot(
+        compositionSnapshotFor(event.currentTarget),
+        previousSelectionSnapshotRef.current,
+        event.currentTarget.value,
+        event.data,
+      );
+    },
+    onCompositionUpdate(event) {
+      if (event.data.length > 0) {
+        latestCompositionTextRef.current = event.data;
+      }
+    },
+    onSelect(event) {
+      const snapshot = compositionSnapshotFor(event.currentTarget);
+      previousSelectionSnapshotRef.current = snapshotHasSelection(snapshot) ? snapshot : undefined;
     },
   };
 }
@@ -104,7 +215,16 @@ type ImeSafeInputProps = Omit<
 
 export const ImeSafeInput = React.forwardRef<HTMLInputElement, ImeSafeInputProps>(
   function ImeSafeInput(
-    { onCompositionEnd, onCompositionStart, onValueChange, value, ...props },
+    {
+      onBeforeInput,
+      onCompositionEnd,
+      onCompositionStart,
+      onCompositionUpdate,
+      onSelect,
+      onValueChange,
+      value,
+      ...props
+    },
     forwardedRef,
   ): React.ReactElement {
     const textControl = useImeSafeTextControl<HTMLInputElement>(value, onValueChange);
@@ -112,6 +232,10 @@ export const ImeSafeInput = React.forwardRef<HTMLInputElement, ImeSafeInputProps
       <input
         {...props}
         defaultValue={value}
+        onBeforeInput={(event) => {
+          textControl.onBeforeInput(event);
+          onBeforeInput?.(event);
+        }}
         onChange={textControl.onChange}
         onCompositionEnd={(event) => {
           textControl.onCompositionEnd(event);
@@ -120,6 +244,14 @@ export const ImeSafeInput = React.forwardRef<HTMLInputElement, ImeSafeInputProps
         onCompositionStart={(event) => {
           textControl.onCompositionStart(event);
           onCompositionStart?.(event);
+        }}
+        onCompositionUpdate={(event) => {
+          textControl.onCompositionUpdate(event);
+          onCompositionUpdate?.(event);
+        }}
+        onSelect={(event) => {
+          textControl.onSelect(event);
+          onSelect?.(event);
         }}
         ref={(element) => {
           textControl.elementRef.current = element;
@@ -140,7 +272,16 @@ type ImeSafeTextareaProps = Omit<
 
 export const ImeSafeTextarea = React.forwardRef<HTMLTextAreaElement, ImeSafeTextareaProps>(
   function ImeSafeTextarea(
-    { onCompositionEnd, onCompositionStart, onValueChange, value, ...props },
+    {
+      onBeforeInput,
+      onCompositionEnd,
+      onCompositionStart,
+      onCompositionUpdate,
+      onSelect,
+      onValueChange,
+      value,
+      ...props
+    },
     forwardedRef,
   ): React.ReactElement {
     const textControl = useImeSafeTextControl<HTMLTextAreaElement>(value, onValueChange);
@@ -148,6 +289,10 @@ export const ImeSafeTextarea = React.forwardRef<HTMLTextAreaElement, ImeSafeText
       <textarea
         {...props}
         defaultValue={value}
+        onBeforeInput={(event) => {
+          textControl.onBeforeInput(event);
+          onBeforeInput?.(event);
+        }}
         onChange={textControl.onChange}
         onCompositionEnd={(event) => {
           textControl.onCompositionEnd(event);
@@ -156,6 +301,14 @@ export const ImeSafeTextarea = React.forwardRef<HTMLTextAreaElement, ImeSafeText
         onCompositionStart={(event) => {
           textControl.onCompositionStart(event);
           onCompositionStart?.(event);
+        }}
+        onCompositionUpdate={(event) => {
+          textControl.onCompositionUpdate(event);
+          onCompositionUpdate?.(event);
+        }}
+        onSelect={(event) => {
+          textControl.onSelect(event);
+          onSelect?.(event);
         }}
         ref={(element) => {
           textControl.elementRef.current = element;
