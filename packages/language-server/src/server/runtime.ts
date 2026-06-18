@@ -657,6 +657,14 @@ interface OffsetEdit {
   newText: string;
 }
 
+interface HtmlProtectedSpan {
+  block: boolean;
+  end: number;
+  placeholder: string;
+  start: number;
+  text: string;
+}
+
 interface WorkspaceIndexedDocument {
   uri: string;
   fileName: string;
@@ -16639,10 +16647,18 @@ function formatAspDocumentWithDelegates(
     formatOptions(options, settings),
   );
   const original = cached.source.getText();
-  let formatted = measureDebugStep(settings, cached.source.uri, "format.core", () =>
-    applyTextEdits(original, formatAspDocument(cached.parsed, formattingOptions)),
+  let formatted = measureDebugStep(settings, cached.source.uri, "format.html", () =>
+    formatHtmlDocumentWithPlaceholders(cached.parsed, original, formattingOptions),
   );
-  const parsed = measureDebugStep(settings, cached.source.uri, "format.reparse", () =>
+  let parsed = measureDebugStep(settings, cached.source.uri, "format.html.reparse", () =>
+    formatted === original
+      ? cached.parsed
+      : parseAspDocument(cached.source.uri, formatted, settings),
+  );
+  formatted = measureDebugStep(settings, cached.source.uri, "format.core", () =>
+    applyTextEdits(formatted, formatAspDocument(parsed, formattingOptions)),
+  );
+  parsed = measureDebugStep(settings, cached.source.uri, "format.reparse", () =>
     parseAspDocument(cached.source.uri, formatted, settings),
   );
   formatted = applyOffsetEdits(
@@ -16677,10 +16693,19 @@ async function formatAspDocumentWithDelegatesAsync(
     formatOptions(options, settings),
   );
   const original = cached.source.getText();
-  let formatted = measureDebugStep(settings, cached.source.uri, "format.core", () =>
-    applyTextEdits(original, formatAspDocument(cached.parsed, formattingOptions)),
+  let formatted = measureDebugStep(settings, cached.source.uri, "format.html", () =>
+    formatHtmlDocumentWithPlaceholders(cached.parsed, original, formattingOptions),
   );
-  const parsed = await measureDebugStepAsync(settings, cached.source.uri, "format.reparse", () =>
+  let parsed = await measureDebugStepAsync(settings, cached.source.uri, "format.html.reparse", () =>
+    formatted === original
+      ? Promise.resolve(cached.parsed)
+      : parseAspDocumentAsync(cached.source.uri, formatted, settings),
+  );
+  await hydrateVbscriptCst(parsed, settings);
+  formatted = measureDebugStep(settings, cached.source.uri, "format.core", () =>
+    applyTextEdits(formatted, formatAspDocument(parsed, formattingOptions)),
+  );
+  parsed = await measureDebugStepAsync(settings, cached.source.uri, "format.reparse", () =>
     parseAspDocumentAsync(cached.source.uri, formatted, settings),
   );
   await hydrateVbscriptCst(parsed, settings);
@@ -16761,6 +16786,108 @@ async function formatAspRangeWithDelegatesAsync(
   );
   finishFormattingLog(cached, settings, "range", startedAt, edits.length);
   return edits;
+}
+
+function formatHtmlDocumentWithPlaceholders(
+  parsed: AspParsedDocument,
+  text: string,
+  options: AspFormattingOptions,
+): string {
+  const protectedSpans = htmlProtectedSpans(parsed, text);
+  const protectedText = applyOffsetEdits(
+    text,
+    protectedSpans.map((span) => ({
+      start: span.start,
+      end: span.end,
+      newText: htmlProtectedReplacement(span, text),
+    })),
+  );
+  const document = TextDocument.create("__asp_lsp_format.html", "html", 0, protectedText);
+  const edits = htmlService.format(document, undefined, {
+    tabSize: options.indentSize ?? options.tabSize,
+    insertSpaces: (options.indentStyle ?? (options.insertSpaces ? "space" : "tab")) !== "tab",
+  });
+  if (edits.length === 0) {
+    return text;
+  }
+  let formatted = applyOffsetEdits(
+    protectedText,
+    edits.map((edit) => ({
+      start: offsetAtText(protectedText, edit.range.start),
+      end: offsetAtText(protectedText, edit.range.end),
+      newText: edit.newText,
+    })),
+  );
+  for (const span of protectedSpans) {
+    if (placeholderCount(formatted, span.placeholder) !== 1) {
+      return text;
+    }
+    formatted = formatted.replace(span.placeholder, span.text);
+  }
+  return formatted;
+}
+
+function htmlProtectedSpans(parsed: AspParsedDocument, text: string): HtmlProtectedSpan[] {
+  const candidates = parsed.regions
+    .flatMap((region) => htmlProtectedSpanCandidate(region))
+    .filter((span) => span.start < span.end)
+    .sort((left, right) => left.start - right.start || right.end - left.end);
+  const accepted: Omit<HtmlProtectedSpan, "placeholder">[] = [];
+  let coveredEnd = -1;
+  for (const span of candidates) {
+    if (span.start < coveredEnd) {
+      continue;
+    }
+    accepted.push({ ...span, text: text.slice(span.start, span.end) });
+    coveredEnd = span.end;
+  }
+  return accepted.map((span, index) => ({
+    ...span,
+    placeholder: htmlProtectedPlaceholder(text, index),
+  }));
+}
+
+function htmlProtectedReplacement(span: HtmlProtectedSpan, text: string): string {
+  if (!span.block) {
+    return span.placeholder;
+  }
+  const beforeLinePrefix = text.slice(lineStartOffset(text, span.start), span.start);
+  const afterLineSuffix = text.slice(span.end, lineEndOffset(text, span.end));
+  const before = span.start > 0 && beforeLinePrefix.trim().length > 0 ? "\n" : "";
+  const after = span.end < text.length && afterLineSuffix.trim().length > 0 ? "\n" : "";
+  return `${before}${span.placeholder}${after}`;
+}
+
+function htmlProtectedSpanCandidate(
+  region: AspRegion,
+): Array<{ block: boolean; end: number; start: number }> {
+  if (
+    region.kind === "style" ||
+    region.kind === "client-script" ||
+    region.kind === "server-script" ||
+    region.kind === "style-attribute"
+  ) {
+    return [{ block: false, start: region.contentStart, end: region.contentEnd }];
+  }
+  if (region.kind === "asp-block" || region.kind === "asp-directive") {
+    return [{ block: true, start: region.start, end: region.end }];
+  }
+  if (region.kind === "asp-expression") {
+    return [{ block: false, start: region.start, end: region.end }];
+  }
+  return [];
+}
+
+function htmlProtectedPlaceholder(text: string, index: number): string {
+  let placeholder = `__ASP_LSP_FORMAT_PROTECTED_${index}__`;
+  while (text.includes(placeholder)) {
+    placeholder = `_${placeholder}_`;
+  }
+  return placeholder;
+}
+
+function placeholderCount(text: string, placeholder: string): number {
+  return text.split(placeholder).length - 1;
 }
 
 function startFormattingLog(

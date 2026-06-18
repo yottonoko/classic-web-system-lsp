@@ -15589,6 +15589,88 @@ End If
       }
     });
 
+    it("formats HTML tags without rewriting ASP, CSS, or JavaScript bodies as HTML", async () => {
+      const source = `<html><body><main><section><h1><%= title %></h1></section></main><style>.card{color:red}</style><script>
+function greet(){
+console.log("x");
+}
+</script><%
+If enabled Then
+Response.Write "ok"
+End If
+%></body></html>`;
+      const server = new RpcServer();
+      try {
+        await server.start();
+        await server.request("initialize", {
+          processId: process.pid,
+          rootUri: "file:///tmp",
+          capabilities: {},
+        });
+        server.notify("workspace/didChangeConfiguration", {
+          settings: { aspLsp: { format: { indentSize: 2 } } },
+        });
+        const uri = "file:///tmp/format-html-tags.asp";
+        server.notify("textDocument/didOpen", {
+          textDocument: {
+            uri,
+            languageId: "classic-asp",
+            version: 1,
+            text: source,
+          },
+        });
+        await server.waitForNotification("textDocument/publishDiagnostics");
+
+        const fullEdits = await server.request("textDocument/formatting", {
+          textDocument: { uri },
+          options: { tabSize: 2, insertSpaces: true },
+        });
+        const fullText = (fullEdits as Array<{ newText?: string }>)[0]?.newText ?? source;
+
+        expect(fullText).toContain(`<body>
+  <main>
+    <section>`);
+        expect(fullText).toContain(`<h1><%= title %></h1>`);
+        expect(fullText).toContain(`  <style>
+    .card {
+      color: red
+    }
+  </style>`);
+        expect(fullText).toContain(`  <script>
+    function greet() {
+      console.log("x");
+    }
+  </script>`);
+        expect(fullText).toContain(`  <%
+    If enabled Then
+      Response.Write "ok"
+    End If
+  %>`);
+        expect(fullText).not.toContain("<% If enabled Then Response.Write");
+
+        const secondUri = "file:///tmp/format-html-tags-idempotent.asp";
+        server.notify("textDocument/didOpen", {
+          textDocument: {
+            uri: secondUri,
+            languageId: "classic-asp",
+            version: 1,
+            text: fullText,
+          },
+        });
+        await server.waitForNotification("textDocument/publishDiagnostics");
+        const secondEdits = await server.request("textDocument/formatting", {
+          textDocument: { uri: secondUri },
+          options: { tabSize: 2, insertSpaces: true },
+        });
+        expect(secondEdits).toEqual([]);
+
+        await server.request("shutdown", null);
+        server.notify("exit", undefined);
+      } finally {
+        server.stop();
+      }
+    });
+
     it("can ignore embedded tag indentation per language", async () => {
       const source = `<html>
 <body>
