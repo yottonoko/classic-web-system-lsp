@@ -195,11 +195,6 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
       showReferences(uri, position, locations),
     ),
     vscode.commands.registerCommand("aspLsp.toggleLineComment", async () => toggleLineComment()),
-    vscode.commands.registerCommand("aspLsp.debugIisUrl", async () => debugIisUrl()),
-    vscode.commands.registerCommand("aspLsp.debugIisExpressUrl", async () =>
-      debugBrowserUrl("iisExpress", extensionLocalizer()("debug.iisExpress.name")),
-    ),
-    vscode.commands.registerCommand("aspLsp.createLaunchConfig", async () => createLaunchConfig()),
     vscode.workspace.onDidChangeTextDocument((event) => {
       void autoCloseHtmlTag(event);
       void autoCloseAspBlock(event);
@@ -1808,66 +1803,6 @@ function createLanguageClientErrorHandler(): ErrorHandler {
   };
 }
 
-async function debugIisUrl(): Promise<void> {
-  await debugBrowserUrl("iis", extensionLocalizer()("debug.iis.name"));
-}
-
-async function debugBrowserUrl(configPrefix: "iis" | "iisExpress", name: string): Promise<void> {
-  const config = vscode.workspace.getConfiguration("aspLsp");
-  const url =
-    config.get<string>(`${configPrefix}.url`) ||
-    (configPrefix === "iisExpress" ? "http://localhost:8080/" : "http://localhost/");
-  const webRoot =
-    config.get<string>(`${configPrefix}.webRoot`) ||
-    vscode.workspace.workspaceFolders?.[0]?.uri.fsPath ||
-    "${workspaceFolder}";
-  const browser = config.get<string>(`${configPrefix}.browser`) || "pwa-chrome";
-  await vscode.debug.startDebugging(undefined, {
-    type: browser,
-    request: "launch",
-    name,
-    url,
-    webRoot,
-  });
-}
-
-async function createLaunchConfig(): Promise<void> {
-  const folder = vscode.workspace.workspaceFolders?.[0];
-  if (!folder) {
-    void vscode.window.showWarningMessage(extensionLocalizer()("launch.noWorkspace"));
-    return;
-  }
-  const vscodeDir = vscode.Uri.joinPath(folder.uri, ".vscode");
-  const launchUri = vscode.Uri.joinPath(vscodeDir, "launch.json");
-  await vscode.workspace.fs.createDirectory(vscodeDir);
-  let launch: { version: string; configurations: Array<Record<string, unknown>> } = {
-    version: "0.2.0",
-    configurations: [],
-  };
-  try {
-    const existing = new TextDecoder().decode(await vscode.workspace.fs.readFile(launchUri));
-    launch = JSON.parse(existing) as typeof launch;
-    launch.configurations = Array.isArray(launch.configurations) ? launch.configurations : [];
-  } catch {
-    // Missing or invalid launch.json is replaced with a minimal browser debug config.
-  }
-  const config = vscode.workspace.getConfiguration("aspLsp");
-  const name = extensionLocalizer()("debug.iis.name");
-  const next = {
-    type: config.get<string>("iis.browser") || "pwa-chrome",
-    request: "launch",
-    name,
-    url: config.get<string>("iis.url") || "http://localhost/",
-    webRoot: config.get<string>("iis.webRoot") || "${workspaceFolder}",
-  };
-  launch.configurations = [...launch.configurations.filter((item) => item.name !== name), next];
-  await vscode.workspace.fs.writeFile(
-    launchUri,
-    new TextEncoder().encode(`${JSON.stringify(launch, null, 2)}\n`),
-  );
-  void vscode.window.showInformationMessage(extensionLocalizer()("launch.created"));
-}
-
 type ExtensionMessageKey =
   | "status.tooltip"
   | "status.loading.text"
@@ -1946,10 +1881,6 @@ type ExtensionMessageKey =
   | "status.progress.workspaceIndexScanRoot"
   | "status.progress.workspaceIndexWriteCache"
   | "status.progress.workspacePreviewFiles"
-  | "debug.iis.name"
-  | "debug.iisExpress.name"
-  | "launch.noWorkspace"
-  | "launch.created"
   | "graph.serverUnavailable"
   | "graph.noActiveFile"
   | "graph.noFolder"
@@ -2054,10 +1985,6 @@ const extensionMessages: Record<"en" | "ja", Record<ExtensionMessageKey, string>
     "status.progress.workspaceIndexScanRoot": "Scanning workspace root",
     "status.progress.workspaceIndexWriteCache": "Writing workspace index cache",
     "status.progress.workspacePreviewFiles": "Previewing workspace files",
-    "debug.iis.name": "Debug Classic ASP URL",
-    "debug.iisExpress.name": "Debug Classic ASP IIS Express URL",
-    "launch.noWorkspace": "Open a workspace before creating launch.json.",
-    "launch.created": "Classic ASP launch.json snippet created.",
     "graph.serverUnavailable": "Start the Classic ASP Language Server before building a graph.",
     "graph.noActiveFile": "Open a Classic ASP file before building the current file graph.",
     "graph.noFolder": "Select a folder before building the folder graph.",
@@ -2162,10 +2089,6 @@ const extensionMessages: Record<"en" | "ja", Record<ExtensionMessageKey, string>
     "status.progress.workspaceIndexScanRoot": "ワークスペースルートをスキャン中",
     "status.progress.workspaceIndexWriteCache": "ワークスペースインデックスキャッシュを書き込み中",
     "status.progress.workspacePreviewFiles": "ワークスペースファイルをプレビュー中",
-    "debug.iis.name": "Classic ASP URL をデバッグ",
-    "debug.iisExpress.name": "Classic ASP IIS Express URL をデバッグ",
-    "launch.noWorkspace": "launch.json を作成する前にワークスペースを開いてください。",
-    "launch.created": "Classic ASP の launch.json スニペットを作成しました。",
     "graph.serverUnavailable":
       "グラフを作成する前に Classic ASP Language Server を起動してください。",
     "graph.noActiveFile":

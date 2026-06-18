@@ -175,12 +175,6 @@ ASP_LSP_BENCH_INCLUDE_TREE_SPEEDUP_PERCENT=10000 ASP_LSP_BENCH_ITERATIONS=1 ASP_
 | `aspLsp.workspace.maxIndexFiles`              | `5000`                   | Maximum unopened Classic ASP files indexed in one workspace scan.                                                                                |
 | `aspLsp.workspace.scanChunkSize`              | `200`                    | Filesystem entries processed before yielding during workspace indexing.                                                                          |
 | `aspLsp.workspace.busyAnalysisConcurrency`    | `0`                      | Maximum workspace analysis concurrency; `0` uses half the available CPU count.                                                                   |
-| `aspLsp.iis.url`                              | `http://localhost/`      | URL opened by the IIS debug helper command.                                                                                                      |
-| `aspLsp.iis.webRoot`                          | `""`                     | Web root used by the IIS debug helper command.                                                                                                   |
-| `aspLsp.iis.browser`                          | `pwa-chrome`             | VS Code debug type used by the IIS debug helper command.                                                                                         |
-| `aspLsp.iisExpress.url`                       | `http://localhost:8080/` | URL opened by the IIS Express debug helper command.                                                                                              |
-| `aspLsp.iisExpress.webRoot`                   | `""`                     | Web root used by the IIS Express debug helper command.                                                                                           |
-| `aspLsp.iisExpress.browser`                   | `pwa-chrome`             | VS Code debug type used by the IIS Express debug helper command.                                                                                 |
 
 Example `aspLsp.vbscript.comTypes` and `aspLsp.vbscript.globals` entries:
 
@@ -218,8 +212,6 @@ Example `aspLsp.vbscript.comTypes` and `aspLsp.vbscript.globals` entries:
 - COM and IIS runtime behavior are not executed. COM type information comes from built-in ASP/COM/ADO stubs or `aspLsp.vbscript.comTypes`.
 - Call hierarchy, type hierarchy, CodeLens, type definition, implementation, monikers, and inline values are static and user-defined-symbol first; runtime COM dispatch is not modeled.
 - Save and will-save hooks refresh diagnostics and caches. `willSaveWaitUntil` is non-mutating by default and returns full-document formatting edits only when `aspLsp.format.onSave` is enabled.
-- IIS debug support opens a configured URL in a browser debug session; it does not attach to IIS, COM, or server-side Classic ASP runtime.
-- IIS Express support is a browser launch helper; it does not start or configure IIS Express by itself.
 - Full-document formatting is CST based and conservative. HTML-only ranges still use `vscode-html-languageservice`; ASP/VBScript ranges are formatted by the built-in formatter.
 - Localization applies to asp-lsp generated diagnostics, code actions, CodeLens, and extension messages. TypeScript, HTML, CSS, VS Code, and Node.js upstream messages are left unchanged.
 - VS Code manifest text uses `package.nls.json` / `package.nls.ja.json` and follows the VS Code UI locale. Changing `aspLsp.locale` affects runtime messages and LSP output, but it does not immediately relocalize manifest titles or setting descriptions.

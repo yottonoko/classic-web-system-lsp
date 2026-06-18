@@ -141,12 +141,6 @@
   "configuration.workspace.busyAnalysisConcurrency.description": "ワークスペース解析の最大並列数です。0 の場合は利用可能な CPU 数の半分を使います。",
   "configuration.workspace.vbProjectMaxDocuments.description": "1 回の full VBScript project context と include cycle traversal に含める document の最大数です。グラフと Excel の include ツリーには機能別の上限もあります。",
   "configuration.workspace.vbProjectMaxTextLength.description": "1 回の full VBScript project context と include cycle traversal に含める text 合計サイズの最大値を byte で指定します。グラフと Excel の include ツリーには機能別の上限もあります。",
-  "configuration.iis.url.description": "IIS debug helper command が開く URL です。",
-  "configuration.iis.webRoot.description": "IIS debug helper command が使う web root です。",
-  "configuration.iis.browser.description": "IIS debug helper command が使う VS Code debug type です。",
-  "configuration.iisExpress.url.description": "IIS Express debug helper command が開く URL です。",
-  "configuration.iisExpress.webRoot.description": "IIS Express debug helper command が使う web root です。",
-  "configuration.iisExpress.browser.description": "IIS Express debug helper command が使う VS Code debug type です。",
   "command.restartServer.title": "Classic ASP: Language Server を再起動",
   "command.reindexWorkspace.title": "Classic ASP: ワークスペースを再インデックス",
   "command.clearCache.title": "Classic ASP: すべての解析キャッシュを消去",
@@ -161,9 +155,6 @@
   "command.exportCurrentFileAnalysisExcel.title": "Classic ASP: 現在のファイル解析を Excel 出力",
   "command.showCurrentFileFlowchart.title": "Classic ASP: 現在のファイルフローチャートを表示",
   "command.exportCurrentFileFlowchart.title": "Classic ASP: 現在のファイルフローチャートを Mermaid として出力",
-  "command.debugIisUrl.title": "Classic ASP: IIS URL をデバッグ",
-  "command.debugIisExpressUrl.title": "Classic ASP: IIS Express URL をデバッグ",
-  "command.createLaunchConfig.title": "Classic ASP: Browser launch config を作成",
   "taskDefinition.task.description": "Classic ASP LSP workspace task name です。",
   "capability.untrustedWorkspaces.description": "Classic ASP LSP は local analysis を実行し、language features に workspace trust は不要です。"
 }

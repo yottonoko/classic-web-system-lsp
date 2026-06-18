@@ -1009,9 +1009,6 @@ function SettingPreview(props: {
   if (previewKind === "memory") {
     return <MemoryPreview settingValue={settingValue} />;
   }
-  if (previewKind === "iis") {
-    return <IisPreview settingValue={settingValue} />;
-  }
   return <GeneralPreview settingValue={settingValue} />;
 }
 
@@ -1220,24 +1217,6 @@ function MemoryPreview(props: { settingValue(key: string): unknown }): React.Rea
         enabled={props.settingValue("aspLsp.memory.debugTelemetry") === true}
         label="debug telemetry"
       />
-    </PreviewCard>
-  );
-}
-
-function IisPreview(props: { settingValue(key: string): unknown }): React.ReactElement {
-  return (
-    <PreviewCard title="IIS">
-      {["iis", "iisExpress"].map((kind) => (
-        <div className="mb-3 rounded border border-[#263140] bg-[#151b23] p-3" key={kind}>
-          <div className="mb-1 text-xs uppercase tracking-wide text-[#8190a4]">{kind}</div>
-          <div className="break-all text-sm text-[#f1f5f9]">
-            {stringValue(props.settingValue(`aspLsp.${kind}.url`), "http://localhost/")}
-          </div>
-          <div className="mt-1 break-all text-xs text-[#9fb0c5]">
-            {stringValue(props.settingValue(`aspLsp.${kind}.webRoot`), "(workspace)")}
-          </div>
-        </div>
-      ))}
     </PreviewCard>
   );
 }

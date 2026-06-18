@@ -642,7 +642,7 @@ describe("VS Code extension package", () => {
     ).filter((key) => key.startsWith("aspLsp."));
     const classicAspOverrides = metadata.filter((setting) => setting.languageOverride);
 
-    expect(aspSettings).toHaveLength(137);
+    expect(aspSettings).toHaveLength(131);
     expect(aspSettings.map((setting) => setting.key).sort()).toEqual(contributedAspSettings.sort());
     expect(classicAspOverrides.map((setting) => setting.key)).toEqual([
       "editor.defaultFormatter",
@@ -783,7 +783,7 @@ describe("VS Code extension package", () => {
     expect(graphWebviewSource).not.toContain("unresolvedGlobalVariable");
   });
 
-  it("contributes commands, task definition and IIS debug settings", () => {
+  it("contributes commands, task definition and settings", () => {
     const manifest = JSON.parse(fs.readFileSync("package.json", "utf8")) as {
       repository?: { url?: string };
       icon?: string;
@@ -855,9 +855,9 @@ describe("VS Code extension package", () => {
     expect(commands).toContain("aspLsp.openOutput");
     expect(commands).toContain("aspLsp.openSettings");
     expect(commands).toContain("aspLsp.showProgressDetails");
-    expect(commands).toContain("aspLsp.debugIisUrl");
-    expect(commands).toContain("aspLsp.debugIisExpressUrl");
-    expect(commands).toContain("aspLsp.createLaunchConfig");
+    expect(commands).not.toContain("aspLsp.debugIisUrl");
+    expect(commands).not.toContain("aspLsp.debugIisExpressUrl");
+    expect(commands).not.toContain("aspLsp.createLaunchConfig");
     const removedAnalysisSetting = "analysis" + "Backend";
     const removedAnalysisEnv = "ASP_LSP_ANALYSIS_" + "BACKEND";
     expect(configuration[`aspLsp.${removedAnalysisSetting}`]).toBeUndefined();
@@ -957,9 +957,32 @@ describe("VS Code extension package", () => {
     expect(
       manifest.contributes?.problemMatchers?.some((matcher) => matcher.name === "asp-lsp"),
     ).toBe(true);
-    expect(manifest.contributes?.configuration?.properties?.["aspLsp.iis.url"]).toBeTruthy();
-    expect(manifest.contributes?.configuration?.properties?.["aspLsp.iis.browser"]).toBeTruthy();
-    expect(manifest.contributes?.configuration?.properties?.["aspLsp.iisExpress.url"]).toBeTruthy();
+    const removedIisSettings = [
+      "aspLsp.iis.url",
+      "aspLsp.iis.webRoot",
+      "aspLsp.iis.browser",
+      "aspLsp.iisExpress.url",
+      "aspLsp.iisExpress.webRoot",
+      "aspLsp.iisExpress.browser",
+    ];
+    for (const key of removedIisSettings) {
+      expect(manifest.contributes?.configuration?.properties?.[key]).toBeUndefined();
+    }
+    const removedIisNlsKeys = [
+      "configuration.iis.url.description",
+      "configuration.iis.webRoot.description",
+      "configuration.iis.browser.description",
+      "configuration.iisExpress.url.description",
+      "configuration.iisExpress.webRoot.description",
+      "configuration.iisExpress.browser.description",
+      "command.debugIisUrl.title",
+      "command.debugIisExpressUrl.title",
+      "command.createLaunchConfig.title",
+    ];
+    for (const key of removedIisNlsKeys) {
+      expect(nls[key]).toBeUndefined();
+      expect(nlsJa[key]).toBeUndefined();
+    }
     expect(
       manifest.contributes?.configuration?.properties?.["aspLsp.vbscript.unusedDiagnostics"],
     ).toBeTruthy();

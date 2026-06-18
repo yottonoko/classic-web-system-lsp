@@ -141,12 +141,6 @@
   "configuration.workspace.busyAnalysisConcurrency.description": "Maximum workspace analysis concurrency. Set 0 to use half of the available CPU count.",
   "configuration.workspace.vbProjectMaxDocuments.description": "Maximum number of documents included in one full VBScript project context and include cycle traversal. Graph and Excel include trees also have feature-specific limits.",
   "configuration.workspace.vbProjectMaxTextLength.description": "Maximum total text size, in bytes, included in one full VBScript project context and include cycle traversal. Graph and Excel include trees also have feature-specific limits.",
-  "configuration.iis.url.description": "URL opened by the Classic ASP IIS debug helper command.",
-  "configuration.iis.webRoot.description": "Web root used by the Classic ASP IIS debug helper command.",
-  "configuration.iis.browser.description": "VS Code debug type used by the Classic ASP IIS debug helper command.",
-  "configuration.iisExpress.url.description": "URL opened by the Classic ASP IIS Express debug helper command.",
-  "configuration.iisExpress.webRoot.description": "Web root used by the Classic ASP IIS Express debug helper command.",
-  "configuration.iisExpress.browser.description": "VS Code debug type used by the Classic ASP IIS Express debug helper command.",
   "command.restartServer.title": "Classic ASP: Restart Language Server",
   "command.reindexWorkspace.title": "Classic ASP: Reindex Workspace",
   "command.clearCache.title": "Classic ASP: Clear All Analysis Caches",
@@ -161,9 +155,6 @@
   "command.exportCurrentFileAnalysisExcel.title": "Classic ASP: Export Current File Analysis to Excel",
   "command.showCurrentFileFlowchart.title": "Classic ASP: Show Current File Flowchart",
   "command.exportCurrentFileFlowchart.title": "Classic ASP: Export Current File Flowchart as Mermaid",
-  "command.debugIisUrl.title": "Classic ASP: Debug IIS URL",
-  "command.debugIisExpressUrl.title": "Classic ASP: Debug IIS Express URL",
-  "command.createLaunchConfig.title": "Classic ASP: Create Browser Launch Config",
   "taskDefinition.task.description": "Classic ASP LSP workspace task name.",
   "capability.untrustedWorkspaces.description": "Classic ASP LSP runs local analysis and does not require workspace trust for language features."
 }

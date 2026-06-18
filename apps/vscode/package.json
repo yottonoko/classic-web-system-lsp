@@ -1145,36 +1145,6 @@
           "minimum": 1,
           "default": 16777216,
           "description": "%configuration.workspace.vbProjectMaxTextLength.description%"
-        },
-        "aspLsp.iis.url": {
-          "type": "string",
-          "default": "http://localhost/",
-          "description": "%configuration.iis.url.description%"
-        },
-        "aspLsp.iis.webRoot": {
-          "type": "string",
-          "default": "",
-          "description": "%configuration.iis.webRoot.description%"
-        },
-        "aspLsp.iis.browser": {
-          "type": "string",
-          "default": "pwa-chrome",
-          "description": "%configuration.iis.browser.description%"
-        },
-        "aspLsp.iisExpress.url": {
-          "type": "string",
-          "default": "http://localhost:8080/",
-          "description": "%configuration.iisExpress.url.description%"
-        },
-        "aspLsp.iisExpress.webRoot": {
-          "type": "string",
-          "default": "",
-          "description": "%configuration.iisExpress.webRoot.description%"
-        },
-        "aspLsp.iisExpress.browser": {
-          "type": "string",
-          "default": "pwa-chrome",
-          "description": "%configuration.iisExpress.browser.description%"
         }
       }
     },
@@ -1244,18 +1214,6 @@
       {
         "command": "aspLsp.exportCurrentFileFlowchart",
         "title": "%command.exportCurrentFileFlowchart.title%"
-      },
-      {
-        "command": "aspLsp.debugIisUrl",
-        "title": "%command.debugIisUrl.title%"
-      },
-      {
-        "command": "aspLsp.debugIisExpressUrl",
-        "title": "%command.debugIisExpressUrl.title%"
-      },
-      {
-        "command": "aspLsp.createLaunchConfig",
-        "title": "%command.createLaunchConfig.title%"
       }
     ],
     "keybindings": [

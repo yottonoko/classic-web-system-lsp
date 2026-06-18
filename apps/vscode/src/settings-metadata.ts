@@ -15,7 +15,6 @@ export type SettingsPreviewKind =
   | "flowchart"
   | "general"
   | "graph"
-  | "iis"
   | "memory"
   | "network"
   | "workspace";
@@ -89,8 +88,6 @@ const categoryLabels: Record<AspSettingsLocale, Record<string, string>> = {
     format: "Formatting",
     general: "General",
     graph: "Graph",
-    iis: "IIS",
-    iisExpress: "IIS Express",
     inlayHints: "Inlay hints",
     incremental: "Incremental",
     javascript: "JavaScript/JScript",
@@ -113,8 +110,6 @@ const categoryLabels: Record<AspSettingsLocale, Record<string, string>> = {
     format: "整形",
     general: "基本",
     graph: "グラフ",
-    iis: "IIS",
-    iisExpress: "IIS Express",
     inlayHints: "インレイヒント",
     incremental: "差分解析",
     javascript: "JavaScript/JScript",
@@ -346,12 +341,6 @@ function previewKindForSetting(key: string): SettingsPreviewKind {
   }
   if (key.startsWith("aspLsp.memory.")) {
     return "memory";
-  }
-  if (key.startsWith("aspLsp.iis.")) {
-    return "iis";
-  }
-  if (key.startsWith("aspLsp.iisExpress.")) {
-    return "iis";
   }
   return "general";
 }
