@@ -9,7 +9,7 @@ export interface VirtualListProps<TItem> {
   getKey(item: TItem, index: number): React.Key;
   itemClassName?: string;
   items: readonly TItem[];
-  maxHeight: number;
+  maxHeight: number | string;
   onVisibleItemsChange?(items: readonly TItem[]): void;
   overscan?: number;
   renderItem(item: TItem, index: number): React.ReactNode;

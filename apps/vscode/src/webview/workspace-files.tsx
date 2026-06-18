@@ -75,6 +75,7 @@ type TextKey =
   | "action.excludePattern"
   | "action.export"
   | "action.removeGlob"
+  | "action.saveSettings"
   | "analysisOverview"
   | "currentFilters"
   | "empty"
@@ -99,8 +100,11 @@ type TextKey =
   | "respectGitIgnore"
   | "search"
   | "selectedFile"
+  | "settingsSaveFailed"
+  | "settingsSaved"
   | "showUnmatched"
   | "size"
+  | "savingSettings"
   | "title"
   | "totalSize"
   | "truncated"
@@ -109,6 +113,7 @@ type TextKey =
 
 const vscode = acquireVsCodeApi();
 const initialPayload = window.__ASP_LSP_WORKSPACE_FILES__;
+const initialWorkspaceFilesPayload = initialPayload ?? emptyPayload();
 let nextGlobItemId = 0;
 
 const messages: Record<Locale, Record<TextKey, string>> = {
@@ -117,6 +122,7 @@ const messages: Record<Locale, Record<TextKey, string>> = {
     "action.excludePattern": "Add exclude glob: {pattern}",
     "action.export": "Export Excel",
     "action.removeGlob": "Remove glob",
+    "action.saveSettings": "Save settings",
     analysisOverview: "Analysis overview",
     currentFilters: "Current filters",
     empty: "No Classic ASP files match the current filters.",
@@ -141,8 +147,11 @@ const messages: Record<Locale, Record<TextKey, string>> = {
     respectGitIgnore: "Respect .gitignore",
     search: "Search files",
     selectedFile: "Selected file",
+    settingsSaveFailed: "Save failed: {error}",
+    settingsSaved: "Settings saved",
     showUnmatched: "Show unmatched files",
     size: "Size",
+    savingSettings: "Saving...",
     title: "Analysis files",
     totalSize: "Total size",
     truncated: "Truncated: {reason}",
@@ -154,6 +163,7 @@ const messages: Record<Locale, Record<TextKey, string>> = {
     "action.excludePattern": "除外 glob に追加: {pattern}",
     "action.export": "Excel 出力",
     "action.removeGlob": "glob を削除",
+    "action.saveSettings": "設定に保存",
     analysisOverview: "解析概要",
     currentFilters: "現在のフィルター",
     empty: "現在のフィルターに一致する Classic ASP ファイルはありません。",
@@ -178,8 +188,11 @@ const messages: Record<Locale, Record<TextKey, string>> = {
     respectGitIgnore: ".gitignore を尊重",
     search: "ファイルを検索...",
     selectedFile: "選択中のファイル",
+    settingsSaveFailed: "保存に失敗しました: {error}",
+    settingsSaved: "設定を保存しました",
     showUnmatched: "対象外ファイル/フォルダーも表示",
     size: "サイズ",
+    savingSettings: "保存中...",
     title: "解析ファイル",
     totalSize: "合計サイズ",
     truncated: "表示を切り詰めました: {reason}",
@@ -213,8 +226,30 @@ function previewRequestSignature(request: WorkspaceFilesPreviewRequest): string 
   });
 }
 
+function settingsRequestSignature(request: WorkspaceFilesPreviewRequest): string {
+  return JSON.stringify({
+    includeGlobs: request.includeGlobs,
+    excludeGlobs: request.excludeGlobs,
+    respectGitIgnore: request.respectGitIgnore,
+  });
+}
+
+function previewRequestFromPayload(payload: WorkspaceFilesPayload): WorkspaceFilesPreviewRequest {
+  return {
+    includeGlobs: payload.includeGlobs,
+    excludeGlobs: payload.excludeGlobs,
+    respectGitIgnore: payload.respectGitIgnore,
+    showUnmatched: payload.showUnmatched,
+  };
+}
+
+function keyboardEventIsComposing(event: React.KeyboardEvent<HTMLInputElement>): boolean {
+  const nativeEvent = event.nativeEvent as KeyboardEvent & { isComposing?: boolean };
+  return nativeEvent.isComposing === true || nativeEvent.keyCode === 229;
+}
+
 function App(): React.ReactElement {
-  const [payload, setPayload] = useState<WorkspaceFilesPayload>(initialPayload ?? emptyPayload());
+  const [payload, setPayload] = useState<WorkspaceFilesPayload>(initialWorkspaceFilesPayload);
   const locale: Locale = payload.locale === "ja" ? "ja" : "en";
   const [includeGlobItems, setIncludeGlobItems] = useState(() =>
     globItems(payload.includeGlobs, "include"),
@@ -228,10 +263,19 @@ function App(): React.ReactElement {
   const [collapsedTreeIds, setCollapsedTreeIds] = useState<ReadonlySet<string>>(() => new Set());
   const [selectedUri, setSelectedUri] = useState<string | undefined>();
   const [contextMenu, setContextMenu] = useState<TreeContextMenu | undefined>();
+  const [committedPreviewRequest, setCommittedPreviewRequest] =
+    useState<WorkspaceFilesPreviewRequest>(() => previewRequestFromPayload(payload));
+  const [savedSettingsSignature, setSavedSettingsSignature] = useState(() =>
+    settingsRequestSignature(previewRequestFromPayload(payload)),
+  );
   const [previewBusy, setPreviewBusy] = useState(false);
   const [exportBusy, setExportBusy] = useState(false);
+  const [saveBusy, setSaveBusy] = useState(false);
   const [error, setError] = useState<string | undefined>();
+  const [status, setStatus] = useState<string | undefined>();
   const activePreviewRequestIdRef = useRef<string | undefined>(undefined);
+  const activeSaveRequestIdRef = useRef<string | undefined>(undefined);
+  const draftPreviewSignatureRef = useRef<string | undefined>(undefined);
   const lastPreviewSignatureRef = useRef<string | undefined>(undefined);
   const allFiles = useMemo(() => payload.roots.flatMap((root) => root.files), [payload]);
   const rows = useMemo(
@@ -252,19 +296,36 @@ function App(): React.ReactElement {
     }),
     [excludeList, includeList, respectGitIgnore, showUnmatched],
   );
-  const previewSignature = useMemo(() => previewRequestSignature(previewRequest), [previewRequest]);
-  const busy = previewBusy || exportBusy;
+  const draftPreviewSignature = useMemo(
+    () => previewRequestSignature(previewRequest),
+    [previewRequest],
+  );
+  const committedPreviewSignature = useMemo(
+    () => previewRequestSignature(committedPreviewRequest),
+    [committedPreviewRequest],
+  );
+  const draftSettingsSignature = useMemo(
+    () => settingsRequestSignature(previewRequest),
+    [previewRequest],
+  );
+  const previewPending = draftPreviewSignature !== committedPreviewSignature;
+  const settingsDirty = draftSettingsSignature !== savedSettingsSignature;
+  const busy = previewBusy || exportBusy || saveBusy;
   const text = (key: TextKey, params: Record<string, string | number> = {}): string =>
     messageText(locale, key, params);
   const rootLabel =
     payload.roots.map((root) => root.displayPath ?? root.name).join(", ") || text("workspace");
 
   useEffect(() => {
+    draftPreviewSignatureRef.current = draftPreviewSignature;
+  }, [draftPreviewSignature]);
+
+  useEffect(() => {
     if (lastPreviewSignatureRef.current === undefined) {
-      lastPreviewSignatureRef.current = previewSignature;
+      lastPreviewSignatureRef.current = committedPreviewSignature;
       return;
     }
-    if (previewSignature === lastPreviewSignatureRef.current) {
+    if (committedPreviewSignature === lastPreviewSignatureRef.current) {
       return;
     }
     if (activePreviewRequestIdRef.current !== undefined) {
@@ -272,52 +333,50 @@ function App(): React.ReactElement {
       setPreviewBusy(false);
     }
     const requestId = createRequestId();
+    const requestSignature = committedPreviewSignature;
     let listener: ((event: MessageEvent) => void) | undefined;
-    const timeout = window.setTimeout(() => {
-      activePreviewRequestIdRef.current = requestId;
-      setPreviewBusy(true);
-      setError(undefined);
-      listener = (event: MessageEvent): void => {
-        const message = event.data as {
-          type?: string;
-          requestId?: string;
-          payload?: WorkspaceFilesPayload;
-          error?: string;
-        };
-        if (message.type !== "previewResult" || message.requestId !== requestId) {
-          return;
-        }
-        if (listener) {
-          window.removeEventListener("message", listener);
-        }
-        if (activePreviewRequestIdRef.current !== requestId) {
-          return;
-        }
-        activePreviewRequestIdRef.current = undefined;
-        setPreviewBusy(false);
-        if (message.payload) {
-          lastPreviewSignatureRef.current = previewRequestSignature({
-            includeGlobs: message.payload.includeGlobs,
-            excludeGlobs: message.payload.excludeGlobs,
-            respectGitIgnore: message.payload.respectGitIgnore,
-            showUnmatched: message.payload.showUnmatched,
-          });
-          setPayload(message.payload);
+    activePreviewRequestIdRef.current = requestId;
+    setPreviewBusy(true);
+    setError(undefined);
+    listener = (event: MessageEvent): void => {
+      const message = event.data as {
+        type?: string;
+        requestId?: string;
+        payload?: WorkspaceFilesPayload;
+        error?: string;
+      };
+      if (message.type !== "previewResult" || message.requestId !== requestId) {
+        return;
+      }
+      if (listener) {
+        window.removeEventListener("message", listener);
+      }
+      if (activePreviewRequestIdRef.current !== requestId) {
+        return;
+      }
+      activePreviewRequestIdRef.current = undefined;
+      setPreviewBusy(false);
+      if (message.payload) {
+        const nextRequest = previewRequestFromPayload(message.payload);
+        const nextSignature = previewRequestSignature(nextRequest);
+        lastPreviewSignatureRef.current = nextSignature;
+        setPayload(message.payload);
+        setCommittedPreviewRequest(nextRequest);
+        setSelectedUri(undefined);
+        setCollapsedTreeIds(new Set());
+        if (draftPreviewSignatureRef.current === requestSignature) {
           setIncludeGlobItems(globItems(message.payload.includeGlobs, "include"));
           setExcludeGlobItems(globItems(message.payload.excludeGlobs, "exclude"));
           setRespectGitIgnore(message.payload.respectGitIgnore);
           setShowUnmatched(message.payload.showUnmatched !== false);
-          setSelectedUri(undefined);
-          setCollapsedTreeIds(new Set());
-        } else {
-          setError(messageText(locale, "previewFailed", { error: message.error ?? "unknown" }));
         }
-      };
-      window.addEventListener("message", listener);
-      vscode.postMessage({ type: "preview", requestId, ...previewRequest });
-    }, 500);
+      } else {
+        setError(messageText(locale, "previewFailed", { error: message.error ?? "unknown" }));
+      }
+    };
+    window.addEventListener("message", listener);
+    vscode.postMessage({ type: "preview", requestId, ...committedPreviewRequest });
     return () => {
-      window.clearTimeout(timeout);
       if (listener) {
         window.removeEventListener("message", listener);
       }
@@ -326,7 +385,7 @@ function App(): React.ReactElement {
         setPreviewBusy(false);
       }
     };
-  }, [locale, previewRequest, previewSignature]);
+  }, [committedPreviewRequest, committedPreviewSignature, locale]);
 
   useEffect(() => {
     if (!contextMenu) {
@@ -362,7 +421,29 @@ function App(): React.ReactElement {
     });
   };
 
+  const requestFromGlobItems = (
+    includeItems: GlobInputItem[],
+    excludeItems: GlobInputItem[],
+    overrides: Partial<
+      Pick<WorkspaceFilesPreviewRequest, "respectGitIgnore" | "showUnmatched">
+    > = {},
+  ): WorkspaceFilesPreviewRequest => ({
+    includeGlobs: globValues(includeItems),
+    excludeGlobs: globValues(excludeItems),
+    respectGitIgnore: overrides.respectGitIgnore ?? respectGitIgnore,
+    showUnmatched: overrides.showUnmatched ?? showUnmatched,
+  });
+
+  const commitPreviewRequest = (request: WorkspaceFilesPreviewRequest): void => {
+    if (previewRequestSignature(request) === committedPreviewSignature) {
+      return;
+    }
+    setStatus(undefined);
+    setCommittedPreviewRequest(request);
+  };
+
   const updateGlobItem = (kind: GlobKind, id: string, value: string): void => {
+    setStatus(undefined);
     const update = (item: GlobInputItem): GlobInputItem =>
       item.id === id ? { ...item, value } : item;
     if (kind === "include") {
@@ -373,6 +454,7 @@ function App(): React.ReactElement {
   };
 
   const addGlobItem = (kind: GlobKind): void => {
+    setStatus(undefined);
     const item = createGlobItem(kind, "");
     if (kind === "include") {
       setIncludeGlobItems((items) => [...items, item]);
@@ -381,31 +463,47 @@ function App(): React.ReactElement {
     }
   };
 
+  const commitGlobItem = (kind: GlobKind, id: string, value: string): void => {
+    const update = (item: GlobInputItem): GlobInputItem =>
+      item.id === id ? { ...item, value } : item;
+    const nextIncludeItems = kind === "include" ? includeGlobItems.map(update) : includeGlobItems;
+    const nextExcludeItems = kind === "exclude" ? excludeGlobItems.map(update) : excludeGlobItems;
+    if (kind === "include") {
+      setIncludeGlobItems(nextIncludeItems);
+    } else {
+      setExcludeGlobItems(nextExcludeItems);
+    }
+    commitPreviewRequest(requestFromGlobItems(nextIncludeItems, nextExcludeItems));
+  };
+
   const removeGlobItem = (kind: GlobKind, id: string): void => {
     const remove = (items: GlobInputItem[]): GlobInputItem[] => {
       const next = items.filter((item) => item.id !== id);
       return next.length > 0 ? next : [createGlobItem(kind, "")];
     };
+    const nextIncludeItems = kind === "include" ? remove(includeGlobItems) : includeGlobItems;
+    const nextExcludeItems = kind === "exclude" ? remove(excludeGlobItems) : excludeGlobItems;
     if (kind === "include") {
-      setIncludeGlobItems(remove);
+      setIncludeGlobItems(nextIncludeItems);
     } else {
-      setExcludeGlobItems(remove);
+      setExcludeGlobItems(nextExcludeItems);
     }
+    commitPreviewRequest(requestFromGlobItems(nextIncludeItems, nextExcludeItems));
   };
 
   const addExcludeGlobPattern = (pattern: string): void => {
-    setExcludeGlobItems((items) => {
-      if (items.some((item) => item.value.trim() === pattern)) {
-        return items;
-      }
-      const emptyIndex = items.findIndex((item) => item.value.trim().length === 0);
-      if (emptyIndex >= 0) {
-        return items.map((item, index) =>
-          index === emptyIndex ? { ...item, value: pattern } : item,
-        );
-      }
-      return [...items, createGlobItem("exclude", pattern)];
-    });
+    let nextExcludeItems = excludeGlobItems;
+    if (!excludeGlobItems.some((item) => item.value.trim() === pattern)) {
+      const emptyIndex = excludeGlobItems.findIndex((item) => item.value.trim().length === 0);
+      nextExcludeItems =
+        emptyIndex >= 0
+          ? excludeGlobItems.map((item, index) =>
+              index === emptyIndex ? { ...item, value: pattern } : item,
+            )
+          : [...excludeGlobItems, createGlobItem("exclude", pattern)];
+      setExcludeGlobItems(nextExcludeItems);
+    }
+    commitPreviewRequest(requestFromGlobItems(includeGlobItems, nextExcludeItems));
     setContextMenu(undefined);
   };
 
@@ -439,7 +537,51 @@ function App(): React.ReactElement {
     vscode.postMessage({
       type: "exportSelectedExcel",
       selectedUri: selectedFile.uri,
-      ...previewRequest,
+      ...committedPreviewRequest,
+    });
+  }
+
+  function saveWorkspaceSettings(): void {
+    if (!settingsDirty || saveBusy) {
+      return;
+    }
+    const requestId = createRequestId();
+    const request = previewRequest;
+    const requestSignature = settingsRequestSignature(request);
+    activeSaveRequestIdRef.current = requestId;
+    setSaveBusy(true);
+    setStatus(undefined);
+    setError(undefined);
+    const listener = (event: MessageEvent): void => {
+      const message = event.data as {
+        type?: string;
+        requestId?: string;
+        ok?: boolean;
+        error?: string;
+      };
+      if (message.type !== "saveSettingsResult" || message.requestId !== requestId) {
+        return;
+      }
+      window.removeEventListener("message", listener);
+      if (activeSaveRequestIdRef.current !== requestId) {
+        return;
+      }
+      activeSaveRequestIdRef.current = undefined;
+      setSaveBusy(false);
+      if (message.ok === false) {
+        setError(messageText(locale, "settingsSaveFailed", { error: message.error ?? "unknown" }));
+      } else {
+        setSavedSettingsSignature(requestSignature);
+        setStatus(text("settingsSaved"));
+      }
+    };
+    window.addEventListener("message", listener);
+    vscode.postMessage({
+      type: "saveSettings",
+      requestId,
+      includeGlobs: request.includeGlobs,
+      excludeGlobs: request.excludeGlobs,
+      respectGitIgnore: request.respectGitIgnore,
     });
   }
 
@@ -476,6 +618,7 @@ function App(): React.ReactElement {
           text={text}
           onAdd={() => addGlobItem("include")}
           onChange={(id, value) => updateGlobItem("include", id, value)}
+          onCommit={(id, value) => commitGlobItem("include", id, value)}
           onRemove={(id) => removeGlobItem("include", id)}
         />
         <GlobEditor
@@ -486,6 +629,7 @@ function App(): React.ReactElement {
           text={text}
           onAdd={() => addGlobItem("exclude")}
           onChange={(id, value) => updateGlobItem("exclude", id, value)}
+          onCommit={(id, value) => commitGlobItem("exclude", id, value)}
           onRemove={(id) => removeGlobItem("exclude", id)}
         />
         <div className="filter-actions">
@@ -493,7 +637,15 @@ function App(): React.ReactElement {
             <input
               type="checkbox"
               checked={respectGitIgnore}
-              onChange={(event) => setRespectGitIgnore(event.currentTarget.checked)}
+              onChange={(event) => {
+                const nextRespectGitIgnore = event.currentTarget.checked;
+                setRespectGitIgnore(nextRespectGitIgnore);
+                commitPreviewRequest(
+                  requestFromGlobItems(includeGlobItems, excludeGlobItems, {
+                    respectGitIgnore: nextRespectGitIgnore,
+                  }),
+                );
+              }}
             />
             <span>{text("respectGitIgnore")}</span>
           </label>
@@ -501,10 +653,29 @@ function App(): React.ReactElement {
             <input
               type="checkbox"
               checked={showUnmatched}
-              onChange={(event) => setShowUnmatched(event.currentTarget.checked)}
+              onChange={(event) => {
+                const nextShowUnmatched = event.currentTarget.checked;
+                setShowUnmatched(nextShowUnmatched);
+                commitPreviewRequest(
+                  requestFromGlobItems(includeGlobItems, excludeGlobItems, {
+                    showUnmatched: nextShowUnmatched,
+                  }),
+                );
+              }}
             />
             <span>{text("showUnmatched")}</span>
           </label>
+          <div className="filter-status" aria-live="polite">
+            {previewPending ? text("globPending") : (status ?? "")}
+          </div>
+          <button
+            type="button"
+            className="primary-button"
+            disabled={!settingsDirty || saveBusy}
+            onClick={saveWorkspaceSettings}
+          >
+            {saveBusy ? text("savingSettings") : text("action.saveSettings")}
+          </button>
         </div>
       </section>
       {payload.truncated ? (
@@ -535,7 +706,7 @@ function App(): React.ReactElement {
               gap={0}
               getKey={(row) => row.id}
               items={rows}
-              maxHeight={720}
+              maxHeight="100%"
               renderItem={(row) => (
                 <TreeRowView
                   locale={locale}
@@ -689,6 +860,7 @@ function GlobEditor({
   text,
   onAdd,
   onChange,
+  onCommit,
   onRemove,
 }: {
   items: GlobInputItem[];
@@ -698,6 +870,7 @@ function GlobEditor({
   text(key: TextKey, params?: Record<string, string | number>): string;
   onAdd(): void;
   onChange(id: string, value: string): void;
+  onCommit(id: string, value: string): void;
   onRemove(id: string): void;
 }): React.ReactElement {
   return (
@@ -717,6 +890,14 @@ function GlobEditor({
                 aria-label={`${label} ${index + 1}`}
                 value={item.value}
                 onValueChange={(value) => onChange(item.id, value)}
+                onBlur={(event) => onCommit(item.id, event.currentTarget.value)}
+                onKeyDown={(event) => {
+                  if (event.key !== "Enter" || keyboardEventIsComposing(event)) {
+                    return;
+                  }
+                  onCommit(item.id, event.currentTarget.value);
+                  event.currentTarget.blur();
+                }}
                 spellCheck={false}
               />
               <span className="glob-count">{globCountText(count, text)}</span>

@@ -83,6 +83,7 @@ button:disabled {
   grid-template-rows: auto auto auto minmax(0, 1fr);
   height: 100%;
   min-width: 760px;
+  overflow: hidden;
 }
 
 .workspace-files-app[data-asp-lsp-theme="light"] {
@@ -239,6 +240,12 @@ button:disabled {
   min-width: 170px;
 }
 
+.filter-status {
+  color: var(--asp-lsp-text-muted);
+  font-size: 12px;
+  min-height: 16px;
+}
+
 .checkbox-row {
   align-items: center;
   display: flex;
@@ -275,10 +282,13 @@ button:disabled {
   display: grid;
   grid-template-columns: minmax(540px, 1fr) minmax(360px, 480px);
   min-height: 0;
+  overflow: hidden;
 }
 
 .tree-pane {
   border-right: 1px solid var(--asp-lsp-border);
+  display: grid;
+  grid-template-rows: auto auto minmax(0, 1fr);
   min-height: 0;
   overflow: hidden;
   padding: 16px 18px;
@@ -334,7 +344,8 @@ button:disabled {
 
 .tree-list {
   height: 100%;
-  max-height: calc(100vh - 224px) !important;
+  max-height: none !important;
+  min-height: 0;
   overflow: auto;
   padding-right: 2px;
 }

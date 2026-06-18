@@ -30,6 +30,7 @@ import {
   showWorkspaceFilesWebview,
   type WorkspaceFilesPayload,
   type WorkspaceFilesPreviewRequest,
+  type WorkspaceFilesSettingsRequest,
   type WorkspaceFilesSelectedExportRequest,
 } from "./workspace-files-webview";
 import { showAspSettingsWebview } from "./settings-webview";
@@ -594,8 +595,32 @@ async function showWorkspaceGlobFiles(context: vscode.ExtensionContext): Promise
     {
       preview: (request) => requestWorkspaceFilesPreview(request, "workspaceFiles.viewTitle"),
       exportSelectedExcel: exportSelectedWorkspaceFileAnalysisExcel,
+      saveSettings: saveWorkspaceFilesSettings,
     },
   );
+}
+
+async function saveWorkspaceFilesSettings(request: WorkspaceFilesSettingsRequest): Promise<void> {
+  if ((vscode.workspace.workspaceFolders?.length ?? 0) === 0) {
+    throw new Error(extensionLocalizer()("workspaceFiles.workspaceUnavailable"));
+  }
+  const configuration = vscode.workspace.getConfiguration("aspLsp");
+  await configuration.update(
+    "workspace.includes",
+    workspaceGlobConfiguration(request.includeGlobs, ["**/*.{asp,asa,inc}"]),
+    vscode.ConfigurationTarget.Workspace,
+  );
+  await configuration.update(
+    "workspace.excludes",
+    workspaceGlobConfiguration(request.excludeGlobs, []),
+    vscode.ConfigurationTarget.Workspace,
+  );
+  await configuration.update(
+    "workspace.respectGitIgnore",
+    request.respectGitIgnore,
+    vscode.ConfigurationTarget.Workspace,
+  );
+  void vscode.window.showInformationMessage(extensionLocalizer()("workspaceFiles.settingsSaved"));
 }
 
 async function requestWorkspaceFilesPreview(
@@ -1939,8 +1964,10 @@ type ExtensionMessageKey =
   | "excel.writeTitle"
   | "excel.exported"
   | "workspaceFiles.serverUnavailable"
+  | "workspaceFiles.settingsSaved"
   | "workspaceFiles.viewTitle"
   | "workspaceFiles.viewPanelTitle"
+  | "workspaceFiles.workspaceUnavailable"
   | "flowchart.serverUnavailable"
   | "flowchart.noActiveFile"
   | "flowchart.currentTitle"
@@ -2046,8 +2073,11 @@ const extensionMessages: Record<"en" | "ja", Record<ExtensionMessageKey, string>
     "excel.exported": "Classic ASP analysis exported to {file}.",
     "workspaceFiles.serverUnavailable":
       "Start the Classic ASP Language Server before previewing workspace files.",
+    "workspaceFiles.settingsSaved": "Classic ASP workspace glob settings saved.",
     "workspaceFiles.viewTitle": "Classic ASP: Project glob files",
     "workspaceFiles.viewPanelTitle": "Classic ASP Files: Project glob",
+    "workspaceFiles.workspaceUnavailable":
+      "Open a workspace before saving Classic ASP workspace glob settings.",
     "flowchart.serverUnavailable":
       "Start the Classic ASP Language Server before building a flowchart.",
     "flowchart.noActiveFile": "Open a Classic ASP file before building the current file flowchart.",
@@ -2154,8 +2184,11 @@ const extensionMessages: Record<"en" | "ja", Record<ExtensionMessageKey, string>
     "excel.exported": "Classic ASP 解析を {file} に出力しました。",
     "workspaceFiles.serverUnavailable":
       "ワークスペースファイルをプレビューする前に Classic ASP Language Server を起動してください。",
+    "workspaceFiles.settingsSaved": "Classic ASP の workspace glob 設定を保存しました。",
     "workspaceFiles.viewTitle": "Classic ASP: プロジェクト glob ファイル",
     "workspaceFiles.viewPanelTitle": "Classic ASP ファイル: プロジェクト glob",
+    "workspaceFiles.workspaceUnavailable":
+      "Classic ASP の workspace glob 設定を保存する前にワークスペースを開いてください。",
     "flowchart.serverUnavailable":
       "フローチャートを作成する前に Classic ASP Language Server を起動してください。",
     "flowchart.noActiveFile":

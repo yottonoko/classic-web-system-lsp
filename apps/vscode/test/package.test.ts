@@ -494,6 +494,8 @@ describe("VS Code extension package", () => {
     expect(buildScript).toContain("workspace-files.js");
     expect(webviewSource).toContain("__ASP_LSP_WORKSPACE_FILES__");
     expect(webviewSource).toContain('type: "preview"');
+    expect(webviewSource).toContain('type: "saveSettings"');
+    expect(webviewSource).toContain('type: "saveSettingsResult"');
     expect(webviewSource).not.toContain('type: "previewRelations"');
     expect(webviewSource).toContain('type: "exportSelectedExcel"');
     expect(webviewSource).not.toContain('type: "exportExcel"');
@@ -511,6 +513,9 @@ describe("VS Code extension package", () => {
     );
     expect(webviewSource).toContain("opacity-50");
     expect(webviewSource).toContain("previewRequestSignature");
+    expect(webviewSource).toContain("settingsRequestSignature");
+    expect(extensionSource).toContain("saveWorkspaceFilesSettings");
+    expect(extensionSource).toContain("vscode.ConfigurationTarget.Workspace");
     expect(webviewSource).not.toContain("relation-descendant");
     expect(webviewSource).not.toContain("relation-ancestor");
     expect(webviewSource).not.toContain("relation-relative");

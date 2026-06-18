@@ -64,8 +64,18 @@ export interface WorkspaceFilesSelectedExportRequest extends WorkspaceFilesPrevi
   selectedUri: string;
 }
 
+export type WorkspaceFilesSettingsRequest = Pick<
+  WorkspaceFilesPreviewRequest,
+  "excludeGlobs" | "includeGlobs" | "respectGitIgnore"
+>;
+
 interface PreviewMessage extends WorkspaceFilesPreviewRequest {
   type: "preview";
+  requestId: string;
+}
+
+interface SaveSettingsMessage extends WorkspaceFilesSettingsRequest {
+  type: "saveSettings";
   requestId: string;
 }
 
@@ -91,7 +101,18 @@ interface ExportResultHostMessage {
   error?: string;
 }
 
-type WebviewMessage = PreviewMessage | ExportSelectedExcelMessage | OpenFileMessage;
+interface SaveSettingsResultHostMessage {
+  type: "saveSettingsResult";
+  requestId: string;
+  ok: boolean;
+  error?: string;
+}
+
+type WebviewMessage =
+  | ExportSelectedExcelMessage
+  | OpenFileMessage
+  | PreviewMessage
+  | SaveSettingsMessage;
 
 export function showWorkspaceFilesWebview(
   context: vscode.ExtensionContext,
@@ -103,6 +124,7 @@ export function showWorkspaceFilesWebview(
   handlers: {
     preview(request: WorkspaceFilesPreviewRequest): Promise<WorkspaceFilesPayload>;
     exportSelectedExcel?(request: WorkspaceFilesSelectedExportRequest): Promise<void>;
+    saveSettings?(request: WorkspaceFilesSettingsRequest): Promise<void>;
   },
 ): vscode.WebviewPanel {
   const webviewRoot = vscode.Uri.joinPath(context.extensionUri, "dist", "webview");
@@ -114,6 +136,8 @@ export function showWorkspaceFilesWebview(
   panel.webview.onDidReceiveMessage((message: WebviewMessage) => {
     if (message.type === "preview") {
       void previewWorkspaceFiles(panel.webview, message, locale, theme, handlers);
+    } else if (message.type === "saveSettings") {
+      void saveWorkspaceFilesSettings(panel.webview, message, handlers);
     } else if (message.type === "exportSelectedExcel") {
       void exportSelectedWorkspaceFile(panel.webview, message, handlers);
     } else if (message.type === "openFile") {
@@ -147,6 +171,27 @@ async function previewWorkspaceFiles(
     const payload = await handlers.preview(message);
     response.payload = payloadForWebview(payload, locale, theme);
   } catch (error) {
+    response.error = error instanceof Error ? error.message : String(error);
+  }
+  await webview.postMessage(response);
+}
+
+async function saveWorkspaceFilesSettings(
+  webview: vscode.Webview,
+  message: SaveSettingsMessage,
+  handlers: {
+    saveSettings?(request: WorkspaceFilesSettingsRequest): Promise<void>;
+  },
+): Promise<void> {
+  const response: SaveSettingsResultHostMessage = {
+    type: "saveSettingsResult",
+    requestId: message.requestId,
+    ok: true,
+  };
+  try {
+    await handlers.saveSettings?.(message);
+  } catch (error) {
+    response.ok = false;
     response.error = error instanceof Error ? error.message : String(error);
   }
   await webview.postMessage(response);
