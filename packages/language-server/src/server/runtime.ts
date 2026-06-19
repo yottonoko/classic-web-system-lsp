@@ -252,6 +252,8 @@ import {
   parseAspDocumentAsync,
   parseAspDocumentSkeleton,
   parseAspDocumentSkeletonAsync,
+  parseVbscriptDocument,
+  parseVbscriptDocumentAsync,
   registerParserMemoryCaches,
   parseVbscriptTypeRef,
   prepareVbscriptCallHierarchy,
@@ -398,7 +400,7 @@ const defaultExcelMaxDocuments = 8192;
 const defaultExcelMaxTextLength = 512 * 1024 * 1024;
 const defaultExcelIncludeTreeMaxDocuments = 1024;
 const defaultExcelIncludeTreeMaxTextLength = 64 * 1024 * 1024;
-const defaultWorkspaceIncludes = ["**/*.{asp,asa,inc}"];
+const defaultWorkspaceIncludes = ["**/*.{asp,asa,inc,vbs}"];
 const defaultDiagnosticsDebounceMs = 250;
 const defaultNetworkStatCacheTtlMs = 30_000;
 const defaultNetworkNegativeStatCacheTtlMs = 5_000;
@@ -1165,7 +1167,7 @@ function aspFileOperationFilter() {
   return {
     scheme: "file",
     pattern: {
-      glob: "**/*.{asp,asa,inc}",
+      glob: "**/*.{asp,asa,inc,vbs}",
       matches: "file" as const,
       options: { ignoreCase: true },
     },
@@ -1757,7 +1759,10 @@ function documentAnalysisMemoryCache(): RegisteredCache {
         }
         const demoted = documentStore.demote(cached, {
           settings: cachedSettings(cached.source.uri),
-          parseSkeleton: (uri, text, settings) => parseAspDocumentSkeleton(uri, text, settings),
+          parseSkeleton: (uri, text, settings) =>
+            isStandaloneVbscriptSource(uri, cached.source.languageId)
+              ? parseVbscriptDocument(uri, text)
+              : parseAspDocumentSkeleton(uri, text, settings),
         });
         if (!demoted) {
           continue;
@@ -2328,9 +2333,11 @@ connection.onCompletion((params) =>
         return cachedCompletion;
       }
       const shouldCache = Boolean(warmedContext) || cached.parsed.includes.length === 0;
-      const context =
+      const context = withCachedVbBuiltinRuntime(
+        cached,
         warmedContext?.context ??
-        (await buildImmediateLocalVbProjectContextAsync(cached, settings));
+          (await buildImmediateLocalVbProjectContextAsync(cached, settings)),
+      );
       const completions = getVbscriptCompletions(cached.parsed, params.position, context);
       const completionItems =
         completions.length > 0
@@ -2410,8 +2417,11 @@ connection.onCompletionResolve((item) =>
         ? resolveVbscriptCompletionItem(
             item,
             cached.parsed,
-            withSourceUriFormatter(
-              await interactiveVbProjectContextAsync(cached, cachedSettings(cached.source.uri)),
+            withCachedVbBuiltinRuntime(
+              cached,
+              withSourceUriFormatter(
+                await interactiveVbProjectContextAsync(cached, cachedSettings(cached.source.uri)),
+              ),
             ),
           )
         : item;
@@ -3268,7 +3278,12 @@ function refreshCachedDocument(document: TextDocument, impactReason?: string): C
   startAnalysisLog(settings, document.uri);
   finishDebugStep(settings, document.uri, "analysis.settings", settingsStartedAt);
   const parseStartedAt = process.hrtime.bigint();
-  const parsed = parseAspDocument(document.uri, document.getText(), settings);
+  const parsed = parseSourceDocument(
+    document.uri,
+    document.getText(),
+    settings,
+    document.languageId,
+  );
   finishDebugStep(settings, document.uri, "analysis.parse.full", parseStartedAt);
   finishDebugStep(
     settings,
@@ -3300,7 +3315,12 @@ async function refreshCachedDocumentSkeletonAsync(
   startAnalysisLog(settings, document.uri);
   finishDebugStep(settings, document.uri, "analysis.settings", settingsStartedAt);
   const parseStartedAt = process.hrtime.bigint();
-  const parsed = await parseAspDocumentSkeletonAsync(document.uri, document.getText(), settings);
+  const parsed = await parseSourceDocumentSkeletonAsync(
+    document.uri,
+    document.getText(),
+    settings,
+    document.languageId,
+  );
   finishDebugStep(settings, document.uri, "analysis.parse.skeleton", parseStartedAt);
   finishDebugStep(
     settings,
@@ -3328,6 +3348,9 @@ function refreshCachedDocumentIncremental(
   settings: AspSettings,
   change: AspIncrementalChange,
 ): CachedDocument {
+  if (isStandaloneVbscriptSource(document.uri, document.languageId)) {
+    return refreshCachedDocument(document, "standalone vbscript edit");
+  }
   const startedAt = process.hrtime.bigint();
   const settingsStartedAt = startedAt;
   startAnalysisLog(settings, document.uri);
@@ -3385,6 +3408,9 @@ async function refreshCachedDiagnosticsDocumentIncrementalAsync(
   settings: AspSettings,
   change: AspIncrementalChange,
 ): Promise<CachedDocument> {
+  if (isStandaloneVbscriptSource(document.uri, document.languageId)) {
+    return refreshCachedDocumentSkeletonAsync(document, "standalone vbscript edit");
+  }
   const startedAt = process.hrtime.bigint();
   const settingsStartedAt = startedAt;
   startAnalysisLog(settings, document.uri);
@@ -6054,6 +6080,7 @@ function cloneableVbProjectContext(context: VbProjectContext): VbDiagnosticsWork
     deadCodeDiagnostics: context.deadCodeDiagnostics,
     syntaxSnippets: context.syntaxSnippets,
     syntaxKeywords: context.syntaxKeywords,
+    builtinRuntime: context.builtinRuntime,
     locale: context.locale,
   };
 }
@@ -7099,7 +7126,10 @@ function unresolvedVbscriptCompletionItems(
   const existingNames = new Set(existingItems.map((item) => item.label.toLowerCase()));
   const visibleNames = visibleVbscriptCompletionSymbolNames(cached, context);
   const externalNames = new Set(
-    getVbscriptGraphExternalSymbols(settings).map((symbol) => symbol.name.toLowerCase()),
+    getVbscriptGraphExternalSymbols(
+      settings,
+      context.builtinRuntime ?? vbBuiltinRuntimeForCached(cached),
+    ).map((symbol) => symbol.name.toLowerCase()),
   );
   const items: CompletionItem[] = [];
   const localizer = createLocalizer(settings.resolvedLocale);
@@ -9451,7 +9481,7 @@ async function buildVbProjectContextAsync(
   const rootKey = vbProjectRootContextCacheKey(cached, settings);
   const project = await collectCachedVbProjectAnalysisAsync(cached, settings, options);
   const documents = project.documents;
-  const contextSettings = vbProjectContextSettings(settings);
+  const contextSettings = withCachedVbBuiltinRuntime(cached, vbProjectContextSettings(settings));
   const key = JSON.stringify({
     graph: project.summaryGraphKey,
     settings: contextSettings,
@@ -9486,7 +9516,7 @@ async function buildFullVbProjectContextForWorkspaceOperationAsync(
 ): Promise<VbProjectContext> {
   await hydrateCachedVbscriptCstAsync(cached, settings, "workspaceOperation");
   const documents = await collectFullVbProjectDocumentsForWorkspaceOperationAsync(cached, settings);
-  const contextSettings = vbProjectContextSettings(settings);
+  const contextSettings = withCachedVbBuiltinRuntime(cached, vbProjectContextSettings(settings));
   const key = JSON.stringify({
     mode: "workspaceOperation",
     documents: documents.map((document) => ({
@@ -9505,7 +9535,10 @@ async function buildFullVbProjectContextForWorkspaceOperationAsync(
     documents.map((document) =>
       sameFileIdentityUri(document.uri, cached.source.uri)
         ? cachedFileAnalysisSummaryAsync(cached, contextSettings, settings)
-        : summarizeAspFileAnalysisAsync(document, contextSettings),
+        : summarizeAspFileAnalysisAsync(
+            document,
+            withUriVbBuiltinRuntime(document.uri, vbProjectContextSettings(settings)),
+          ),
     ),
   );
   let symbols = summaries.flatMap((summary) => summary.vbscript?.localSymbols ?? []);
@@ -9657,7 +9690,7 @@ async function refreshInteractiveVbProjectContextSnapshotRootAsync(
   settings: AspSettings,
 ): Promise<VbProjectContext> {
   await hydrateCachedVbscriptCstAsync(cached, settings, "analysis");
-  const contextSettings = vbProjectContextSettings(settings);
+  const contextSettings = withCachedVbBuiltinRuntime(cached, vbProjectContextSettings(settings));
   const rootSymbols = await collectVbscriptSymbolsAsync(cached.parsed, contextSettings);
   const includeSymbols = (context.symbols ?? []).filter(
     (symbol) => !sameFileIdentityUri(symbol.sourceUri, cached.source.uri),
@@ -9858,7 +9891,7 @@ function cachedVbProjectContextLookup(
   }
   const summaryGraph = cached.analysis?.vbProjectSummaryGraph;
   if (summaryGraph?.collectionKey === vbProjectDocumentCollectionKey(cached, settings)) {
-    const contextSettings = vbProjectContextSettings(settings);
+    const contextSettings = withCachedVbBuiltinRuntime(cached, vbProjectContextSettings(settings));
     const key = JSON.stringify({
       graph: summaryGraph.graph.key,
       settings: contextSettings,
@@ -9895,7 +9928,7 @@ function buildImmediateLocalVbProjectContext(
   cached: CachedDocument,
   settings: AspSettings,
 ): VbProjectContext {
-  const contextSettings = vbProjectContextSettings(settings);
+  const contextSettings = withCachedVbBuiltinRuntime(cached, vbProjectContextSettings(settings));
   const key = JSON.stringify({
     document: vbProjectDocumentFingerprint(cached.parsed),
     settings: {
@@ -9908,6 +9941,7 @@ function buildImmediateLocalVbProjectContext(
       deadCodeDiagnostics: contextSettings.deadCodeDiagnostics,
       syntaxSnippets: contextSettings.syntaxSnippets,
       syntaxKeywords: contextSettings.syntaxKeywords,
+      builtinRuntime: contextSettings.builtinRuntime,
     },
     globals: settings.vbscript?.globals,
   });
@@ -9933,7 +9967,7 @@ async function buildImmediateLocalVbProjectContextAsync(
   cached: CachedDocument,
   settings: AspSettings,
 ): Promise<VbProjectContext> {
-  const contextSettings = vbProjectContextSettings(settings);
+  const contextSettings = withCachedVbBuiltinRuntime(cached, vbProjectContextSettings(settings));
   const key = JSON.stringify({
     document: vbProjectDocumentFingerprint(cached.parsed),
     settings: {
@@ -9946,6 +9980,7 @@ async function buildImmediateLocalVbProjectContextAsync(
       deadCodeDiagnostics: contextSettings.deadCodeDiagnostics,
       syntaxSnippets: contextSettings.syntaxSnippets,
       syntaxKeywords: contextSettings.syntaxKeywords,
+      builtinRuntime: contextSettings.builtinRuntime,
     },
     globals: settings.vbscript?.globals,
   });
@@ -11951,6 +11986,7 @@ function vbProjectRootContextCacheKey(cached: CachedDocument, settings: AspSetti
       syntaxSnippets: settings.vbscript?.syntaxSnippets !== false,
       syntaxKeywords: settings.vbscript?.syntaxKeywords !== false,
       incrementalAnalysis: settings.incremental?.analysis !== false,
+      builtinRuntime: vbBuiltinRuntimeForCached(cached),
     },
     globals: settings.vbscript?.globals,
   });
@@ -11973,6 +12009,7 @@ function vbProjectContextCacheKey(documents: AspParsedDocument[], settings: AspS
   return JSON.stringify({
     documents: documents.map((document) => ({
       uri: document.uri,
+      standaloneVbscript: isStandaloneVbscriptSource(document.uri),
       vbscript: vbProjectDocumentFingerprint(document),
     })),
     settings: {
@@ -12057,7 +12094,7 @@ async function collectCachedVbProjectAnalysisAsync(
   if (existing?.key === key) {
     return existing.analysis;
   }
-  const contextSettings = vbProjectContextSettings(settings);
+  const contextSettings = withCachedVbBuiltinRuntime(cached, vbProjectContextSettings(settings));
   const summaries = graph.summaries;
   let symbols = summaries.flatMap((summary) => summary.vbscript?.localSymbols ?? []);
   symbols = await canonicalizeImplicitGlobalContextSymbolsCachedAsync(
@@ -12467,6 +12504,7 @@ async function cachedFileAnalysisSummaryAsync(
       syntaxSnippets: context.syntaxSnippets,
       syntaxKeywords: context.syntaxKeywords,
       incrementalAnalysis: context.incrementalAnalysis,
+      builtinRuntime: context.builtinRuntime,
     },
   });
   const existing = cached.analysis?.vbFileSummary;
@@ -12654,7 +12692,7 @@ async function collectVbProjectSummaryGraphAsync(
   options: { allowReadMissing: boolean },
 ): Promise<VbProjectSummaryGraph> {
   const limits = vbProjectContextLimits(settings);
-  const contextSettings = vbProjectContextSettings(settings);
+  const contextSettings = withCachedVbBuiltinRuntime(cached, vbProjectContextSettings(settings));
   const rootSummary = await cachedFileAnalysisSummaryAsync(cached, contextSettings, settings);
   const seededGraph = seededVbProjectSummaryGraph(cached, settings, rootSummary);
   if (seededGraph && (seededGraph.complete || !options.allowReadMissing)) {
@@ -12924,6 +12962,8 @@ function scheduleIncludeSummaryRefresh(
 function vbProjectDocumentCollectionKey(cached: CachedDocument, settings: AspSettings): string {
   return JSON.stringify({
     uri: cached.source.uri,
+    languageId: cached.source.languageId,
+    builtinRuntime: vbBuiltinRuntimeForCached(cached),
     defaultLanguage: cached.parsed.defaultLanguage,
     includes: cached.parsed.includes.map((include) => ({
       path: include.path,
@@ -13267,9 +13307,12 @@ async function createIncludeDocumentCacheEntryAsync(
   key: string,
   source: DiskAnalysisSourceMetadata,
 ): Promise<IncludeDocumentCacheEntry> {
-  const parsed = await parseAspDocumentAsync(uri, text, settings);
+  const parsed = await parseSourceDocumentAsync(uri, text, settings);
   await hydrateVbscriptCst(parsed, settings);
-  const summary = await summarizeAspFileAnalysisAsync(parsed, vbProjectContextSettings(settings));
+  const summary = await summarizeAspFileAnalysisAsync(
+    parsed,
+    withUriVbBuiltinRuntime(uri, vbProjectContextSettings(settings)),
+  );
   const publicSignature = filePublicSignature(summary);
   return {
     key,
@@ -14110,7 +14153,12 @@ function getCached(uri: string): CachedDocument | undefined {
     return undefined;
   }
   const settings = cachedSettings(document.uri);
-  const parsed = parseAspDocument(document.uri, document.getText(), settings);
+  const parsed = parseSourceDocument(
+    document.uri,
+    document.getText(),
+    settings,
+    document.languageId,
+  );
   const cached = createCachedDocument(document, parsed, settings);
   cache.set(document.uri, cached);
   return cached;
@@ -14132,13 +14180,13 @@ async function cachedFromIndexedAsync(
   const includeEntry = await includeDocumentLoader.readAsync(entry.fileName, settings);
   const parsed =
     includeEntry?.parsed ??
-    (await parseAspDocumentAsync(
+    (await parseSourceDocumentAsync(
       entry.uri,
       await readTextFileAsync(entry.fileName, settings.legacyEncoding),
       settings,
     ));
   return createCachedDocument(
-    TextDocument.create(entry.uri, "classic-asp", 0, parsed.text),
+    TextDocument.create(entry.uri, languageIdForUri(entry.uri), 0, parsed.text),
     parsed,
     settings,
     [],
@@ -15710,7 +15758,7 @@ function escapeRegExpCharacter(character: string): string {
 }
 
 function isAspWorkspaceFile(fileName: string): boolean {
-  return /\.(?:asp|asa|inc)$/i.test(fileName);
+  return /\.(?:asp|asa|inc|vbs)$/i.test(fileName);
 }
 
 function isScriptWorkspaceFile(fileName: string): boolean {
@@ -15757,7 +15805,10 @@ function findRegionAt(parsed: AspParsedDocument, offset: number): AspRegion | un
   let best: AspRegion | undefined;
   for (let index = lastStartBeforeOffset; index >= 0; index -= 1) {
     const region = regions[index];
-    if (region.contentEnd <= offset) {
+    if (
+      region.contentEnd < offset ||
+      (region.contentEnd === offset && offset !== parsed.text.length)
+    ) {
       continue;
     }
     if (!best || region.contentEnd - region.contentStart < best.contentEnd - best.contentStart) {
@@ -16662,13 +16713,13 @@ function formatAspDocumentWithDelegates(
   let parsed = measureDebugStep(settings, cached.source.uri, "format.html.reparse", () =>
     formatted === original
       ? cached.parsed
-      : parseAspDocument(cached.source.uri, formatted, settings),
+      : parseSourceDocument(cached.source.uri, formatted, settings, cached.source.languageId),
   );
   formatted = measureDebugStep(settings, cached.source.uri, "format.core", () =>
     applyTextEdits(formatted, formatAspDocument(parsed, formattingOptions)),
   );
   parsed = measureDebugStep(settings, cached.source.uri, "format.reparse", () =>
-    parseAspDocument(cached.source.uri, formatted, settings),
+    parseSourceDocument(cached.source.uri, formatted, settings, cached.source.languageId),
   );
   formatted = applyOffsetEdits(
     formatted,
@@ -16708,14 +16759,14 @@ async function formatAspDocumentWithDelegatesAsync(
   let parsed = await measureDebugStepAsync(settings, cached.source.uri, "format.html.reparse", () =>
     formatted === original
       ? Promise.resolve(cached.parsed)
-      : parseAspDocumentAsync(cached.source.uri, formatted, settings),
+      : parseSourceDocumentAsync(cached.source.uri, formatted, settings, cached.source.languageId),
   );
   await hydrateVbscriptCst(parsed, settings);
   formatted = measureDebugStep(settings, cached.source.uri, "format.core", () =>
     applyTextEdits(formatted, formatAspDocument(parsed, formattingOptions)),
   );
   parsed = await measureDebugStepAsync(settings, cached.source.uri, "format.reparse", () =>
-    parseAspDocumentAsync(cached.source.uri, formatted, settings),
+    parseSourceDocumentAsync(cached.source.uri, formatted, settings, cached.source.languageId),
   );
   await hydrateVbscriptCst(parsed, settings);
   formatted = applyOffsetEdits(
@@ -16764,7 +16815,7 @@ async function formatAspRangeWithDelegatesAsync(
       ? rangeStart + coreEdits[0].newText.length
       : rangeEnd + offsetEditsDelta(original, coreEdits);
   const parsed = await measureDebugStepAsync(settings, cached.source.uri, "format.reparse", () =>
-    parseAspDocumentAsync(cached.source.uri, formatted, settings),
+    parseSourceDocumentAsync(cached.source.uri, formatted, settings, cached.source.languageId),
   );
   await hydrateVbscriptCst(parsed, settings);
   const embeddedEdits = embeddedFormattingEdits(
@@ -18615,6 +18666,47 @@ function uriToFileName(uri: string): string {
   return fileName.replace(/\.(html|css|javascript|vbscript|jscript)\.virtual$/, "");
 }
 
+function isStandaloneVbscriptSource(uri: string, languageId?: string): boolean {
+  return languageId === "vbscript" || /\.vbs$/i.test(uriToFileName(uri));
+}
+
+function languageIdForUri(uri: string): "classic-asp" | "vbscript" {
+  return isStandaloneVbscriptSource(uri) ? "vbscript" : "classic-asp";
+}
+
+function parseSourceDocument(
+  uri: string,
+  text: string,
+  settings: AspSettings,
+  languageId?: string,
+): AspParsedDocument {
+  return isStandaloneVbscriptSource(uri, languageId)
+    ? parseVbscriptDocument(uri, text)
+    : parseAspDocument(uri, text, settings);
+}
+
+async function parseSourceDocumentAsync(
+  uri: string,
+  text: string,
+  settings: AspSettings,
+  languageId?: string,
+): Promise<AspParsedDocument> {
+  return isStandaloneVbscriptSource(uri, languageId)
+    ? parseVbscriptDocumentAsync(uri, text)
+    : parseAspDocumentAsync(uri, text, settings);
+}
+
+async function parseSourceDocumentSkeletonAsync(
+  uri: string,
+  text: string,
+  settings: AspSettings,
+  languageId?: string,
+): Promise<AspParsedDocument> {
+  return isStandaloneVbscriptSource(uri, languageId)
+    ? parseVbscriptDocumentAsync(uri, text)
+    : parseAspDocumentSkeletonAsync(uri, text, settings);
+}
+
 function jsVirtualFileName(uri: string): string {
   const fileName = uri.startsWith("file://") ? fileURLToPath(uri) : uri;
   return fileName.replace(/\.(javascript|jscript)\.virtual$/, ".$1.js");
@@ -18713,6 +18805,37 @@ function tsCompletionKind(kind: string): CompletionItemKind {
 function isVbscriptPosition(cached: CachedDocument, position: Range["start"]): boolean {
   const region = findRegionAt(cached.parsed, cached.source.offsetAt(position));
   return region?.language === "vbscript";
+}
+
+function vbBuiltinRuntimeForCached(
+  cached: CachedDocument,
+): NonNullable<VbProjectContext["builtinRuntime"]> {
+  return isStandaloneVbscriptSource(cached.source.uri, cached.source.languageId)
+    ? "windowsScriptHost"
+    : "classicAsp";
+}
+
+function vbBuiltinRuntimeForUri(
+  uri: string | undefined,
+): NonNullable<VbProjectContext["builtinRuntime"]> {
+  return uri && isStandaloneVbscriptSource(uri) ? "windowsScriptHost" : "classicAsp";
+}
+
+function withCachedVbBuiltinRuntime(
+  cached: CachedDocument,
+  context: VbProjectContext,
+): VbProjectContext {
+  return {
+    ...context,
+    builtinRuntime: context.builtinRuntime ?? vbBuiltinRuntimeForCached(cached),
+  };
+}
+
+function withUriVbBuiltinRuntime(uri: string, context: VbProjectContext): VbProjectContext {
+  return {
+    ...context,
+    builtinRuntime: vbBuiltinRuntimeForUri(uri),
+  };
 }
 
 function isJavaScriptPosition(cached: CachedDocument, position: Range["start"]): boolean {
@@ -21962,7 +22085,9 @@ async function graphDocumentsNeedRelatedIncludeTreeAnalysisAsync(
   operationCache?: GraphFileIndexOperationCache,
   progress?: AspLspProgressTaskHandle,
 ): Promise<boolean> {
-  const externalSymbols = createAspGraphExternalIndex(getVbscriptGraphExternalSymbols(settings));
+  const externalSymbols = createAspGraphExternalIndex(
+    getVbscriptGraphExternalSymbols(settings, vbBuiltinRuntimeForUri(documentsForGraph[0]?.uri)),
+  );
   const documents = uniqueAspGraphDocuments(documentsForGraph);
   progress?.update({
     label: "graph.checkRelatedIncludes",
@@ -22567,7 +22692,9 @@ function createAspGraphBuildState(
     directIncludesByOwnerKey: new Map(),
     parentIncludesByTargetKey: new Map(),
     includeReachability: undefined,
-    externalSymbols: createAspGraphExternalIndex(getVbscriptGraphExternalSymbols(settings)),
+    externalSymbols: createAspGraphExternalIndex(
+      getVbscriptGraphExternalSymbols(settings, vbBuiltinRuntimeForUri(rootUri)),
+    ),
     includeAnalysisTypeDetails: options.includeAnalysisTypeDetails === true,
     rootUri: canonicalRootUri,
     rootFileKey,
@@ -24973,7 +25100,7 @@ async function localVbReferenceContextAsync(
   cached: CachedDocument,
   settings: AspSettings,
 ): Promise<VbProjectContext> {
-  const contextSettings = vbProjectContextSettings(settings);
+  const contextSettings = withCachedVbBuiltinRuntime(cached, vbProjectContextSettings(settings));
   await hydrateCachedVbscriptCstAsync(cached, settings, "references");
   const symbols = await collectVbscriptSymbolsAsync(cached.parsed, contextSettings);
   const summary = await cachedFileAnalysisSummaryAsync(cached, contextSettings, settings);

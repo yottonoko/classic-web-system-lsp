@@ -82,6 +82,9 @@
           "VBScript",
           "vbscript"
         ],
+        "extensions": [
+          ".vbs"
+        ],
         "configuration": "./vbscript-language-configuration.json"
       },
       {
@@ -1122,7 +1125,7 @@
             "type": "string"
           },
           "default": [
-            "**/*.{asp,asa,inc}"
+            "**/*.{asp,asa,inc,vbs}"
           ],
           "description": "%configuration.workspace.includes.description%"
         },
@@ -1330,7 +1333,8 @@
     "onCommand:aspLsp.showCurrentFileGraph",
     "onCommand:aspLsp.showFolderGraph",
     "onCommand:aspLsp.showWorkspaceGraph",
-    "onLanguage:classic-asp"
+    "onLanguage:classic-asp",
+    "onLanguage:vbscript"
   ],
   "icon": "assets/icon.png",
   "galleryBanner": {

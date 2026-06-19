@@ -148,6 +148,7 @@ interface SymbolIndexBuildState {
   scopes: ScopeFrame[];
   stack: ScopeFrame[];
   tokens: VbToken[];
+  implicitVariableExcludedNames: Set<string>;
 }
 
 interface VbRegionIndexInput {
@@ -184,14 +185,19 @@ interface BuiltinIndexObjectSpec {
   members: Array<{ name: string; type?: string }>;
 }
 
+type VbIndexBuiltinRuntime = "classicAsp" | "windowsScriptHost";
+
 const builtinClassicAspObjects = builtinCatalogData.classicAspObjects as Record<
   string,
   BuiltinIndexObjectSpec
 >;
+const builtinWindowsScriptHostObjects = (builtinCatalogData.windowsScriptHostObjects ??
+  {}) as Record<string, BuiltinIndexObjectSpec>;
 const builtinExternalObjects = builtinCatalogData.externalObjects as Record<
   string,
   BuiltinIndexObjectSpec
 >;
+const cachedImplicitVariableExcludedNames = new Map<VbIndexBuiltinRuntime, Set<string>>();
 
 const defaultOptions: Required<VbSymbolIndexOptions> = {
   includeReferences: true,
@@ -213,28 +219,6 @@ const memberExpectedKinds: VbIndexedDeclarationKind[] = [
 const writableExpectedKinds: VbIndexedDeclarationKind[] = ["variable"];
 const valueExpectedKinds: VbIndexedDeclarationKind[] = ["variable", "constant"];
 const operatorKeywordNames = new Set(["and", "or", "not", "mod", "is", "xor", "eqv", "imp"]);
-const implicitVariableExcludedNames = new Set(
-  [
-    "application",
-    "asperror",
-    "empty",
-    "err",
-    "false",
-    "me",
-    "nothing",
-    "null",
-    "request",
-    "response",
-    "server",
-    "session",
-    "true",
-    ...Object.keys(builtinCatalogData.classicAspObjects),
-    ...Object.keys(builtinCatalogData.externalObjects),
-    ...builtinCatalogData.constants.map((item) => item.label),
-    ...builtinCatalogData.functions.map((item) => item.label),
-    ...builtinCatalogData.runtimeEvents.map((item) => item.label),
-  ].map((name) => name.toLowerCase()),
-);
 
 export function extractVbscriptSymbolIndex(
   uri: string,
@@ -243,7 +227,8 @@ export function extractVbscriptSymbolIndex(
   options: VbSymbolIndexOptions = {},
 ): VbSymbolIndex {
   const resolvedOptions = { ...defaultOptions, ...options };
-  const input = collectVbscriptIndexInput(text, settings);
+  const runtime = vbIndexBuiltinRuntimeForUri(uri);
+  const input = collectVbscriptIndexInput(uri, text, settings);
   const tokenResult = tokensForRegions(text, input.regions);
   const tokens = tokenResult.tokens;
   const state: SymbolIndexBuildState = {
@@ -272,6 +257,7 @@ export function extractVbscriptSymbolIndex(
       },
     ],
     tokens,
+    implicitVariableExcludedNames: implicitVariableExcludedNamesForRuntime(runtime),
   };
   addServerObjectDeclarations(state, input.serverObjects);
   collectDeclarations(state);
@@ -298,7 +284,27 @@ export function extractVbscriptSymbolIndex(
   };
 }
 
-function collectVbscriptIndexInput(text: string, settings: AspSettings): VbRegionIndexInput {
+function collectVbscriptIndexInput(
+  uri: string,
+  text: string,
+  settings: AspSettings,
+): VbRegionIndexInput {
+  if (isStandaloneVbscriptUri(uri)) {
+    return {
+      regions: [
+        {
+          kind: "server-script",
+          language: "vbscript",
+          start: 0,
+          end: text.length,
+          contentStart: 0,
+          contentEnd: text.length,
+        },
+      ],
+      includeRefs: [],
+      serverObjects: [],
+    };
+  }
   const scan = scanVbscriptIndexInput(text, [], settings);
   const directiveLanguage = scan.inlineRegions
     .filter((region) => region.kind === "asp-directive")
@@ -343,6 +349,55 @@ function collectVbscriptIndexInput(text: string, settings: AspSettings): VbRegio
       (left, right) => left.contentStart - right.contentStart || left.contentEnd - right.contentEnd,
     );
   return { regions, includeRefs: scan.includes, serverObjects: scan.serverObjects };
+}
+
+function vbIndexBuiltinRuntimeForUri(uri: string): VbIndexBuiltinRuntime {
+  return isStandaloneVbscriptUri(uri) ? "windowsScriptHost" : "classicAsp";
+}
+
+function isStandaloneVbscriptUri(uri: string): boolean {
+  return /\.vbs$/i.test(uri.replace(/\.(html|css|javascript|vbscript|jscript)\.virtual$/i, ""));
+}
+
+function implicitVariableExcludedNamesForRuntime(runtime: VbIndexBuiltinRuntime): Set<string> {
+  const cached = cachedImplicitVariableExcludedNames.get(runtime);
+  if (cached) {
+    return cached;
+  }
+  const names = new Set(
+    [
+      "empty",
+      "err",
+      "false",
+      "me",
+      "nothing",
+      "null",
+      "true",
+      ...builtinCatalogData.constants.map((item) => item.label),
+      ...builtinCatalogData.functions.map((item) => item.label),
+      ...externalObjectNamesForRuntime(runtime),
+      ...(runtime === "classicAsp"
+        ? [
+            "application",
+            "asperror",
+            "request",
+            "response",
+            "server",
+            "session",
+            ...Object.keys(builtinClassicAspObjects),
+            ...builtinCatalogData.runtimeEvents.map((item) => item.label),
+          ]
+        : ["wscript", ...Object.keys(builtinWindowsScriptHostObjects)]),
+    ].map((name) => name.toLowerCase()),
+  );
+  cachedImplicitVariableExcludedNames.set(runtime, names);
+  return names;
+}
+
+function externalObjectNamesForRuntime(runtime: VbIndexBuiltinRuntime): string[] {
+  return Object.keys(builtinExternalObjects).filter(
+    (name) => runtime === "classicAsp" || !name.toLowerCase().startsWith("mswc."),
+  );
 }
 
 function directiveLanguageFromRegion(text: string, region: AspRegion): string | undefined {
@@ -964,7 +1019,7 @@ function collectReferences(state: SymbolIndexBuildState): {
     if (collectImplicitReferences && !resolved && expectedKinds) {
       const item = { reference, token, tokenIndex: index };
       deferredReferenceTokens.push(item);
-      if (isImplicitVariableDeclarationCandidate(reference)) {
+      if (isImplicitVariableDeclarationCandidate(reference, state.implicitVariableExcludedNames)) {
         implicitVariableReferenceTokens.push(item);
       }
     }
@@ -1015,7 +1070,7 @@ function addImplicitVariableDeclarationsFromReferences(
   const referencesByName = new Map<string, IndexedReferenceToken[]>();
   for (const item of references) {
     const { reference } = item;
-    if (!isImplicitVariableDeclarationCandidate(reference)) {
+    if (!isImplicitVariableDeclarationCandidate(reference, state.implicitVariableExcludedNames)) {
       continue;
     }
     const existing = referencesByName.get(reference.normalizedName);
@@ -1072,13 +1127,16 @@ function isTopLevelImplicitReference(state: SymbolIndexBuildState, token: VbToke
   );
 }
 
-function isImplicitVariableDeclarationCandidate(reference: VbIndexedReference): boolean {
+function isImplicitVariableDeclarationCandidate(
+  reference: VbIndexedReference,
+  excludedNames: Set<string>,
+): boolean {
   return (
     (reference.role === "read" || reference.role === "write") &&
     !reference.resolvedId &&
     !reference.baseName &&
     reference.expectedKinds?.includes("variable") === true &&
-    !implicitVariableExcludedNames.has(reference.normalizedName)
+    !excludedNames.has(reference.normalizedName)
   );
 }
 

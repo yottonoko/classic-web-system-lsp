@@ -66,6 +66,10 @@ export function parseAspDocument(
   return parseAspDocumentTypeScript(uri, text, settings);
 }
 
+export function parseVbscriptDocument(uri: string, text: string): AspParsedDocument {
+  return parseVbscriptDocumentTypeScript(uri, text);
+}
+
 export function parseAspDocumentSkeleton(
   uri: string,
   text: string,
@@ -91,6 +95,13 @@ export async function parseAspDocumentAsync(
   const parsed = parseAspDocumentTypeScript(uri, text, settings);
   setAsyncParseCache(cacheKey, parsed);
   return parsed;
+}
+
+export async function parseVbscriptDocumentAsync(
+  uri: string,
+  text: string,
+): Promise<AspParsedDocument> {
+  return parseVbscriptDocumentTypeScript(uri, text);
 }
 
 export async function parseAspDocumentSkeletonAsync(
@@ -205,6 +216,58 @@ function parseAspDocumentTypeScript(
     serverObjects,
     defaultLanguage,
     diagnostics,
+  };
+}
+
+function parseVbscriptDocumentTypeScript(uri: string, text: string): AspParsedDocument {
+  const vbscript = parseVbscriptCst(text, text, 0);
+  const region: AspRegion = {
+    kind: "server-script",
+    language: "vbscript",
+    start: 0,
+    end: text.length,
+    contentStart: 0,
+    contentEnd: text.length,
+  };
+  const node: AspCstNode = {
+    kind: "ServerScriptElement",
+    start: 0,
+    end: text.length,
+    contentStart: 0,
+    contentEnd: text.length,
+    language: "vbscript",
+    tokens: [
+      {
+        kind: "text",
+        start: 0,
+        end: text.length,
+        text,
+      },
+    ],
+    children: [],
+    regionKind: "server-script",
+    vbscript,
+  };
+  const cst: AspCstNode = {
+    kind: "Document",
+    start: 0,
+    end: text.length,
+    contentStart: 0,
+    contentEnd: text.length,
+    tokens: [],
+    children: [node],
+    errors: vbscript.errors,
+  };
+  return {
+    uri,
+    text,
+    cst,
+    regions: [region],
+    directives: [],
+    includes: [],
+    serverObjects: [],
+    defaultLanguage: "VBScript",
+    diagnostics: [],
   };
 }
 

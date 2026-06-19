@@ -23,7 +23,12 @@ import type {
   TextEdit,
 } from "vscode-languageserver-types";
 import { offsetAt, positionAt, rangeFromOffsets } from "../position";
-import { hydrateVbscriptCst, needsVbscriptCstHydration, parseAspDocument } from "../parser";
+import {
+  hydrateVbscriptCst,
+  needsVbscriptCstHydration,
+  parseAspDocument,
+  parseVbscriptDocument,
+} from "../parser";
 import { createLocalizer } from "../localize";
 import { sameSourceUri, sourceUriIdentityKey } from "../source-uri";
 import builtinCatalogData from "../vbscript-builtin-catalog.json";
@@ -230,76 +235,66 @@ export interface VbGraphExternalSymbol {
   typeName?: string;
 }
 
+type VbBuiltinRuntime = NonNullable<VbProjectContext["builtinRuntime"]>;
+type VbBuiltinAvailability = VbBuiltinRuntime | "both";
+
 const analysisSnapshots = new WeakMap<AspParsedDocument, VbAnalysisSnapshot>();
 const analysisMemoDisabledDocuments = new WeakSet<AspParsedDocument>();
 const symbolIndexes = new WeakMap<VbSymbol[], VbSymbolIndex>();
 const symbolKeys = new WeakMap<VbSymbol, string>();
 const typeIndexes = new WeakMap<VbTypeEnvironment, VbTypeIndex>();
-let cachedBuiltinNameSet: Set<string> | undefined;
-let cachedBuiltinTypes: VbType[] | undefined;
+const cachedBuiltinNameSets = new Map<VbBuiltinRuntime, Set<string>>();
+const cachedBuiltinTypes = new Map<VbBuiltinRuntime, VbType[]>();
 const vbFromTextCacheMaxEntries = 64;
 const vbFromTextCache = new Map<string, { text: string; value: unknown }>();
 
-function builtinCompletions(locale: AspLocale | undefined): CompletionItem[] {
+function parseVbscriptAnalysisDocument(
+  uri: string,
+  text: string,
+  settings: AspSettings,
+): AspParsedDocument {
+  return /\.vbs$/i.test(uri)
+    ? parseVbscriptDocument(uri, text)
+    : parseAspDocument(uri, text, settings);
+}
+
+interface BuiltinGlobalObjectCompletionSpec {
+  label: string;
+  kind: CompletionItemKind;
+  availability: VbBuiltinAvailability;
+}
+
+const builtinGlobalObjectCompletionSpecs: BuiltinGlobalObjectCompletionSpec[] = [
+  { label: "Request", kind: CompletionItemKind.Variable, availability: "classicAsp" },
+  { label: "Response", kind: CompletionItemKind.Variable, availability: "classicAsp" },
+  { label: "Session", kind: CompletionItemKind.Variable, availability: "classicAsp" },
+  { label: "Application", kind: CompletionItemKind.Variable, availability: "classicAsp" },
+  { label: "Server", kind: CompletionItemKind.Variable, availability: "classicAsp" },
+  { label: "ASPError", kind: CompletionItemKind.Class, availability: "classicAsp" },
+  { label: "Err", kind: CompletionItemKind.Variable, availability: "both" },
+  { label: "WScript", kind: CompletionItemKind.Variable, availability: "windowsScriptHost" },
+];
+
+function builtinCompletions(
+  locale: AspLocale | undefined,
+  runtime: VbBuiltinRuntime,
+): CompletionItem[] {
   const localizer = createLocalizer(locale);
   return [
-    withBuiltinCompletionLabel(
-      {
-        label: "Request",
-        kind: CompletionItemKind.Variable,
-        detail: localizer.t("vb.builtin.request.detail"),
-        documentation: localizer.t("vb.builtin.request.documentation"),
-      },
-      locale,
-    ),
-    withBuiltinCompletionLabel(
-      {
-        label: "Response",
-        kind: CompletionItemKind.Variable,
-        detail: localizer.t("vb.builtin.response.detail"),
-      },
-      locale,
-    ),
-    withBuiltinCompletionLabel(
-      {
-        label: "Session",
-        kind: CompletionItemKind.Variable,
-        detail: localizer.t("vb.builtin.session.detail"),
-      },
-      locale,
-    ),
-    withBuiltinCompletionLabel(
-      {
-        label: "Application",
-        kind: CompletionItemKind.Variable,
-        detail: localizer.t("vb.builtin.application.detail"),
-      },
-      locale,
-    ),
-    withBuiltinCompletionLabel(
-      {
-        label: "Server",
-        kind: CompletionItemKind.Variable,
-        detail: localizer.t("vb.builtin.server.detail"),
-      },
-      locale,
-    ),
-    withBuiltinCompletionLabel(
-      {
-        label: "ASPError",
-        kind: CompletionItemKind.Class,
-        detail: localizer.t("vb.builtin.asperror.detail"),
-      },
-      locale,
-    ),
-    withBuiltinCompletionLabel(
-      {
-        label: "Err",
-        kind: CompletionItemKind.Variable,
-        detail: localizer.t("vb.builtin.err.detail"),
-      },
-      locale,
-    ),
+    ...builtinGlobalObjectCompletionSpecs
+      .filter((spec) => builtinAvailableInRuntime(spec.availability, runtime))
+      .map(
+        (spec): CompletionItem =>
+          withBuiltinCompletionLabel(
+            {
+              label: spec.label,
+              kind: spec.kind,
+              detail: builtinGlobalObjectDetail(spec.label, localizer),
+              documentation: builtinGlobalObjectCompletionDocumentation(spec.label, localizer),
+            },
+            locale,
+          ),
+      ),
     withBuiltinCompletionLabel(
       {
         label: "RegExp",
@@ -352,19 +347,68 @@ function builtinCompletions(locale: AspLocale | undefined): CompletionItem[] {
           locale,
         ),
     ),
-    ...classicAspRuntimeEvents.map(
-      (eventSpec): CompletionItem =>
-        withBuiltinCompletionLabel(
-          {
-            label: eventSpec.label,
-            kind: CompletionItemKind.Event,
-            detail: `Sub ${eventSpec.label}()`,
-            documentation: builtinDocumentationMarkdown(eventSpec.documentation, locale),
-          },
-          locale,
-        ),
-    ),
+    ...classicAspRuntimeEvents
+      .map(
+        (eventSpec): CompletionItem =>
+          withBuiltinCompletionLabel(
+            {
+              label: eventSpec.label,
+              kind: CompletionItemKind.Event,
+              detail: `Sub ${eventSpec.label}()`,
+              documentation: builtinDocumentationMarkdown(eventSpec.documentation, locale),
+            },
+            locale,
+          ),
+      )
+      .filter(() => runtime === "classicAsp"),
   ];
+}
+
+function builtinAvailableInRuntime(
+  availability: VbBuiltinAvailability,
+  runtime: VbBuiltinRuntime,
+): boolean {
+  return availability === "both" || availability === runtime;
+}
+
+function builtinGlobalObjectDetail(
+  label: string,
+  localizer: ReturnType<typeof createLocalizer>,
+): string | undefined {
+  switch (label.toLowerCase()) {
+    case "request":
+      return localizer.t("vb.builtin.request.detail");
+    case "response":
+      return localizer.t("vb.builtin.response.detail");
+    case "session":
+      return localizer.t("vb.builtin.session.detail");
+    case "application":
+      return localizer.t("vb.builtin.application.detail");
+    case "server":
+      return localizer.t("vb.builtin.server.detail");
+    case "asperror":
+      return localizer.t("vb.builtin.asperror.detail");
+    case "err":
+      return localizer.t("vb.builtin.err.detail");
+    case "wscript":
+      return localizer.t("vb.builtin.wscript.detail");
+    default:
+      return undefined;
+  }
+}
+
+function builtinGlobalObjectCompletionDocumentation(
+  label: string,
+  localizer: ReturnType<typeof createLocalizer>,
+): string | undefined {
+  switch (label.toLowerCase()) {
+    case "request":
+      return localizer.t("vb.builtin.request.documentation");
+    case "wscript":
+      return localizer.t("vb.builtin.wscript.documentation");
+    default:
+      return undefined;
+  }
 }
 
 function vbscriptSyntaxSnippetCompletions(locale: AspLocale | undefined): CompletionItem[] {
@@ -432,7 +476,11 @@ function withBuiltinCompletionLabel(
   };
 }
 
-function builtinDescription(name: string, locale: AspLocale | undefined): string | undefined {
+function builtinDescription(
+  name: string,
+  locale: AspLocale | undefined,
+  runtime: VbBuiltinRuntime,
+): string | undefined {
   const objectDocumentation = builtinObjectDocumentation(name);
   if (objectDocumentation) {
     return appendBuiltinDocumentation(
@@ -449,12 +497,14 @@ function builtinDescription(name: string, locale: AspLocale | undefined): string
     key === "vb.hover.builtin.application" ||
     key === "vb.hover.builtin.server" ||
     key === "vb.hover.builtin.asperror" ||
-    key === "vb.hover.builtin.err"
+    key === "vb.hover.builtin.err" ||
+    key === "vb.hover.builtin.wscript"
   ) {
-    return markdownHover(
-      `Dim ${name} As ${classicAspObjectCatalog[name.toLowerCase()]?.typeName ?? name}`,
-      createLocalizer(locale).t(key),
-    );
+    const objectSpec = globalObjectCatalogForRuntime(runtime)[name.toLowerCase()];
+    if (!objectSpec) {
+      return undefined;
+    }
+    return markdownHover(`Dim ${name} As ${objectSpec.typeName}`, createLocalizer(locale).t(key));
   }
   const builtin = builtinFunction(name);
   if (builtin) {
@@ -472,9 +522,10 @@ function builtinDescription(name: string, locale: AspLocale | undefined): string
       locale,
     );
   }
-  const runtimeEvent = classicAspRuntimeEvents.find(
-    (item) => item.label.toLowerCase() === name.toLowerCase(),
-  );
+  const runtimeEvent =
+    runtime === "classicAsp"
+      ? classicAspRuntimeEvents.find((item) => item.label.toLowerCase() === name.toLowerCase())
+      : undefined;
   if (runtimeEvent) {
     return appendBuiltinDocumentation(
       markdownHover(`Sub ${runtimeEvent.label}()`),
@@ -557,8 +608,9 @@ interface BuiltinCatalogFunctionSpec {
 }
 
 interface BuiltinCatalogSpec {
-  schemaVersion: 1;
+  schemaVersion: 1 | 2;
   classicAspObjects: Record<string, BuiltinCatalogObjectSpec>;
+  windowsScriptHostObjects?: Record<string, BuiltinCatalogObjectSpec>;
   externalObjects: Record<string, BuiltinCatalogObjectSpec>;
   constants: BuiltinCatalogConstantSpec[];
   runtimeEvents: BuiltinCatalogRuntimeEventSpec[];
@@ -568,10 +620,15 @@ interface BuiltinCatalogSpec {
 const builtinCatalog = builtinCatalogData as BuiltinCatalogSpec;
 
 const classicAspObjectCatalog = objectCatalogFromData(builtinCatalog.classicAspObjects);
+const windowsScriptHostObjectCatalog = objectCatalogFromData(
+  builtinCatalog.windowsScriptHostObjects ?? {},
+);
 const externalObjectCatalog = objectCatalogFromData(builtinCatalog.externalObjects);
 
 const classicAspBuiltinSignatures = objectSignatures(classicAspObjectCatalog);
-const memberCompletions = objectCompletions(classicAspObjectCatalog);
+const windowsScriptHostBuiltinSignatures = objectSignatures(windowsScriptHostObjectCatalog);
+const classicAspMemberCompletions = objectCompletions(classicAspObjectCatalog);
+const windowsScriptHostMemberCompletions = objectCompletions(windowsScriptHostObjectCatalog);
 const externalObjectMembers = objectCompletions(externalObjectCatalog);
 
 const intrinsicTypeNames = new Set([
@@ -595,7 +652,7 @@ const intrinsicTypeNames = new Set([
   "error",
 ]);
 
-const classicAspTypeNames = new Set([
+const builtinObjectTypeNames = new Set([
   "request",
   "response",
   "session",
@@ -604,6 +661,7 @@ const classicAspTypeNames = new Set([
   "asperror",
   "err",
   "errobject",
+  "wscript",
 ]);
 
 const builtinConstants: BuiltinConstant[] = builtinCatalog.constants.map((item) => ({
@@ -613,6 +671,91 @@ const builtinConstants: BuiltinConstant[] = builtinCatalog.constants.map((item) 
 }));
 
 const classicAspRuntimeEvents = builtinCatalog.runtimeEvents;
+
+function vbBuiltinRuntime(
+  parsed: AspParsedDocument,
+  context: Pick<VbProjectContext, "builtinRuntime"> = {},
+): VbBuiltinRuntime {
+  return (
+    context.builtinRuntime ??
+    (isStandaloneVbscriptDocument(parsed) ? "windowsScriptHost" : "classicAsp")
+  );
+}
+
+function isStandaloneVbscriptDocument(parsed: AspParsedDocument): boolean {
+  if (parsed.regions.length !== 1) {
+    return false;
+  }
+  const [region] = parsed.regions;
+  return (
+    region.language === "vbscript" &&
+    region.kind === "server-script" &&
+    region.start === 0 &&
+    region.end === parsed.text.length &&
+    region.contentStart === 0 &&
+    region.contentEnd === parsed.text.length &&
+    parsed.directives.length === 0 &&
+    parsed.includes.length === 0 &&
+    parsed.serverObjects.length === 0
+  );
+}
+
+function globalObjectCatalogForRuntime(
+  runtime: VbBuiltinRuntime,
+): Record<string, BuiltinObjectSpec> {
+  if (runtime === "windowsScriptHost") {
+    return {
+      err: classicAspObjectCatalog.err,
+      ...windowsScriptHostObjectCatalog,
+    };
+  }
+  return classicAspObjectCatalog;
+}
+
+function globalObjectSignaturesForRuntime(runtime: VbBuiltinRuntime): Record<string, string[]> {
+  if (runtime === "windowsScriptHost") {
+    return {
+      ...(classicAspBuiltinSignatures.err ? { err: classicAspBuiltinSignatures.err } : {}),
+      ...windowsScriptHostBuiltinSignatures,
+    };
+  }
+  return classicAspBuiltinSignatures;
+}
+
+function globalObjectMemberCompletionsForRuntime(
+  runtime: VbBuiltinRuntime,
+): Record<string, CompletionItem[]> {
+  if (runtime === "windowsScriptHost") {
+    return {
+      ...(classicAspMemberCompletions.err ? { err: classicAspMemberCompletions.err } : {}),
+      ...windowsScriptHostMemberCompletions,
+    };
+  }
+  return classicAspMemberCompletions;
+}
+
+function externalObjectCatalogForRuntime(
+  runtime: VbBuiltinRuntime,
+): Record<string, BuiltinObjectSpec> {
+  return Object.fromEntries(
+    Object.entries(externalObjectCatalog).filter(([key]) =>
+      builtinAvailableInRuntime(externalObjectAvailability(key), runtime),
+    ),
+  );
+}
+
+function externalObjectCompletionsForRuntime(
+  runtime: VbBuiltinRuntime,
+): Record<string, CompletionItem[]> {
+  if (runtime === "classicAsp") {
+    return externalObjectMembers;
+  }
+  return objectCompletions(externalObjectCatalogForRuntime(runtime));
+}
+
+function externalObjectAvailability(key: string): VbBuiltinAvailability {
+  return key.toLowerCase().startsWith("mswc.") ? "classicAsp" : "both";
+}
 
 function objectCatalogFromData(
   catalog: Record<string, BuiltinCatalogObjectSpec>,
@@ -1621,6 +1764,7 @@ export function getVbscriptCompletions(
   context: VbProjectContext = {},
 ): CompletionItem[] {
   const sourceOffset = offsetAt(parsed.text, position);
+  const runtime = vbBuiltinRuntime(parsed, context);
   const symbols = context.symbols ?? collectVbscriptSymbols(parsed, context);
   const comment = commentTokenAtOffset(parsed, sourceOffset);
   if (comment) {
@@ -1631,7 +1775,9 @@ export function getVbscriptCompletions(
   const memberTarget = memberCompletionTargetAt(parsed, sourceOffset);
   if (memberTarget) {
     const ownerName = memberTarget.ownerName;
-    const builtin = ownerName ? memberCompletions[ownerName.toLowerCase()] : undefined;
+    const builtin = ownerName
+      ? globalObjectMemberCompletionsForRuntime(runtime)[ownerName.toLowerCase()]
+      : undefined;
     if (builtin) {
       return builtin;
     }
@@ -1641,7 +1787,7 @@ export function getVbscriptCompletions(
         : ownerName.toLowerCase() === "me"
           ? currentClassTypeRef(parsed, sourceOffset, symbols)
           : inferVariableTypeRef(ownerName, parsed, sourceOffset, symbols);
-    return ownerType ? typeMemberCompletions(ownerType, symbols, typeEnvironment) : [];
+    return ownerType ? typeMemberCompletions(ownerType, symbols, typeEnvironment, runtime) : [];
   }
   const syntaxKeywordCompletions =
     context.syntaxKeywords === false
@@ -1680,7 +1826,7 @@ export function getVbscriptCompletions(
   return dedupeCompletions([
     ...(context.syntaxSnippets === false ? [] : vbscriptSyntaxSnippetCompletions(context.locale)),
     ...syntaxKeywordCompletions,
-    ...builtinCompletions(context.locale),
+    ...builtinCompletions(context.locale, runtime),
     ...visibleSymbols(parsed, sourceOffset, symbols).map((symbol) =>
       symbolToCompletion(symbol, context.locale),
     ),
@@ -2589,7 +2735,10 @@ export async function analyzeVbscriptFromTextAsync(
   if (cached) {
     return cached;
   }
-  const result = analyzeVbscriptTypeScript(parseAspDocument(uri, text, settings), context);
+  const result = analyzeVbscriptTypeScript(
+    parseVbscriptAnalysisDocument(uri, text, settings),
+    context,
+  );
   if (cacheKey) {
     setVbFromTextCache(cacheKey, text, result);
   }
@@ -2648,7 +2797,7 @@ function analyzeVbscriptTypeScriptInner(
   if (/^\s*Option\s+Explicit\b/im.test(scriptText)) {
     diagnostics.push(
       ...measureVbDebugStep(context, "undeclaredVariables", () =>
-        diagnoseUndeclaredVariables(parsed, symbols, context.locale),
+        diagnoseUndeclaredVariables(parsed, symbols, context),
       ),
     );
   }
@@ -2759,6 +2908,7 @@ export function getVbscriptHover(
   context: VbProjectContext = {},
 ): string | undefined {
   const sourceOffset = offsetAt(parsed.text, position);
+  const runtime = vbBuiltinRuntime(parsed, context);
   const commentHover = vbCommentAnnotationHover(parsed, sourceOffset, context.locale);
   if (commentHover) {
     return commentHover;
@@ -2771,7 +2921,7 @@ export function getVbscriptHover(
       ? vbscriptSymbolHover(parsed, undefined, docReference, symbols, context)
       : undefined;
   }
-  const builtin = builtinDescription(token.text, context.locale);
+  const builtin = builtinDescription(token.text, context.locale, runtime);
   if (builtin) {
     return builtin;
   }
@@ -2780,7 +2930,14 @@ export function getVbscriptHover(
   if (!symbol) {
     const typeEnvironment =
       context.typeEnvironment ?? buildVbTypeEnvironment(parsed, { ...context, symbols });
-    return builtinMemberDescription(parsed, sourceOffset, symbols, typeEnvironment, context.locale);
+    return builtinMemberDescription(
+      parsed,
+      sourceOffset,
+      symbols,
+      typeEnvironment,
+      context.locale,
+      runtime,
+    );
   }
   return vbscriptSymbolHover(parsed, token, symbol, symbols, context);
 }
@@ -3160,6 +3317,7 @@ export function getVbscriptSemanticTokens(
   context: VbProjectContext = {},
   range?: Range,
 ): VbSemanticToken[] {
+  const runtime = vbBuiltinRuntime(parsed, context);
   const symbols = context.symbols ?? collectVbscriptSymbols(parsed, context);
   const rangeStart = range ? offsetAt(parsed.text, range.start) : 0;
   const rangeEnd = range ? offsetAt(parsed.text, range.end) : parsed.text.length;
@@ -3182,7 +3340,7 @@ export function getVbscriptSemanticTokens(
     if (intrinsicConstantStarts.has(token.start)) {
       continue;
     }
-    if (isClassicAspObjectName(token.text)) {
+    if (isBuiltinGlobalObjectName(token.text, runtime)) {
       tokens.push({
         range: rangeFromOffsets(parsed.text, token.start, token.end),
         tokenType: "constant",
@@ -3191,7 +3349,7 @@ export function getVbscriptSemanticTokens(
       continue;
     }
     const symbol = resolveSymbolForToken(parsed, token, symbols);
-    if (symbol && !isBuiltinName(symbol.name)) {
+    if (symbol && !isBuiltinName(symbol.name, parsed, context)) {
       const tokenType = semanticTokenTypeForSymbol(symbol);
       if (!tokenType) {
         continue;
@@ -3203,7 +3361,7 @@ export function getVbscriptSemanticTokens(
       });
       continue;
     }
-    const builtinToken = builtinSemanticTokenForIdentifier(parsed, token);
+    const builtinToken = builtinSemanticTokenForIdentifier(parsed, token, runtime);
     if (builtinToken) {
       tokens.push(builtinToken);
     }
@@ -3214,20 +3372,21 @@ export function getVbscriptSemanticTokens(
 function builtinSemanticTokenForIdentifier(
   parsed: AspParsedDocument,
   token: VbToken,
+  runtime: VbBuiltinRuntime,
 ): VbSemanticToken | undefined {
   const previous = previousSignificantToken(parsed, token.start);
   if (previous?.text === ".") {
     const owner = previousSignificantToken(parsed, previous.start);
     if (
       !owner ||
-      !isClassicAspObjectName(owner.text) ||
-      !builtinMemberName(owner.text, token.text)
+      !isBuiltinGlobalObjectName(owner.text, runtime) ||
+      !builtinMemberName(owner.text, token.text, runtime)
     ) {
       return undefined;
     }
     return {
       range: rangeFromOffsets(parsed.text, token.start, token.end),
-      tokenType: builtinSignature(`${owner.text}.${token.text}`) ? "method" : "property",
+      tokenType: builtinSignature(`${owner.text}.${token.text}`, runtime) ? "method" : "property",
       tokenModifiers: ["library"],
     };
   }
@@ -3252,9 +3411,9 @@ function isVbscriptIntrinsicConstantName(name: string): boolean {
   return ["true", "false", "nothing", "empty", "null"].includes(name.toLowerCase());
 }
 
-function builtinMemberName(owner: string, member: string): boolean {
+function builtinMemberName(owner: string, member: string, runtime: VbBuiltinRuntime): boolean {
   return (
-    memberCompletions[owner.toLowerCase()]?.some(
+    globalObjectMemberCompletionsForRuntime(runtime)[owner.toLowerCase()]?.some(
       (item) => item.label.toLowerCase() === member.toLowerCase(),
     ) ?? false
   );
@@ -3379,7 +3538,7 @@ export function getVbscriptRenameRange(
     offset,
     context.symbols ?? collectVbscriptSymbols(parsed, context),
   );
-  if (!symbol || isBuiltinName(symbol.name)) {
+  if (!symbol || isBuiltinName(symbol.name, parsed, context)) {
     return undefined;
   }
   const token = identifierTokenAt(parsed, offset);
@@ -3407,6 +3566,7 @@ export function getVbscriptSignatureHelp(
   context: VbProjectContext = {},
 ): SignatureHelp | undefined {
   const offset = offsetAt(parsed.text, position);
+  const runtime = vbBuiltinRuntime(parsed, context);
   const call = callExpressionAt(parsed, offset);
   if (!call) {
     return undefined;
@@ -3431,6 +3591,7 @@ export function getVbscriptSignatureHelp(
     offset,
     symbols,
     context.locale,
+    runtime,
   );
   if (builtinSignatureInfo && builtinSignatureInfo.length > 0) {
     return {
@@ -3441,7 +3602,7 @@ export function getVbscriptSignatureHelp(
   }
   const signatureLabels =
     typeSignatureLabelsForCall(parsed, call.name, offset, symbols, typeEnvironment) ??
-    builtinSignatureLabels(call.name);
+    builtinSignatureLabels(call.name, runtime);
   if (!signatureLabels || signatureLabels.length === 0) {
     return undefined;
   }
@@ -3457,10 +3618,11 @@ export function resolveVbscriptCompletionItem(
   parsed: AspParsedDocument,
   context: VbProjectContext = {},
 ): CompletionItem {
+  const runtime = vbBuiltinRuntime(parsed, context);
   const symbols = context.symbols ?? collectVbscriptSymbols(parsed, context);
   const env = context.typeEnvironment ?? buildVbTypeEnvironment(parsed, { ...context, symbols });
   const label = item.label.toLowerCase();
-  const builtin = builtinCompletions(context.locale).find(
+  const builtin = builtinCompletions(context.locale, runtime).find(
     (candidate) => candidate.label.toLowerCase() === label,
   );
   if (builtin) {
@@ -3843,7 +4005,7 @@ export function getVbscriptImplementation(
   context: VbProjectContext = {},
 ): VbSymbol | undefined {
   const symbol = getVbscriptDefinition(parsed, position, context);
-  return symbol && !isBuiltinName(symbol.name) ? symbol : undefined;
+  return symbol && !isBuiltinName(symbol.name, parsed, context) ? symbol : undefined;
 }
 
 export function prepareVbscriptCallHierarchy(
@@ -3967,7 +4129,7 @@ export async function collectVbscriptSymbolsFromTextAsync(
     return cached;
   }
   const result = collectVbscriptSymbolsTypeScript(
-    parseAspDocument(uri, text, settings),
+    parseVbscriptAnalysisDocument(uri, text, settings),
     context,
     {},
   );
@@ -3999,7 +4161,7 @@ function collectVbscriptSymbolsTypeScriptInner(
   addServerObjectSymbols(parsed, symbols);
   retargetRedimSymbols(parsed, symbols);
   if (options.implicitAssignments !== false) {
-    addImplicitAssignmentSymbols(parsed, symbols);
+    addImplicitAssignmentSymbols(parsed, symbols, context);
   }
   applyTypeAnnotations(parsed, symbols);
   if (options.inferTypes !== false) {
@@ -4061,7 +4223,10 @@ export async function summarizeAspFileAnalysisFromTextAsync(
   if (cached) {
     return cached;
   }
-  const result = summarizeAspFileAnalysisTypeScript(parseAspDocument(uri, text, settings), context);
+  const result = summarizeAspFileAnalysisTypeScript(
+    parseVbscriptAnalysisDocument(uri, text, settings),
+    context,
+  );
   if (cacheKey) {
     setVbFromTextCache(cacheKey, text, result);
   }
@@ -4180,7 +4345,7 @@ function summarizeVbscriptFileTypeScript(
   const localSymbols = collectVbscriptSymbolsTypeScript(parsed, context, {});
   const publicSymbols = publicSymbolsFromLocalSymbols(localSymbols);
   const typeEnvironment = buildVbTypeEnvironment(parsed, { ...context, symbols: localSymbols });
-  const externalRefs = collectVbscriptExternalRefs(parsed, localSymbols);
+  const externalRefs = collectVbscriptExternalRefs(parsed, localSymbols, context);
   const implicitGlobalCandidateNames = implicitGlobalCandidateNamesForSummary(parsed);
   return {
     fingerprint: textFingerprint(
@@ -4372,10 +4537,11 @@ function isStatementBoundaryToken(token: VbToken | undefined): boolean {
 function collectVbscriptExternalRefs(
   parsed: AspParsedDocument,
   symbols: VbSymbol[],
+  context: VbProjectContext,
 ): VbExternalRef[] {
   const refs = new Map<string, VbExternalRef>();
   for (const token of identifierTokens(parsed)) {
-    if (isDeclarationNameToken(parsed, token) || isBuiltinName(token.text)) {
+    if (isDeclarationNameToken(parsed, token) || isBuiltinName(token.text, parsed, context)) {
       continue;
     }
     const previous = previousSignificantTokenForToken(parsed, token);
@@ -4512,10 +4678,11 @@ function buildVbTypeEnvironmentInner(
   parsed: AspParsedDocument,
   context: VbProjectContext,
 ): VbTypeEnvironment {
+  const runtime = vbBuiltinRuntime(parsed, context);
   const symbols = context.symbols ?? collectVbscriptSymbols(parsed, context);
   const symbolIndex = symbolIndexFor(symbols);
   const typeMap = new Map<string, VbType>();
-  for (const type of builtinTypes()) {
+  for (const type of builtinTypes(runtime)) {
     addType(typeMap, type);
   }
   for (const type of configuredComTypes(context.comTypes ?? {})) {
@@ -4845,7 +5012,11 @@ function isVbServerObjectIdentifier(name: string): boolean {
   return /^[A-Za-z_][A-Za-z0-9_]*$/.test(name);
 }
 
-function addImplicitAssignmentSymbols(parsed: AspParsedDocument, symbols: VbSymbol[]): void {
+function addImplicitAssignmentSymbols(
+  parsed: AspParsedDocument,
+  symbols: VbSymbol[],
+  context: VbProjectContext,
+): void {
   if (hasOptionExplicit(parsed)) {
     return;
   }
@@ -4861,7 +5032,7 @@ function addImplicitAssignmentSymbols(parsed: AspParsedDocument, symbols: VbSymb
       equalsIndex === -1 ||
       equalsIndex <= targetIndex ||
       statement[targetIndex + 1]?.text === "." ||
-      isBuiltinName(target.text) ||
+      isBuiltinName(target.text, parsed, context) ||
       isImplicitKeywordName(target.text)
     ) {
       continue;
@@ -4976,6 +5147,7 @@ function inferStatementTypes(
   symbols: VbSymbol[],
   context: VbProjectContext,
 ): void {
+  const runtime = vbBuiltinRuntime(parsed, context);
   const env = buildVbTypeEnvironment(parsed, { ...context, symbols });
   for (const statement of vbAssignmentStatements(parsed)) {
     const first = lowerToken(statement[0]);
@@ -5005,6 +5177,7 @@ function inferStatementTypes(
       symbols,
       env,
       target.start,
+      runtime,
     );
     if (!expressionType || symbol.explicitType) {
       continue;
@@ -6340,9 +6513,10 @@ function inferExpressionType(
   symbols: VbSymbol[],
   env: VbTypeEnvironment,
   offset: number,
+  runtime: VbBuiltinRuntime = vbBuiltinRuntime(parsed),
 ): VbTypeRef | undefined {
   const significant = tokens.filter((token) => !isTriviaToken(token));
-  return inferSignificantExpressionType(parsed, significant, symbols, env, offset);
+  return inferSignificantExpressionType(parsed, significant, symbols, env, offset, runtime);
 }
 
 function inferSignificantExpressionType(
@@ -6351,6 +6525,7 @@ function inferSignificantExpressionType(
   symbols: VbSymbol[],
   env: VbTypeEnvironment,
   offset: number,
+  runtime: VbBuiltinRuntime,
 ): VbTypeRef | undefined {
   const expression = trimOuterParens(significant);
   const first = expression[0];
@@ -6362,8 +6537,15 @@ function inferSignificantExpressionType(
   }
   const binary = splitByLowestPrecedenceOperator(expression);
   if (binary) {
-    const left = inferSignificantExpressionType(parsed, binary.left, symbols, env, offset);
-    const right = inferSignificantExpressionType(parsed, binary.right, symbols, env, offset);
+    const left = inferSignificantExpressionType(parsed, binary.left, symbols, env, offset, runtime);
+    const right = inferSignificantExpressionType(
+      parsed,
+      binary.right,
+      symbols,
+      env,
+      offset,
+      runtime,
+    );
     return inferBinaryExpressionType(binary.operator, left, right);
   }
   if (first.kind === "string") {
@@ -6401,7 +6583,7 @@ function inferSignificantExpressionType(
   ) {
     const ownerType =
       inferVariableTypeRef(first.text, parsed, offset, symbols) ??
-      classicAspObjectTypeRef(first.text);
+      builtinGlobalObjectTypeRef(first.text, runtime);
     return ownerType
       ? (memberReturnType(ownerType, expression[2].text, env) ??
           memberType(ownerType, expression[2].text, env))
@@ -6410,7 +6592,7 @@ function inferSignificantExpressionType(
   if (first.kind === "identifier") {
     const called = expression[1]?.text === "(";
     if (called) {
-      const builtin = builtinSignature(first.text);
+      const builtin = builtinSignature(first.text, runtime);
       if (builtin) {
         return builtin.returnType;
       }
@@ -6429,7 +6611,7 @@ function inferSignificantExpressionType(
     }
     return (
       inferVariableTypeRef(first.text, parsed, offset, symbols) ??
-      classicAspObjectTypeRef(first.text)
+      builtinGlobalObjectTypeRef(first.text, runtime)
     );
   }
   return undefined;
@@ -6773,9 +6955,10 @@ function typeMemberCompletions(
   type: VbTypeRef,
   symbols: VbSymbol[],
   env: VbTypeEnvironment,
+  runtime: VbBuiltinRuntime,
 ): CompletionItem[] {
   const memberSets = expandUnionType(typeWithoutNothing(type) ?? type).map((candidate) =>
-    dedupeCompletions(typeMemberCompletionsForName(candidate.name, symbols, env)),
+    dedupeCompletions(typeMemberCompletionsForName(candidate.name, symbols, env, runtime)),
   );
   if (memberSets.length === 0) {
     return [];
@@ -6792,6 +6975,7 @@ function typeMemberCompletionsForName(
   typeName: string,
   symbols: VbSymbol[],
   env: VbTypeEnvironment,
+  runtime: VbBuiltinRuntime,
 ): CompletionItem[] {
   const type = findType(env, typeName);
   return [
@@ -6803,7 +6987,7 @@ function typeMemberCompletionsForName(
           (symbol.kind === "method" || symbol.kind === "field" || symbol.kind === "property"),
       )
       .map((symbol) => symbolToCompletion(symbol)),
-    ...(externalObjectMembers[typeName.toLowerCase()] ?? []),
+    ...(externalObjectCompletionsForRuntime(runtime)[typeName.toLowerCase()] ?? []),
   ];
 }
 
@@ -6828,6 +7012,7 @@ function builtinMemberDescription(
   symbols: VbSymbol[],
   env: VbTypeEnvironment,
   locale: AspLocale | undefined,
+  runtime: VbBuiltinRuntime,
 ): string | undefined {
   const access = memberAccessAt(parsed, offset);
   if (!access) {
@@ -6839,7 +7024,7 @@ function builtinMemberDescription(
       : access.owner.toLowerCase() === "me"
         ? currentClassTypeRef(parsed, offset, symbols)
         : (inferVariableTypeRef(access.owner, parsed, offset, symbols) ??
-          classicAspObjectTypeRef(access.owner));
+          builtinGlobalObjectTypeRef(access.owner, runtime));
   if (!ownerType) {
     return undefined;
   }
@@ -7666,17 +7851,12 @@ function declarationSyntaxDiagnostic(
 function diagnoseUndeclaredVariables(
   parsed: AspParsedDocument,
   symbols: VbSymbol[],
-  locale: AspLocale | undefined,
+  context: VbProjectContext,
 ): Diagnostic[] {
-  const localizer = createLocalizer(locale);
+  const runtime = vbBuiltinRuntime(parsed, context);
+  const localizer = createLocalizer(context.locale);
   const declaredBuiltins = new Set([
-    "request",
-    "response",
-    "session",
-    "application",
-    "server",
-    "asperror",
-    "err",
+    ...Object.keys(globalObjectCatalogForRuntime(runtime)),
     "true",
     "false",
     "nothing",
@@ -7693,7 +7873,7 @@ function diagnoseUndeclaredVariables(
     if (
       declaredBuiltins.has(lower) ||
       hasVisibleSymbolByName(parsed, token.start, symbols, lower) ||
-      isBuiltinName(name) ||
+      isBuiltinName(name, parsed, context) ||
       isDeclarationNameToken(parsed, token) ||
       previous?.text === "."
     ) {
@@ -7742,7 +7922,7 @@ function buildVbUsageIndex(
   symbols: VbSymbol[],
   context: VbProjectContext,
 ): VbUsageIndex & { candidates: VbUnusedReferenceCandidates } {
-  const candidates = unusedReferenceCandidates(parsed, symbols);
+  const candidates = unusedReferenceCandidates(parsed, symbols, context);
   const counts = new Map<string, number>();
   if (candidates.keys.size === 0) {
     return { counts, candidates };
@@ -7822,6 +8002,7 @@ function addExternalRefUsageCounts(
 function unusedReferenceCandidates(
   parsed: AspParsedDocument,
   symbols: VbSymbol[],
+  context: VbProjectContext,
 ): VbUnusedReferenceCandidates {
   const keys = new Set<string>();
   const lowerNames = new Set<string>();
@@ -7830,7 +8011,7 @@ function unusedReferenceCandidates(
   for (const symbol of symbols) {
     if (
       !sameSourceUri(symbol.sourceUri, parsed.uri) ||
-      isBuiltinName(symbol.name) ||
+      isBuiltinName(symbol.name, parsed, context) ||
       isRuntimeEntryPoint(parsed, symbol) ||
       !isUnusedDiagnosticCandidate(symbol)
     ) {
@@ -8037,7 +8218,7 @@ function diagnoseIdentifierCase(
         /^[A-Za-z][A-Za-z0-9_]*$/.test(symbol.name) &&
         !symbol.implicit &&
         !isRuntimeEntryPoint(parsed, symbol) &&
-        !isBuiltinName(symbol.name),
+        !isBuiltinName(symbol.name, parsed, context),
     )
     .flatMap((symbol): Diagnostic[] => {
       const style = identifierCaseForSymbol(symbol, context);
@@ -8517,13 +8698,15 @@ function builtinSignatureInformationForCall(
   offset: number,
   symbols: VbSymbol[],
   locale: AspLocale | undefined,
+  runtime: VbBuiltinRuntime,
 ) {
   const [owner, memberName] = name.includes(".") ? name.split(".", 2) : [undefined, name];
   if (owner && memberName) {
     const type =
       owner.toLowerCase() === "me"
         ? currentClassTypeRef(parsed, offset, symbols)
-        : (inferVariableTypeRef(owner, parsed, offset, symbols) ?? classicAspObjectTypeRef(owner));
+        : (inferVariableTypeRef(owner, parsed, offset, symbols) ??
+          builtinGlobalObjectTypeRef(owner, runtime));
     const member = type ? builtinMemberSpecForType(type.name, memberName) : undefined;
     if (!member?.signature) {
       return undefined;
@@ -8606,9 +8789,11 @@ function builtinMemberSpecForType(
 
 function builtinObjectSpecForType(typeName: string): BuiltinObjectSpec | undefined {
   const lower = typeName.toLowerCase();
-  return [...Object.values(classicAspObjectCatalog), ...Object.values(externalObjectCatalog)].find(
-    (objectSpec) => objectSpec.typeName.toLowerCase() === lower,
-  );
+  return [
+    ...Object.values(classicAspObjectCatalog),
+    ...Object.values(windowsScriptHostObjectCatalog),
+    ...Object.values(externalObjectCatalog),
+  ].find((objectSpec) => objectSpec.typeName.toLowerCase() === lower);
 }
 
 function signatureLabelFromMember(owner: string, name: string, signature: VbSignature): string {
@@ -8914,12 +9099,17 @@ function typeHasMember(type: VbTypeRef, memberName: string, env: VbTypeEnvironme
   });
 }
 
-function builtinTypes(): VbType[] {
-  cachedBuiltinTypes ??= createBuiltinTypes();
-  return cachedBuiltinTypes;
+function builtinTypes(runtime: VbBuiltinRuntime): VbType[] {
+  const cached = cachedBuiltinTypes.get(runtime);
+  if (cached) {
+    return cached;
+  }
+  const created = createBuiltinTypes(runtime);
+  cachedBuiltinTypes.set(runtime, created);
+  return created;
 }
 
-function createBuiltinTypes(): VbType[] {
+function createBuiltinTypes(runtime: VbBuiltinRuntime): VbType[] {
   const intrinsic: VbType[] = [
     "String",
     "Byte",
@@ -8941,36 +9131,40 @@ function createBuiltinTypes(): VbType[] {
     "Unknown",
     "Error",
   ].map((name) => ({ name, kind: "intrinsic" as const, members: [] }));
-  const classicAsp: VbType[] = Object.values(classicAspObjectCatalog).map((objectSpec) => ({
-    name: objectSpec.typeName,
-    kind: "classicAsp",
-    members: objectSpec.members.map((member) => {
-      const signature = member.signature
-        ? signatureFromLabel(member.signature, member.type ?? "Variant")
-        : undefined;
-      return {
+  const globalObjects: VbType[] = Object.values(globalObjectCatalogForRuntime(runtime)).map(
+    (objectSpec) => ({
+      name: objectSpec.typeName,
+      kind: runtime === "classicAsp" ? "classicAsp" : "com",
+      members: objectSpec.members.map((member) => {
+        const signature = member.signature
+          ? signatureFromLabel(member.signature, member.type ?? "Variant")
+          : undefined;
+        return {
+          name: member.name,
+          kind: member.kind,
+          type: signature?.returnType ?? typeRef(member.type ?? "Variant"),
+          signature,
+          documentation: builtinDocumentationMarkdown(member.documentation),
+        };
+      }),
+    }),
+  );
+  const external: VbType[] = Object.values(externalObjectCatalogForRuntime(runtime)).map(
+    (objectSpec) => ({
+      name: objectSpec.typeName,
+      kind: "com",
+      members: objectSpec.members.map((member) => ({
         name: member.name,
         kind: member.kind,
-        type: signature?.returnType ?? typeRef(member.type ?? "Variant"),
-        signature,
+        type: typeRef(member.type ?? "Variant"),
+        signature: member.signature
+          ? signatureFromLabel(member.signature, member.type ?? "Variant")
+          : undefined,
         documentation: builtinDocumentationMarkdown(member.documentation),
-      };
+      })),
     }),
-  }));
-  const external: VbType[] = Object.values(externalObjectCatalog).map((objectSpec) => ({
-    name: objectSpec.typeName,
-    kind: "com",
-    members: objectSpec.members.map((member) => ({
-      name: member.name,
-      kind: member.kind,
-      type: typeRef(member.type ?? "Variant"),
-      signature: member.signature
-        ? signatureFromLabel(member.signature, member.type ?? "Variant")
-        : undefined,
-      documentation: builtinDocumentationMarkdown(member.documentation),
-    })),
-  }));
-  return [...intrinsic, ...classicAsp, ...external];
+  );
+  return [...intrinsic, ...globalObjects, ...external];
 }
 
 function configuredComTypes(comTypes: Record<string, AspVbscriptComType>): VbType[] {
@@ -9006,6 +9200,7 @@ function configuredComTypes(comTypes: Record<string, AspVbscriptComType>): VbTyp
 
 export function getVbscriptGraphExternalSymbols(
   settings: AspSettings = {},
+  runtime: VbBuiltinRuntime = "classicAsp",
 ): VbGraphExternalSymbol[] {
   const symbols: VbGraphExternalSymbol[] = [
     {
@@ -9036,17 +9231,19 @@ export function getVbscriptGraphExternalSymbols(
         typeName: item.type,
       }),
     ),
-    ...classicAspRuntimeEvents.map(
-      (item): VbGraphExternalSymbol => ({
-        name: item.label,
-        origin: "builtin",
-        externalKind: "event",
-        category: "builtin",
-        declarationKind: "event",
-      }),
-    ),
-    ...graphObjectSymbols(classicAspObjectCatalog, "builtin", "builtin"),
-    ...graphObjectSymbols(externalObjectCatalog, "builtin", "builtin"),
+    ...(runtime === "classicAsp"
+      ? classicAspRuntimeEvents.map(
+          (item): VbGraphExternalSymbol => ({
+            name: item.label,
+            origin: "builtin",
+            externalKind: "event",
+            category: "builtin",
+            declarationKind: "event",
+          }),
+        )
+      : []),
+    ...graphObjectSymbols(globalObjectCatalogForRuntime(runtime), "builtin", "builtin"),
+    ...graphObjectSymbols(externalObjectCatalogForRuntime(runtime), "builtin", "builtin"),
   ];
   symbols.push(...configuredGlobalGraphSymbols(settings.vbscript?.globals ?? {}));
   symbols.push(...configuredComTypeGraphSymbols(settings.vbscript?.comTypes ?? {}));
@@ -9139,12 +9336,15 @@ function graphDeclarationKindForMember(kind: VbBuiltinMemberKind): VbSymbolKind 
   return kind === "method" ? "method" : kind === "field" ? "field" : "property";
 }
 
-function builtinSignature(name: string): VbSignature | undefined {
-  const label = builtinSignatureLabels(name)?.[0];
+function builtinSignature(
+  name: string,
+  runtime: VbBuiltinRuntime = "classicAsp",
+): VbSignature | undefined {
+  const label = builtinSignatureLabels(name, runtime)?.[0];
   if (!label) {
     return undefined;
   }
-  return signatureFromLabel(label, builtinReturnType(name));
+  return signatureFromLabel(label, builtinReturnType(name, runtime));
 }
 
 function signatureFromLabel(label: string, returnType: string): VbSignature {
@@ -9160,17 +9360,20 @@ function signatureFromLabel(label: string, returnType: string): VbSignature {
   return { parameters, returnType: typeRef(returnType) };
 }
 
-function builtinSignatureLabels(name: string): string[] | undefined {
+function builtinSignatureLabels(
+  name: string,
+  runtime: VbBuiltinRuntime = "classicAsp",
+): string[] | undefined {
   const lower = name.toLowerCase();
-  const classicAsp = classicAspBuiltinSignatures[lower];
-  if (classicAsp) {
-    return classicAsp;
+  const globalObjectSignatures = globalObjectSignaturesForRuntime(runtime)[lower];
+  if (globalObjectSignatures) {
+    return globalObjectSignatures;
   }
   const builtin = builtinFunction(lower);
   return builtin ? [builtin.signature] : undefined;
 }
 
-function builtinReturnType(name: string): string {
+function builtinReturnType(name: string, runtime: VbBuiltinRuntime): string {
   const lower = name.toLowerCase();
   const builtin = builtinFunction(lower);
   if (builtin) {
@@ -9178,7 +9381,7 @@ function builtinReturnType(name: string): string {
   }
   const [ownerName, memberName] = lower.split(".", 2);
   const member = ownerName
-    ? classicAspObjectCatalog[ownerName]?.members.find(
+    ? globalObjectCatalogForRuntime(runtime)[ownerName]?.members.find(
         (item) => item.name.toLowerCase() === memberName,
       )
     : undefined;
@@ -9331,16 +9534,24 @@ function canonicalBuiltinObjectTypeName(name: string): string | undefined {
   const lower = name.toLowerCase();
   const objectSpec = [
     ...Object.values(classicAspObjectCatalog),
+    ...Object.values(windowsScriptHostObjectCatalog),
     ...Object.values(externalObjectCatalog),
   ].find((candidate) => candidate.typeName.toLowerCase() === lower);
   if (objectSpec) {
     return objectSpec.typeName;
   }
-  return classicAspObjectCatalog[lower]?.typeName ?? externalObjectCatalog[lower]?.typeName;
+  return (
+    classicAspObjectCatalog[lower]?.typeName ??
+    windowsScriptHostObjectCatalog[lower]?.typeName ??
+    externalObjectCatalog[lower]?.typeName
+  );
 }
 
-function classicAspObjectTypeRef(name: string): VbTypeRef | undefined {
-  const objectSpec = classicAspObjectCatalog[name.toLowerCase()];
+function builtinGlobalObjectTypeRef(
+  name: string,
+  runtime: VbBuiltinRuntime,
+): VbTypeRef | undefined {
+  const objectSpec = globalObjectCatalogForRuntime(runtime)[name.toLowerCase()];
   return objectSpec ? typeRef(objectSpec.typeName) : undefined;
 }
 
@@ -9348,7 +9559,7 @@ function isObjectTypeName(name: string): boolean {
   const lower = name.toLowerCase();
   return (
     lower === "object" ||
-    classicAspTypeNames.has(lower) ||
+    builtinObjectTypeNames.has(lower) ||
     (!intrinsicTypeNames.has(lower) &&
       lower !== "string" &&
       lower !== "number" &&
@@ -9776,18 +9987,25 @@ function isLikelyDynamicCall(name: string): boolean {
   return /^[A-Z]/.test(name);
 }
 
-function isBuiltinName(name: string): boolean {
+function isBuiltinName(
+  name: string,
+  parsed?: AspParsedDocument,
+  context: Pick<VbProjectContext, "builtinRuntime" | "locale"> = {},
+): boolean {
+  const runtime = parsed
+    ? vbBuiltinRuntime(parsed, context)
+    : (context.builtinRuntime ?? "classicAsp");
   const lower = name.toLowerCase();
-  cachedBuiltinNameSet ??= new Set(
-    builtinCompletions(undefined).map((item) => item.label.toLowerCase()),
-  );
-  return cachedBuiltinNameSet.has(lower);
+  let names = cachedBuiltinNameSets.get(runtime);
+  if (!names) {
+    names = new Set(builtinCompletions(undefined, runtime).map((item) => item.label.toLowerCase()));
+    cachedBuiltinNameSets.set(runtime, names);
+  }
+  return names.has(lower);
 }
 
-function isClassicAspObjectName(name: string): boolean {
-  return ["request", "response", "session", "application", "server", "asperror", "err"].includes(
-    name.toLowerCase(),
-  );
+function isBuiltinGlobalObjectName(name: string, runtime: VbBuiltinRuntime): boolean {
+  return Object.hasOwn(globalObjectCatalogForRuntime(runtime), name.toLowerCase());
 }
 
 function sameSymbol(left: VbSymbol, right: VbSymbol): boolean {

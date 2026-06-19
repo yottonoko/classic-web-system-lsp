@@ -1243,10 +1243,10 @@ function formatNumber(value: number, locale: Locale): string {
 
 function emptyPayload(): WorkspaceFilesPayload {
   return {
-    includeGlobs: ["**/*.{asp,asa,inc}"],
+    includeGlobs: ["**/*.{asp,asa,inc,vbs}"],
     excludeGlobs: [],
     globStats: {
-      include: [{ glob: "**/*.{asp,asa,inc}", files: 0 }],
+      include: [{ glob: "**/*.{asp,asa,inc,vbs}", files: 0 }],
       exclude: [],
     },
     respectGitIgnore: false,

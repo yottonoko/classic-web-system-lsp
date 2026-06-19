@@ -1,5 +1,5 @@
 {
-  "schemaVersion": 1,
+  "schemaVersion": 2,
   "classicAspObjects": {
     "request": {
       "typeName": "Request",
@@ -377,6 +377,105 @@
           "name": "Raise",
           "type": "Variant",
           "signature": "Err.Raise(number, source, description, helpfile, helpcontext)"
+        }
+      ]
+    }
+  },
+  "windowsScriptHostObjects": {
+    "wscript": {
+      "typeName": "WScript",
+      "members": [
+        {
+          "kind": "property",
+          "name": "Arguments",
+          "type": "Variant"
+        },
+        {
+          "kind": "property",
+          "name": "FullName",
+          "type": "String"
+        },
+        {
+          "kind": "property",
+          "name": "Name",
+          "type": "String"
+        },
+        {
+          "kind": "property",
+          "name": "Path",
+          "type": "String"
+        },
+        {
+          "kind": "property",
+          "name": "ScriptFullName",
+          "type": "String"
+        },
+        {
+          "kind": "property",
+          "name": "ScriptName",
+          "type": "String"
+        },
+        {
+          "kind": "property",
+          "name": "StdErr",
+          "type": "Object"
+        },
+        {
+          "kind": "property",
+          "name": "StdIn",
+          "type": "Object"
+        },
+        {
+          "kind": "property",
+          "name": "StdOut",
+          "type": "Object"
+        },
+        {
+          "kind": "property",
+          "name": "Version",
+          "type": "String"
+        },
+        {
+          "kind": "method",
+          "name": "ConnectObject",
+          "type": "Variant",
+          "signature": "WScript.ConnectObject(object, prefix)"
+        },
+        {
+          "kind": "method",
+          "name": "CreateObject",
+          "type": "Object",
+          "signature": "WScript.CreateObject(progId, prefix)"
+        },
+        {
+          "kind": "method",
+          "name": "DisconnectObject",
+          "type": "Variant",
+          "signature": "WScript.DisconnectObject object"
+        },
+        {
+          "kind": "method",
+          "name": "Echo",
+          "type": "Variant",
+          "signature": "WScript.Echo value"
+        },
+        {
+          "kind": "method",
+          "name": "GetObject",
+          "type": "Object",
+          "signature": "WScript.GetObject(pathname, progId, prefix)"
+        },
+        {
+          "kind": "method",
+          "name": "Quit",
+          "type": "Variant",
+          "signature": "WScript.Quit errorCode"
+        },
+        {
+          "kind": "method",
+          "name": "Sleep",
+          "type": "Variant",
+          "signature": "WScript.Sleep milliseconds"
         }
       ]
     }

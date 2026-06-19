@@ -602,7 +602,7 @@ async function saveWorkspaceFilesSettings(request: WorkspaceFilesSettingsRequest
   const configuration = vscode.workspace.getConfiguration("aspLsp");
   await configuration.update(
     "workspace.includes",
-    workspaceGlobConfiguration(request.includeGlobs, ["**/*.{asp,asa,inc}"]),
+    workspaceGlobConfiguration(request.includeGlobs, ["**/*.{asp,asa,inc,vbs}"]),
     vscode.ConfigurationTarget.Workspace,
   );
   await configuration.update(
@@ -657,7 +657,7 @@ function defaultWorkspaceFilesPreviewRequest(): WorkspaceFilesPreviewRequest {
   const configuration = vscode.workspace.getConfiguration("aspLsp");
   return {
     includeGlobs: workspaceGlobConfiguration(configuration.get<unknown>("workspace.includes"), [
-      "**/*.{asp,asa,inc}",
+      "**/*.{asp,asa,inc,vbs}",
     ]),
     excludeGlobs: workspaceGlobConfiguration(configuration.get<unknown>("workspace.excludes"), []),
     respectGitIgnore: configuration.get<boolean>("workspace.respectGitIgnore", false),
@@ -1060,12 +1060,15 @@ async function startClient(context: vscode.ExtensionContext): Promise<void> {
     },
   };
   const clientOptions: LanguageClientOptions = {
-    documentSelector: [{ scheme: "file", language: "classic-asp" }],
+    documentSelector: [
+      { scheme: "file", language: "classic-asp" },
+      { scheme: "file", language: "vbscript" },
+    ],
     outputChannel,
     synchronize: {
       configurationSection: "aspLsp",
       fileEvents: vscode.workspace.createFileSystemWatcher(
-        "**/*.{asp,asa,inc,js,jsx,mjs,cjs,ts,tsx,mts,cts,d.ts}",
+        "**/*.{asp,asa,inc,vbs,js,jsx,mjs,cjs,ts,tsx,mts,cts,d.ts}",
       ),
     },
     errorHandler: createLanguageClientErrorHandler(),

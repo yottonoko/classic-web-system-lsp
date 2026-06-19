@@ -4,6 +4,7 @@ import {
   buildVirtualDocuments,
   getVbscriptCompletions,
   parseAspDocument,
+  parseVbscriptDocument,
 } from "../../core/src";
 
 describe("language server building blocks", () => {
@@ -30,5 +31,16 @@ Response.Write userName
         (item) => item.label === "Write",
       ),
     ).toBe(true);
+  });
+
+  it("can parse and route a standalone VBS document", () => {
+    const parsed = parseVbscriptDocument("file:///site/script.vbs", "WScript.\n");
+    const completions = getVbscriptCompletions(parsed, { line: 0, character: 8 });
+    expect(completions.some((item) => item.label === "Echo")).toBe(true);
+    expect(
+      getVbscriptCompletions(parsed, { line: 1, character: 0 }).some(
+        (item) => item.label === "Response",
+      ),
+    ).toBe(false);
   });
 });

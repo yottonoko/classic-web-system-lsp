@@ -41,6 +41,7 @@ export interface VbDiagnosticsWorkerContext {
   deadCodeDiagnostics?: boolean;
   syntaxSnippets?: boolean;
   syntaxKeywords?: boolean;
+  builtinRuntime?: "classicAsp" | "windowsScriptHost";
   locale?: AspLocale;
 }
 

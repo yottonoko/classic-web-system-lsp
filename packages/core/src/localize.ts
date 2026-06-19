@@ -38,6 +38,8 @@ export type LocalizeKey =
   | "vb.builtin.server.detail"
   | "vb.builtin.asperror.detail"
   | "vb.builtin.err.detail"
+  | "vb.builtin.wscript.detail"
+  | "vb.builtin.wscript.documentation"
   | "vb.builtin.optionExplicit.detail"
   | "vb.hover.builtin.request"
   | "vb.hover.builtin.response"
@@ -46,6 +48,7 @@ export type LocalizeKey =
   | "vb.hover.builtin.server"
   | "vb.hover.builtin.asperror"
   | "vb.hover.builtin.err"
+  | "vb.hover.builtin.wscript"
   | "vb.symbol.owner"
   | "vb.symbol.scope"
   | "vb.completion.builtinLabel"
@@ -153,6 +156,9 @@ const en: Record<LocalizeKey, string> = {
   "vb.builtin.server.detail": "Classic ASP Server object",
   "vb.builtin.asperror.detail": "Classic ASP error object",
   "vb.builtin.err.detail": "VBScript Err object",
+  "vb.builtin.wscript.detail": "Windows Script Host WScript object",
+  "vb.builtin.wscript.documentation":
+    "Provides Windows Script Host runtime services such as Echo, Sleep, Arguments, and Quit.",
   "vb.builtin.optionExplicit.detail": "Require explicit variable declarations",
   "vb.hover.builtin.request": "Classic ASP Request object. Reads values sent by the client.",
   "vb.hover.builtin.response":
@@ -164,6 +170,8 @@ const en: Record<LocalizeKey, string> = {
   "vb.hover.builtin.asperror": "Classic ASP error object returned by Server.GetLastError.",
   "vb.hover.builtin.err":
     "VBScript Err object. Stores details about the most recent runtime error.",
+  "vb.hover.builtin.wscript":
+    "Windows Script Host WScript object. Provides script host services such as output, arguments, sleep, and process exit.",
   "vb.symbol.owner": " of {owner}",
   "vb.symbol.scope": " in {scope}",
   "vb.completion.builtinLabel": "built-in",
@@ -280,6 +288,9 @@ const ja: Record<LocalizeKey, string> = {
   "vb.builtin.server.detail": "Classic ASP Server オブジェクト",
   "vb.builtin.asperror.detail": "Classic ASP error オブジェクト",
   "vb.builtin.err.detail": "VBScript Err オブジェクト",
+  "vb.builtin.wscript.detail": "Windows Script Host WScript オブジェクト",
+  "vb.builtin.wscript.documentation":
+    "Echo、Sleep、Arguments、Quit などの Windows Script Host 実行時サービスを提供します。",
   "vb.builtin.optionExplicit.detail": "明示的な変数宣言を必須にします",
   "vb.hover.builtin.request":
     "Classic ASP Request オブジェクト。クライアントから送られた値を読み取ります。",
@@ -292,6 +303,8 @@ const ja: Record<LocalizeKey, string> = {
     "Classic ASP Server オブジェクト。COM オブジェクトの作成、パス解決、値のエンコードを行います。",
   "vb.hover.builtin.asperror": "Server.GetLastError が返す Classic ASP error オブジェクトです。",
   "vb.hover.builtin.err": "VBScript Err オブジェクト。直近の実行時エラーの詳細を保持します。",
+  "vb.hover.builtin.wscript":
+    "Windows Script Host WScript オブジェクト。出力、引数、待機、終了などの script host サービスを提供します。",
   "vb.symbol.owner": " ({owner} のメンバー)",
   "vb.symbol.scope": " ({scope} 内)",
   "vb.completion.builtinLabel": "built-in",

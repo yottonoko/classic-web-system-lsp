@@ -30,6 +30,7 @@ import {
   parseAspCst,
   parseAspDocument,
   parseAspDocumentSkeletonAsync,
+  parseVbscriptDocument,
   parseVbscriptTypeRef,
   parseVbscriptCst,
   prepareVbscriptCallHierarchy,
@@ -3855,6 +3856,30 @@ missingValue = 1
     ).toBeUndefined();
   });
 
+  it("indexes standalone VBS text with Windows Script Host built-in exclusions", () => {
+    const index = extractVbscriptSymbolIndex(
+      "file:///site/script.vbs",
+      `value = WScript.ScriptName
+Response = value
+`,
+      {},
+      { includeImplicitVariables: true },
+    );
+
+    expect(index.stats.regions).toBe(1);
+    expect(index.stats.tokens).toBeGreaterThan(0);
+    expect(index.references.map((item) => item.name)).toEqual(
+      expect.arrayContaining(["WScript", "ScriptName", "Response", "value"]),
+    );
+    expect(index.declarations.find((item) => item.name === "Response")).toMatchObject({
+      kind: "variable",
+      bindingScope: "global",
+      implicit: true,
+      implicitGlobal: true,
+    });
+    expect(index.declarations.some((item) => item.name === "WScript" && item.implicit)).toBe(false);
+  });
+
   it("indexes VBScript array element access as variable references", () => {
     const source = `<%
 Dim declaredItems(2)
@@ -5968,6 +5993,72 @@ Response.Write lastError.Description
       getVbscriptHover(parsed, positionAt(parsed.text, parsed.text.indexOf("Application_OnStart"))),
     ).toContain("Sub Application_OnStart()");
     expect(symbols.find((symbol) => symbol.name === "lastError")?.typeName).toBe("ASPError");
+    expect(topLevelCompletions.some((item) => item.label === "WScript")).toBe(false);
+  });
+
+  it("keeps standalone VBS built-ins separate from Classic ASP built-ins", () => {
+    const parsed = parseVbscriptDocument(
+      "file:///site/script.vbs",
+      `Option Explicit
+Dim message
+message = CStr(1)
+WScript.Sleep(100)
+WScript.
+message = Response
+Application_OnStart
+`,
+    );
+    const symbols = collectVbscriptSymbols(parsed);
+    const topLevelCompletions = getVbscriptCompletions(
+      parsed,
+      { line: 1, character: 0 },
+      {
+        symbols,
+      },
+    );
+    const wscriptCompletions = getVbscriptCompletions(
+      parsed,
+      positionAt(parsed.text, parsed.text.indexOf("WScript.") + "WScript.".length),
+      { symbols },
+    );
+    const diagnostics = analyzeVbscript(parsed, {
+      symbols,
+      unusedDiagnostics: false,
+    }).diagnostics.filter((diagnostic) => diagnostic.source === "asp-lsp-vbscript");
+
+    expect(topLevelCompletions.some((item) => item.label === "WScript")).toBe(true);
+    expect(topLevelCompletions.some((item) => item.label === "Err")).toBe(true);
+    expect(topLevelCompletions.some((item) => item.label === "CStr")).toBe(true);
+    expect(topLevelCompletions.some((item) => item.label === "adInteger")).toBe(true);
+    expect(topLevelCompletions.some((item) => item.label === "Response")).toBe(false);
+    expect(topLevelCompletions.some((item) => item.label === "Application_OnStart")).toBe(false);
+    expect(wscriptCompletions.map((item) => item.label)).toEqual(
+      expect.arrayContaining(["Echo", "Quit", "Sleep", "ScriptFullName"]),
+    );
+    expect(
+      getVbscriptHover(parsed, positionAt(parsed.text, parsed.text.indexOf("WScript"))),
+    ).toContain("Dim WScript As WScript");
+    expect(
+      getVbscriptHover(
+        parsed,
+        positionAt(parsed.text, parsed.text.indexOf("WScript.Sleep") + "WScript.".length),
+      ),
+    ).toContain("WScript.Sleep(milliseconds)");
+    expect(
+      getVbscriptSignatureHelp(
+        parsed,
+        positionAt(parsed.text, parsed.text.indexOf("WScript.Sleep(") + "WScript.Sleep(".length),
+      )?.signatures[0],
+    ).toEqual(expect.objectContaining({ label: "WScript.Sleep(milliseconds)" }));
+    expect(
+      getVbscriptHover(
+        parsed,
+        positionAt(parsed.text, parsed.text.indexOf("Application_OnStart")),
+      ) ?? "",
+    ).not.toContain("Sub Application_OnStart()");
+    expect(diagnostics.some((diagnostic) => diagnostic.message.includes("WScript"))).toBe(false);
+    expect(diagnostics.some((diagnostic) => diagnostic.message.includes("CStr"))).toBe(false);
+    expect(diagnostics.some((diagnostic) => diagnostic.message.includes("Response"))).toBe(true);
   });
 
   it("treats Err as a typed VBScript built-in object", () => {

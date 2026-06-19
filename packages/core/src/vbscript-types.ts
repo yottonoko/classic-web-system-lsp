@@ -90,6 +90,7 @@ export interface VbProjectContext {
   deadCodeDiagnostics?: boolean;
   syntaxSnippets?: boolean;
   syntaxKeywords?: boolean;
+  builtinRuntime?: "classicAsp" | "windowsScriptHost";
   incrementalAnalysis?: boolean;
   locale?: AspLocale;
   sourceUriFormatter?: (uri: string) => string;

@@ -1421,7 +1421,7 @@ describe("VS Code extension package", () => {
     expect(manifest.contributes?.configuration?.properties?.["aspLsp.workspace.includes"]).toEqual(
       expect.objectContaining({
         type: "array",
-        default: ["**/*.{asp,asa,inc}"],
+        default: ["**/*.{asp,asa,inc,vbs}"],
       }),
     );
     expect(manifest.contributes?.configuration?.properties?.["aspLsp.workspace.excludes"]).toEqual(
@@ -1611,6 +1611,7 @@ describe("VS Code extension package", () => {
     );
     expect(manifest.activationEvents).toContain("onCommand:aspLsp.showCurrentFileFlowchart");
     expect(manifest.activationEvents).toContain("onCommand:aspLsp.exportCurrentFileFlowchart");
+    expect(manifest.activationEvents).toContain("onLanguage:vbscript");
     expect(extensionSource).toContain('registerCommand("aspLsp.showCurrentFileGraph"');
     expect(extensionSource).toContain('registerCommand("aspLsp.showFolderGraph"');
     expect(extensionSource).toContain('registerCommand("aspLsp.showWorkspaceGraph"');
@@ -1691,7 +1692,7 @@ describe("VS Code extension package", () => {
       (language) => language.id === "vbscript",
     );
     expect(vbscriptLanguage).toBeTruthy();
-    expect(vbscriptLanguage?.extensions).toBeUndefined();
+    expect(vbscriptLanguage?.extensions).toEqual([".vbs"]);
     expect(vbscriptLanguage?.configuration).toBe("./vbscript-language-configuration.json");
     const vbscriptLanguageConfiguration = JSON.parse(
       fs.readFileSync("vbscript-language-configuration.json", "utf8"),

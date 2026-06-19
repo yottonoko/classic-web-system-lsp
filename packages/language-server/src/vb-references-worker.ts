@@ -10,6 +10,7 @@ import {
   getVbscriptReferencesForSymbols,
   hydrateVbscriptCst,
   parseAspDocumentAsync,
+  parseVbscriptDocumentAsync,
   parseVbscriptTypeRef,
   summarizeAspFileAnalysisAsync,
   vbscriptReferenceSymbolKey,
@@ -359,6 +360,34 @@ interface FullFallbackAnalysisCacheEntry {
 const fullFallbackAnalysisCache = new Map<string, FullFallbackAnalysisCacheEntry>();
 const maxFullFallbackAnalysisCacheEntries = 64;
 
+function isStandaloneVbscriptFile(fileName: string): boolean {
+  return /\.vbs$/i.test(fileName);
+}
+
+function vbBuiltinRuntimeForFile(
+  fileName: string,
+): NonNullable<VbProjectContext["builtinRuntime"]> {
+  return isStandaloneVbscriptFile(fileName) ? "windowsScriptHost" : "classicAsp";
+}
+
+function vbProjectContextForFile(settings: AspSettings, fileName: string): VbProjectContext {
+  return {
+    ...vbProjectContextSettings(settings),
+    builtinRuntime: vbBuiltinRuntimeForFile(fileName),
+  };
+}
+
+function parseWorkerDocumentAsync(
+  uri: string,
+  fileName: string,
+  text: string,
+  settings: AspSettings,
+): Promise<AspParsedDocument> {
+  return isStandaloneVbscriptFile(fileName)
+    ? parseVbscriptDocumentAsync(uri, text)
+    : parseAspDocumentAsync(uri, text, settings);
+}
+
 async function cachedFullFallbackAnalysis(
   request: VbReferencesWorkerRequest,
   openDocuments: Map<string, VbReferencesWorkerOpenDocument>,
@@ -374,9 +403,14 @@ async function cachedFullFallbackAnalysis(
   if (documents.length === 0) {
     return undefined;
   }
-  const contextSettings = vbProjectContextSettings(request.settings);
+  const contextSettings = vbProjectContextForFile(request.settings, request.candidate.fileName);
   const summaries = await Promise.all(
-    documents.map((document) => summarizeAspFileAnalysisAsync(document, contextSettings)),
+    documents.map((document) =>
+      summarizeAspFileAnalysisAsync(
+        document,
+        vbProjectContextForFile(request.settings, document.uri),
+      ),
+    ),
   );
   await writeDiskParsedDocuments(documents, summaries, request, openDocuments);
   const includeGraph = await fullFallbackIncludeGraph(documents, request);
@@ -548,7 +582,7 @@ async function collectFullDocuments(
     }
     visited.add(fileKey);
     textLength += text.text.length;
-    const parsed = await parseAspDocumentAsync(uri, text.text, request.settings);
+    const parsed = await parseWorkerDocumentAsync(uri, normalized, text.text, request.settings);
     await hydrateVbscriptCst(parsed, request.settings);
     documents.push(parsed);
     for (const include of parsed.includes) {
