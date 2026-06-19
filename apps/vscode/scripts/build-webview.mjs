@@ -1,6 +1,5 @@
 import path from "node:path";
 import { createRequire } from "node:module";
-import tailwindcss from "@tailwindcss/vite";
 import react from "@vitejs/plugin-react";
 import { build } from "vite";
 
@@ -15,8 +14,9 @@ const codeHikeLighterEntry = path.join(
   "@code-hike",
   "lighter",
   "dist",
-  "index.esm.mjs",
+  "browser.esm.mjs",
 );
+const tailwindcss = await loadTailwindPlugin();
 
 await buildWebview("include-graph.tsx", "AspLspGraphWebview", "include-graph.js", true);
 await buildWebview("flowchart.tsx", "AspLspFlowchartWebview", "flowchart.js", false);
@@ -53,11 +53,17 @@ async function buildWebview(entry, name, fileName, emptyOutDir) {
         formats: ["iife"],
         fileName: () => fileName,
       },
-      rollupOptions: {
-        output: {
-          inlineDynamicImports: true,
-        },
-      },
     },
   });
+}
+
+async function loadTailwindPlugin() {
+  const previousNoDeprecation = process.noDeprecation;
+  // Tailwind 4.3 imports a Node 26-deprecated loader hook; keep the suppression scoped to that import.
+  process.noDeprecation = true;
+  try {
+    return (await import("@tailwindcss/vite")).default;
+  } finally {
+    process.noDeprecation = previousNoDeprecation;
+  }
 }
