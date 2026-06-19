@@ -90,27 +90,33 @@ export function showAspSettingsWebview(
       localResourceRoots: [webviewRoot],
     },
   );
+  let activeLocale = locale;
+  const refreshLocale = (): AspSettingsLocale => {
+    activeLocale = settingsLocale();
+    panel.title = settingsHostText(activeLocale, "panelTitle");
+    return activeLocale;
+  };
   const initialTarget = defaultSettingsTarget();
   panel.webview.onDidReceiveMessage((message: WebviewMessage) => {
     if (message.type === "reloadSettings") {
       void postSettingsPayload(
         context,
         panel.webview,
-        locale,
+        refreshLocale(),
         theme,
         message.target,
         message.requestId,
       );
     } else if (message.type === "saveSettings") {
-      void saveSettings(context, panel.webview, locale, theme, message);
+      void saveSettings(context, panel, refreshLocale, theme, message);
     }
   });
   panel.webview.html = settingsWebviewHtml(
     panel.webview,
     webviewRoot,
-    settingsPayload(context, locale, theme, initialTarget),
-    settingsHostText(locale, "panelTitle"),
-    locale,
+    settingsPayload(context, activeLocale, theme, initialTarget),
+    settingsHostText(activeLocale, "panelTitle"),
+    activeLocale,
   );
   return panel;
 }
@@ -132,11 +138,12 @@ function postSettingsPayload(
 
 async function saveSettings(
   context: vscode.ExtensionContext,
-  webview: vscode.Webview,
-  locale: AspSettingsLocale,
+  panel: vscode.WebviewPanel,
+  refreshLocale: () => AspSettingsLocale,
   theme: AspSettingsWebviewThemeSetting,
   message: SaveSettingsMessage,
 ): Promise<void> {
+  const startingLocale = settingsLocale();
   const response: AspSettingsHostMessage = {
     type: "saveResult",
     requestId: message.requestId,
@@ -144,21 +151,24 @@ async function saveSettings(
   try {
     const target = normalizeTarget(message.target);
     const metadataByKey = new Map(
-      settingsMetadata(context, locale).map((metadata) => [metadata.key, metadata]),
+      settingsMetadata(context, startingLocale).map((metadata) => [metadata.key, metadata]),
     );
     for (const update of message.updates) {
       const metadata = metadataByKey.get(update.key);
       if (!metadata) {
-        throw new Error(settingsHostText(locale, "unknownSetting").replace("{key}", update.key));
+        throw new Error(
+          settingsHostText(startingLocale, "unknownSetting").replace("{key}", update.key),
+        );
       }
       await updateSetting(metadata, update, target);
     }
-    response.payload = settingsPayload(context, locale, theme, target);
-    void vscode.window.showInformationMessage(settingsHostText(locale, "saved"));
+    const nextLocale = refreshLocale();
+    response.payload = settingsPayload(context, nextLocale, theme, target);
+    void vscode.window.showInformationMessage(settingsHostText(nextLocale, "saved"));
   } catch (error) {
     response.error = error instanceof Error ? error.message : String(error);
   }
-  await webview.postMessage(response);
+  await panel.webview.postMessage(response);
 }
 
 function updateSetting(
@@ -363,4 +373,11 @@ function settingsHostText(
     },
   };
   return messages[locale][key] ?? messages.en[key];
+}
+
+function settingsLocale(): AspSettingsLocale {
+  const configLocale = vscode.workspace.getConfiguration("aspLsp").get<string>("locale") ?? "auto";
+  return configLocale === "ja" || (configLocale !== "en" && vscode.env.language.startsWith("ja"))
+    ? "ja"
+    : "en";
 }

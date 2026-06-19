@@ -584,6 +584,9 @@ describe("VS Code extension package", () => {
     expect(webviewSource).toContain("configuration.update(");
     expect(webviewSource).toContain('languageId: "classic-asp"');
     expect(webviewSource).toContain("metadata.languageOverride ? true : false");
+    expect(webviewSource).toContain("const refreshLocale = (): AspSettingsLocale");
+    expect(webviewSource).toContain("settingsPayload(context, nextLocale, theme, target)");
+    expect(webviewSource).toContain('panel.title = settingsHostText(activeLocale, "panelTitle")');
     expect(webviewSource).toContain('editor.defaultFormatter"');
     expect(webviewSource).toContain("aspLsp.vbscript.identifierCaseByKind");
     expect(webviewSource).toContain("aspLsp.vbscript.comTypes");
