@@ -663,7 +663,7 @@ describe("VS Code extension package", () => {
     ).filter((key) => key.startsWith("aspLsp."));
     const classicAspOverrides = metadata.filter((setting) => setting.languageOverride);
 
-    expect(aspSettings).toHaveLength(133);
+    expect(aspSettings).toHaveLength(186);
     expect(aspSettings.map((setting) => setting.key).sort()).toEqual(contributedAspSettings.sort());
     expect(classicAspOverrides.map((setting) => setting.key)).toEqual([
       "editor.defaultFormatter",
@@ -1455,17 +1455,14 @@ describe("VS Code extension package", () => {
         default: "auto",
       }),
     );
-    for (const setting of [
-      "aspLsp.format.indentSize",
-      "aspLsp.format.indentStyle",
-      "aspLsp.format.vbscriptIndentSize",
-      "aspLsp.format.vbscriptIndentStyle",
-      "aspLsp.format.vbscriptBlockIndent",
-      "aspLsp.format.ignoreVbscriptTagIndent",
-      "aspLsp.format.ignoreCssTagIndent",
-      "aspLsp.format.ignoreJavaScriptTagIndent",
-      "aspLsp.format.onSave",
-    ]) {
+    const formatSettings = Object.keys(
+      manifest.contributes?.configuration?.properties ?? {},
+    ).filter((setting) => setting.startsWith("aspLsp.format."));
+    for (const setting of formatSettings.filter(
+      (setting) =>
+        setting !== "aspLsp.format.uppercaseKeywords" &&
+        setting !== "aspLsp.format.alignAssignments",
+    )) {
       expect(manifest.contributes?.configuration?.properties?.[setting]).toEqual(
         expect.objectContaining({ tags: ["advanced"] }),
       );
@@ -1486,6 +1483,68 @@ describe("VS Code extension package", () => {
         type: "string",
         enum: ["alignWithDelimiter", "indentInsideDelimiter"],
         default: "indentInsideDelimiter",
+      }),
+    );
+    expect(
+      manifest.contributes?.configuration?.properties?.["aspLsp.format.enabledLanguages"],
+    ).toEqual(
+      expect.objectContaining({
+        type: "array",
+        uniqueItems: true,
+        default: ["html", "vbscript", "css", "javascript", "jscript"],
+      }),
+    );
+    expect(
+      manifest.contributes?.configuration?.properties?.["aspLsp.format.htmlWrapAttributes"],
+    ).toEqual(
+      expect.objectContaining({
+        type: "string",
+        enum: [
+          "auto",
+          "force",
+          "force-aligned",
+          "force-expand-multiline",
+          "aligned-multiple",
+          "preserve",
+          "preserve-aligned",
+        ],
+        default: "auto",
+      }),
+    );
+    expect(
+      manifest.contributes?.configuration?.properties?.["aspLsp.format.cssBraceStyle"],
+    ).toEqual(
+      expect.objectContaining({
+        type: "string",
+        enum: ["collapse", "expand"],
+        default: "collapse",
+      }),
+    );
+    expect(
+      manifest.contributes?.configuration?.properties?.["aspLsp.format.javascriptSemicolons"],
+    ).toEqual(
+      expect.objectContaining({
+        type: ["string", "null"],
+        enum: ["ignore", "insert", "remove", null],
+        default: null,
+      }),
+    );
+    expect(
+      manifest.contributes?.configuration?.properties?.["aspLsp.format.vbscriptKeywordCase"],
+    ).toEqual(
+      expect.objectContaining({
+        type: ["string", "null"],
+        enum: ["preserve", "upper", "lower", "title", null],
+        default: null,
+      }),
+    );
+    expect(
+      manifest.contributes?.configuration?.properties?.["aspLsp.format.nestedAspInCssJs"],
+    ).toEqual(
+      expect.objectContaining({
+        type: "string",
+        enum: ["skipRegion", "protectAspOnly", "formatAroundAsp"],
+        default: "skipRegion",
       }),
     );
     for (const setting of [

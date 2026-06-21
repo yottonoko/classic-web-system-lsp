@@ -20,25 +20,20 @@ export const settingsFormatterPreviewSource = `<%
 If enabled Then
 Response.Write "ok"
 End If
+Select Case status
+Case "ready"
+Response.Write "ready"
+End Select
+total = first + _
+longerName
 first=1
 longerName=2
 %>`;
 
-const formatterPreviewKeys = new Set([
-  "aspLsp.format.indentSize",
-  "aspLsp.format.indentStyle",
-  "aspLsp.format.vbscriptIndentSize",
-  "aspLsp.format.vbscriptIndentStyle",
-  "aspLsp.format.uppercaseKeywords",
-  "aspLsp.format.alignAssignments",
-  "aspLsp.format.vbscriptBlockIndent",
-  "aspLsp.format.ignoreVbscriptTagIndent",
-  "editor.tabSize",
-  "editor.insertSpaces",
-]);
+const formatterPreviewKeys = new Set(["editor.tabSize", "editor.insertSpaces"]);
 
 export function isFormatterPreviewSetting(key: string): boolean {
-  return formatterPreviewKeys.has(key);
+  return key.startsWith("aspLsp.format.") || formatterPreviewKeys.has(key);
 }
 
 export function settingsFormatterPreview(
@@ -72,6 +67,15 @@ function settingsFormatterPreviewOptions(settingValue: SettingValueReader): AspF
   ]);
   return {
     alignAssignments: settingValue("aspLsp.format.alignAssignments") === true,
+    aspBlockNewline: stringUnion(settingValue("aspLsp.format.aspBlockNewline"), [
+      "preserve",
+      "alwaysMultiline",
+      "singleLineWhenPossible",
+    ]),
+    aspDelimiterSpacing: stringUnion(settingValue("aspLsp.format.aspDelimiterSpacing"), [
+      "padded",
+      "compact",
+    ]),
     ignoreVbscriptTagIndent: settingValue("aspLsp.format.ignoreVbscriptTagIndent") === true,
     indentSize,
     indentStyle,
@@ -83,6 +87,24 @@ function settingsFormatterPreviewOptions(settingValue: SettingValueReader): AspF
     vbscriptBlockIndent,
     vbscriptIndentSize,
     vbscriptIndentStyle,
+    vbscriptKeywordCase: stringUnion(settingValue("aspLsp.format.vbscriptKeywordCase"), [
+      "preserve",
+      "upper",
+      "lower",
+      "title",
+    ]),
+    vbscriptLineContinuationIndentSize: positiveNumber(
+      settingValue("aspLsp.format.vbscriptLineContinuationIndentSize"),
+    ),
+    vbscriptSelectCaseIndent: stringUnion(settingValue("aspLsp.format.vbscriptSelectCaseIndent"), [
+      "caseIndented",
+      "caseAligned",
+    ]),
+    vbscriptTagIndentMode: stringUnion(settingValue("aspLsp.format.vbscriptTagIndentMode"), [
+      "relativeToTag",
+      "ignoreTag",
+      "preserveExisting",
+    ]),
   };
 }
 

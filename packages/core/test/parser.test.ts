@@ -8586,6 +8586,23 @@ a = _
         "bbb"`);
   });
 
+  it("can use a custom VBScript line continuation indent", () => {
+    const parsed = parseAspDocument(
+      "file:///site/default.asp",
+      `<%
+a = _
+"aaa"
+%>`,
+    );
+    const edits = formatAspDocument(parsed, {
+      tabSize: 2,
+      insertSpaces: true,
+      vbscriptLineContinuationIndentSize: 6,
+    });
+    expect(edits[0].newText).toContain(`  a = _
+        "aaa"`);
+  });
+
   it("formats comments after continued VBScript lines from tokenized blocks", () => {
     const parsed = parseAspDocument(
       "file:///site/default.asp",
@@ -8897,6 +8914,43 @@ End Select
     Case Else
       Response.Write "else"
   End Select`);
+  });
+
+  it("can align VBScript Case lines with Select Case", () => {
+    const parsed = parseAspDocument(
+      "file:///site/default.asp",
+      `<%
+Select Case kind
+Case "a"
+Response.Write "a"
+End Select
+%>`,
+    );
+    const edits = formatAspDocument(parsed, {
+      tabSize: 2,
+      insertSpaces: true,
+      vbscriptSelectCaseIndent: "caseAligned",
+    });
+    expect(edits[0].newText).toContain(`  Select Case kind
+  Case "a"
+    Response.Write "a"
+  End Select`);
+  });
+
+  it("can compact ASP delimiter spacing and uppercase VBScript keywords", () => {
+    const parsed = parseAspDocument(
+      "file:///site/default.asp",
+      `<%if enabled then%>
+<%= title %>`,
+    );
+    const edits = formatAspDocument(parsed, {
+      tabSize: 2,
+      insertSpaces: true,
+      aspDelimiterSpacing: "compact",
+      vbscriptKeywordCase: "upper",
+    });
+    expect(edits[0].newText).toBe(`<%IF enabled THEN%>
+<%=title%>`);
   });
 
   it("toggles line comments by embedded Classic ASP region", () => {

@@ -102,16 +102,90 @@ export type AspLocale = "en" | "ja";
 export type AspLegacyEncoding = "auto" | "utf8" | "shift_jis" | "cp932";
 
 export type AspVbscriptBlockIndent = "alignWithDelimiter" | "indentInsideDelimiter";
+export type AspFormatLanguage = "html" | "vbscript" | "css" | "javascript" | "jscript";
+export type AspFormatIndentStyle = "space" | "tab";
+export type AspFormatEndOfLine = "lf" | "crlf" | "auto";
+export type AspFormatTagIndentMode = "relativeToTag" | "ignoreTag" | "preserveExisting";
+export type AspFormatEmbeddedLanguageFormatting = "auto" | "off";
+export type AspFormatAspDelimiterSpacing = "padded" | "compact";
+export type AspFormatAspBlockNewline = "preserve" | "alwaysMultiline" | "singleLineWhenPossible";
+export type AspFormatVbscriptKeywordCase = "preserve" | "upper" | "lower" | "title";
+export type AspFormatVbscriptSelectCaseIndent = "caseIndented" | "caseAligned";
+export type AspFormatNestedAspInCssJs = "skipRegion" | "protectAspOnly" | "formatAroundAsp";
+export type AspFormatFragmentMode = "auto" | "fragment" | "document";
+export type AspFormatHtmlWrapAttributes =
+  | "auto"
+  | "force"
+  | "force-aligned"
+  | "force-expand-multiline"
+  | "aligned-multiple"
+  | "preserve"
+  | "preserve-aligned";
+export type AspFormatCssBraceStyle = "collapse" | "expand";
+export type AspFormatJavascriptSemicolons = "ignore" | "insert" | "remove";
 
 export interface AspFormatSettings {
   indentSize?: number;
-  indentStyle?: "space" | "tab";
+  indentStyle?: AspFormatIndentStyle;
+  printWidth?: number;
+  endOfLine?: AspFormatEndOfLine;
+  insertFinalNewline?: boolean;
+  preserveNewLines?: boolean;
+  maxPreserveNewLines?: number;
+  indentEmptyLines?: boolean;
+  enabledLanguages?: AspFormatLanguage[];
+  embeddedLanguageFormatting?: AspFormatEmbeddedLanguageFormatting;
+  respectDisableRegions?: boolean;
+  htmlIndentSize?: number;
+  htmlIndentStyle?: AspFormatIndentStyle;
+  htmlWrapLineLength?: number;
+  htmlWrapAttributes?: AspFormatHtmlWrapAttributes;
+  htmlWrapAttributesIndentSize?: number;
+  htmlIndentInnerHtml?: boolean;
+  htmlUnformatted?: string;
+  htmlContentUnformatted?: string;
+  htmlExtraLiners?: string;
+  cssIndentSize?: number;
+  cssIndentStyle?: AspFormatIndentStyle;
+  cssWrapLineLength?: number;
+  cssNewlineBetweenRules?: boolean;
+  cssNewlineBetweenSelectors?: boolean;
+  cssSpaceAroundSelectorSeparator?: boolean;
+  cssBraceStyle?: AspFormatCssBraceStyle;
+  javascriptIndentSize?: number;
+  javascriptIndentStyle?: AspFormatIndentStyle;
+  jscriptIndentSize?: number;
+  jscriptIndentStyle?: AspFormatIndentStyle;
+  javascriptSemicolons?: AspFormatJavascriptSemicolons;
+  javascriptIndentSwitchCase?: boolean;
+  javascriptPlaceOpenBraceOnNewLineForFunctions?: boolean;
+  javascriptPlaceOpenBraceOnNewLineForControlBlocks?: boolean;
+  javascriptInsertSpaceAfterCommaDelimiter?: boolean;
+  javascriptInsertSpaceAfterSemicolonInForStatements?: boolean;
+  javascriptInsertSpaceBeforeAndAfterBinaryOperators?: boolean;
+  javascriptInsertSpaceAfterKeywordsInControlFlowStatements?: boolean;
+  javascriptInsertSpaceAfterFunctionKeywordForAnonymousFunctions?: boolean;
+  javascriptInsertSpaceAfterOpeningAndBeforeClosingNonemptyParenthesis?: boolean;
+  javascriptInsertSpaceAfterOpeningAndBeforeClosingNonemptyBrackets?: boolean;
+  javascriptInsertSpaceAfterOpeningAndBeforeClosingNonemptyBraces?: boolean;
+  javascriptInsertSpaceAfterOpeningAndBeforeClosingEmptyBraces?: boolean;
+  javascriptInsertSpaceBeforeFunctionParenthesis?: boolean;
   vbscriptIndentSize?: number;
-  vbscriptIndentStyle?: "space" | "tab";
+  vbscriptIndentStyle?: AspFormatIndentStyle;
+  vbscriptKeywordCase?: AspFormatVbscriptKeywordCase;
+  vbscriptLineContinuationIndentSize?: number;
+  vbscriptSelectCaseIndent?: AspFormatVbscriptSelectCaseIndent;
   uppercaseKeywords?: boolean;
   alignAssignments?: boolean;
   onSave?: boolean;
   vbscriptBlockIndent?: AspVbscriptBlockIndent;
+  vbscriptTagIndentMode?: AspFormatTagIndentMode;
+  cssTagIndentMode?: AspFormatTagIndentMode;
+  javascriptTagIndentMode?: AspFormatTagIndentMode;
+  aspDelimiterSpacing?: AspFormatAspDelimiterSpacing;
+  aspBlockNewline?: AspFormatAspBlockNewline;
+  nestedAspInCssJs?: AspFormatNestedAspInCssJs;
+  fragmentMode?: AspFormatFragmentMode;
   ignoreVbscriptTagIndent?: boolean;
   ignoreCssTagIndent?: boolean;
   ignoreJavaScriptTagIndent?: boolean;

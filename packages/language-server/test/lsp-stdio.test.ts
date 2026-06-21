@@ -15657,6 +15657,159 @@ End If
       }
     });
 
+    it("can limit formatting to selected ASP embedded languages", async () => {
+      const source = `<html><body><style>.x{color:red}</style><script>function greet(){console.log("x");}</script><%
+If enabled Then
+Response.Write "ok"
+End If
+%></body></html>`;
+      const server = new RpcServer();
+      try {
+        await server.start();
+        await server.request("initialize", {
+          processId: process.pid,
+          rootUri: "file:///tmp",
+          capabilities: {},
+        });
+        server.notify("workspace/didChangeConfiguration", {
+          settings: { aspLsp: { format: { indentSize: 2, enabledLanguages: ["vbscript"] } } },
+        });
+        const uri = "file:///tmp/format-enabled-languages.asp";
+        server.notify("textDocument/didOpen", {
+          textDocument: {
+            uri,
+            languageId: "classic-asp",
+            version: 1,
+            text: source,
+          },
+        });
+        await server.waitForNotification("textDocument/publishDiagnostics");
+
+        const edits = await server.request("textDocument/formatting", {
+          textDocument: { uri },
+          options: { tabSize: 2, insertSpaces: true },
+        });
+        const fullText = (edits as Array<{ newText?: string }>)[0]?.newText ?? source;
+        expect(fullText).toContain(`<html><body><style>.x{color:red}</style>`);
+        expect(fullText).toContain(`<script>function greet(){console.log("x");}</script>`);
+        expect(fullText).toContain(`  If enabled Then
+    Response.Write "ok"
+  End If`);
+
+        await server.request("shutdown", null);
+        server.notify("exit", undefined);
+      } finally {
+        server.stop();
+      }
+    });
+
+    it("respects ASP formatter disable markers", async () => {
+      const source = `<%
+' asp-format off
+If enabled Then
+Response.Write   "keep spacing"
+End If
+' asp-format on
+If enabled Then
+Response.Write "ok"
+End If
+%>`;
+      const server = new RpcServer();
+      try {
+        await server.start();
+        await server.request("initialize", {
+          processId: process.pid,
+          rootUri: "file:///tmp",
+          capabilities: {},
+        });
+        server.notify("workspace/didChangeConfiguration", {
+          settings: { aspLsp: { format: { indentSize: 2 } } },
+        });
+        const uri = "file:///tmp/format-disable-markers.asp";
+        server.notify("textDocument/didOpen", {
+          textDocument: {
+            uri,
+            languageId: "classic-asp",
+            version: 1,
+            text: source,
+          },
+        });
+        await server.waitForNotification("textDocument/publishDiagnostics");
+
+        const edits = await server.request("textDocument/formatting", {
+          textDocument: { uri },
+          options: { tabSize: 2, insertSpaces: true },
+        });
+        const fullText = (edits as Array<{ newText?: string }>)[0]?.newText ?? source;
+        expect(fullText).toContain(`' asp-format off
+If enabled Then
+Response.Write   "keep spacing"
+End If
+' asp-format on`);
+        expect(fullText).toContain(`  If enabled Then
+    Response.Write "ok"
+  End If`);
+
+        const rangeEdits = await server.request("textDocument/rangeFormatting", {
+          textDocument: { uri },
+          range: {
+            start: { line: 1, character: 0 },
+            end: { line: 4, character: 0 },
+          },
+          options: { tabSize: 2, insertSpaces: true },
+        });
+        expect(rangeEdits).toEqual([]);
+
+        await server.request("shutdown", null);
+        server.notify("exit", undefined);
+      } finally {
+        server.stop();
+      }
+    });
+
+    it("formats top-level HTML as a fragment when configured", async () => {
+      const source = `<div><span>one</span></div>
+<section><p>two</p></section>`;
+      const server = new RpcServer();
+      try {
+        await server.start();
+        await server.request("initialize", {
+          processId: process.pid,
+          rootUri: "file:///tmp",
+          capabilities: {},
+        });
+        server.notify("workspace/didChangeConfiguration", {
+          settings: { aspLsp: { format: { indentSize: 2, fragmentMode: "fragment" } } },
+        });
+        const uri = "file:///tmp/format-fragment-mode.asp";
+        server.notify("textDocument/didOpen", {
+          textDocument: {
+            uri,
+            languageId: "classic-asp",
+            version: 1,
+            text: source,
+          },
+        });
+        await server.waitForNotification("textDocument/publishDiagnostics");
+
+        const edits = await server.request("textDocument/formatting", {
+          textDocument: { uri },
+          options: { tabSize: 2, insertSpaces: true },
+        });
+        const fullText = (edits as Array<{ newText?: string }>)[0]?.newText ?? source;
+        expect(fullText).toBe(`<div><span>one</span></div>
+<section>
+  <p>two</p>
+</section>`);
+        expect(fullText).not.toContain("asp-lsp-fragment");
+
+        await server.request("shutdown", null);
+        server.notify("exit", undefined);
+      } finally {
+        server.stop();
+      }
+    });
+
     it("formats HTML tags without rewriting ASP, CSS, or JavaScript bodies as HTML", async () => {
       const source = `<html><body><main><section><h1><%= title %></h1></section></main><style>.card{color:red}</style><script>
 function greet(){

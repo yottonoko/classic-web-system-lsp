@@ -16647,36 +16647,166 @@ function normalizeFormatSettings(
 ): AspSettings["format"] {
   const raw = settings.format;
   const record = raw && typeof raw === "object" ? (raw as Record<string, unknown>) : {};
-  const indentStyle =
-    record.indentStyle === "tab" || record.indentStyle === "space" ? record.indentStyle : undefined;
-  const vbscriptIndentStyle =
-    record.vbscriptIndentStyle === "tab" || record.vbscriptIndentStyle === "space"
-      ? record.vbscriptIndentStyle
-      : undefined;
-  const vbscriptBlockIndent =
-    record.vbscriptBlockIndent === "alignWithDelimiter" ||
-    record.vbscriptBlockIndent === "indentInsideDelimiter"
-      ? record.vbscriptBlockIndent
-      : undefined;
   return {
-    indentSize:
-      typeof record.indentSize === "number" && record.indentSize > 0
-        ? record.indentSize
-        : undefined,
-    indentStyle,
-    vbscriptIndentSize:
-      typeof record.vbscriptIndentSize === "number" && record.vbscriptIndentSize > 0
-        ? record.vbscriptIndentSize
-        : undefined,
-    vbscriptIndentStyle,
+    indentSize: optionalPositiveIntegerSetting(record.indentSize),
+    indentStyle: formatIndentStyle(record.indentStyle),
+    printWidth: optionalPositiveIntegerSetting(record.printWidth),
+    endOfLine: stringUnion(record.endOfLine, ["lf", "crlf", "auto"]),
+    insertFinalNewline: optionalBooleanSetting(record.insertFinalNewline),
+    preserveNewLines: optionalBooleanSetting(record.preserveNewLines),
+    maxPreserveNewLines: optionalNonNegativeIntegerSetting(record.maxPreserveNewLines),
+    indentEmptyLines: optionalBooleanSetting(record.indentEmptyLines),
+    enabledLanguages: formatLanguageArray(record.enabledLanguages),
+    embeddedLanguageFormatting: stringUnion(record.embeddedLanguageFormatting, ["auto", "off"]),
+    respectDisableRegions: optionalBooleanSetting(record.respectDisableRegions),
+    htmlIndentSize: optionalPositiveIntegerSetting(record.htmlIndentSize),
+    htmlIndentStyle: formatIndentStyle(record.htmlIndentStyle),
+    htmlWrapLineLength: optionalNonNegativeIntegerSetting(record.htmlWrapLineLength),
+    htmlWrapAttributes: stringUnion(record.htmlWrapAttributes, [
+      "auto",
+      "force",
+      "force-aligned",
+      "force-expand-multiline",
+      "aligned-multiple",
+      "preserve",
+      "preserve-aligned",
+    ]),
+    htmlWrapAttributesIndentSize: optionalPositiveIntegerSetting(
+      record.htmlWrapAttributesIndentSize,
+    ),
+    htmlIndentInnerHtml: optionalBooleanSetting(record.htmlIndentInnerHtml),
+    htmlUnformatted: optionalNonEmptyString(record.htmlUnformatted),
+    htmlContentUnformatted: optionalNonEmptyString(record.htmlContentUnformatted),
+    htmlExtraLiners: optionalNonEmptyString(record.htmlExtraLiners),
+    cssIndentSize: optionalPositiveIntegerSetting(record.cssIndentSize),
+    cssIndentStyle: formatIndentStyle(record.cssIndentStyle),
+    cssWrapLineLength: optionalNonNegativeIntegerSetting(record.cssWrapLineLength),
+    cssNewlineBetweenRules: optionalBooleanSetting(record.cssNewlineBetweenRules),
+    cssNewlineBetweenSelectors: optionalBooleanSetting(record.cssNewlineBetweenSelectors),
+    cssSpaceAroundSelectorSeparator: optionalBooleanSetting(record.cssSpaceAroundSelectorSeparator),
+    cssBraceStyle: stringUnion(record.cssBraceStyle, ["collapse", "expand"]),
+    javascriptIndentSize: optionalPositiveIntegerSetting(record.javascriptIndentSize),
+    javascriptIndentStyle: formatIndentStyle(record.javascriptIndentStyle),
+    jscriptIndentSize: optionalPositiveIntegerSetting(record.jscriptIndentSize),
+    jscriptIndentStyle: formatIndentStyle(record.jscriptIndentStyle),
+    javascriptSemicolons: stringUnion(record.javascriptSemicolons, ["ignore", "insert", "remove"]),
+    javascriptIndentSwitchCase: optionalBooleanSetting(record.javascriptIndentSwitchCase),
+    javascriptPlaceOpenBraceOnNewLineForFunctions: optionalBooleanSetting(
+      record.javascriptPlaceOpenBraceOnNewLineForFunctions,
+    ),
+    javascriptPlaceOpenBraceOnNewLineForControlBlocks: optionalBooleanSetting(
+      record.javascriptPlaceOpenBraceOnNewLineForControlBlocks,
+    ),
+    javascriptInsertSpaceAfterCommaDelimiter: optionalBooleanSetting(
+      record.javascriptInsertSpaceAfterCommaDelimiter,
+    ),
+    javascriptInsertSpaceAfterSemicolonInForStatements: optionalBooleanSetting(
+      record.javascriptInsertSpaceAfterSemicolonInForStatements,
+    ),
+    javascriptInsertSpaceBeforeAndAfterBinaryOperators: optionalBooleanSetting(
+      record.javascriptInsertSpaceBeforeAndAfterBinaryOperators,
+    ),
+    javascriptInsertSpaceAfterKeywordsInControlFlowStatements: optionalBooleanSetting(
+      record.javascriptInsertSpaceAfterKeywordsInControlFlowStatements,
+    ),
+    javascriptInsertSpaceAfterFunctionKeywordForAnonymousFunctions: optionalBooleanSetting(
+      record.javascriptInsertSpaceAfterFunctionKeywordForAnonymousFunctions,
+    ),
+    javascriptInsertSpaceAfterOpeningAndBeforeClosingNonemptyParenthesis: optionalBooleanSetting(
+      record.javascriptInsertSpaceAfterOpeningAndBeforeClosingNonemptyParenthesis,
+    ),
+    javascriptInsertSpaceAfterOpeningAndBeforeClosingNonemptyBrackets: optionalBooleanSetting(
+      record.javascriptInsertSpaceAfterOpeningAndBeforeClosingNonemptyBrackets,
+    ),
+    javascriptInsertSpaceAfterOpeningAndBeforeClosingNonemptyBraces: optionalBooleanSetting(
+      record.javascriptInsertSpaceAfterOpeningAndBeforeClosingNonemptyBraces,
+    ),
+    javascriptInsertSpaceAfterOpeningAndBeforeClosingEmptyBraces: optionalBooleanSetting(
+      record.javascriptInsertSpaceAfterOpeningAndBeforeClosingEmptyBraces,
+    ),
+    javascriptInsertSpaceBeforeFunctionParenthesis: optionalBooleanSetting(
+      record.javascriptInsertSpaceBeforeFunctionParenthesis,
+    ),
+    vbscriptIndentSize: optionalPositiveIntegerSetting(record.vbscriptIndentSize),
+    vbscriptIndentStyle: formatIndentStyle(record.vbscriptIndentStyle),
+    vbscriptKeywordCase: stringUnion(record.vbscriptKeywordCase, [
+      "preserve",
+      "upper",
+      "lower",
+      "title",
+    ]),
+    vbscriptLineContinuationIndentSize: optionalPositiveIntegerSetting(
+      record.vbscriptLineContinuationIndentSize,
+    ),
+    vbscriptSelectCaseIndent: stringUnion(record.vbscriptSelectCaseIndent, [
+      "caseIndented",
+      "caseAligned",
+    ]),
     uppercaseKeywords: record.uppercaseKeywords === true,
     alignAssignments: record.alignAssignments === true,
     onSave: record.onSave === true,
-    vbscriptBlockIndent,
+    vbscriptBlockIndent: stringUnion(record.vbscriptBlockIndent, [
+      "alignWithDelimiter",
+      "indentInsideDelimiter",
+    ]),
+    vbscriptTagIndentMode: formatTagIndentMode(record.vbscriptTagIndentMode),
+    cssTagIndentMode: formatTagIndentMode(record.cssTagIndentMode),
+    javascriptTagIndentMode: formatTagIndentMode(record.javascriptTagIndentMode),
+    aspDelimiterSpacing: stringUnion(record.aspDelimiterSpacing, ["padded", "compact"]),
+    aspBlockNewline: stringUnion(record.aspBlockNewline, [
+      "preserve",
+      "alwaysMultiline",
+      "singleLineWhenPossible",
+    ]),
+    nestedAspInCssJs: stringUnion(record.nestedAspInCssJs, [
+      "skipRegion",
+      "protectAspOnly",
+      "formatAroundAsp",
+    ]),
+    fragmentMode: stringUnion(record.fragmentMode, ["auto", "fragment", "document"]),
     ignoreVbscriptTagIndent: record.ignoreVbscriptTagIndent === true,
     ignoreCssTagIndent: record.ignoreCssTagIndent === true,
     ignoreJavaScriptTagIndent: record.ignoreJavaScriptTagIndent === true,
   };
+}
+
+function optionalBooleanSetting(value: unknown): boolean | undefined {
+  return typeof value === "boolean" ? value : undefined;
+}
+
+function optionalNonEmptyString(value: unknown): string | undefined {
+  return typeof value === "string" && value.trim().length > 0 ? value : undefined;
+}
+
+function formatIndentStyle(value: unknown): "space" | "tab" | undefined {
+  return stringUnion(value, ["space", "tab"]);
+}
+
+function formatTagIndentMode(
+  value: unknown,
+): "relativeToTag" | "ignoreTag" | "preserveExisting" | undefined {
+  return stringUnion(value, ["relativeToTag", "ignoreTag", "preserveExisting"]);
+}
+
+function formatLanguageArray(
+  value: unknown,
+): Array<"html" | "vbscript" | "css" | "javascript" | "jscript"> | undefined {
+  if (!Array.isArray(value)) {
+    return undefined;
+  }
+  const languages = value.filter(
+    (item): item is "html" | "vbscript" | "css" | "javascript" | "jscript" =>
+      item === "html" ||
+      item === "vbscript" ||
+      item === "css" ||
+      item === "javascript" ||
+      item === "jscript",
+  );
+  return languages.length > 0 ? [...new Set(languages)] : undefined;
+}
+
+function stringUnion<const T extends string>(value: unknown, values: readonly T[]): T | undefined {
+  return typeof value === "string" && values.includes(value as T) ? (value as T) : undefined;
 }
 
 function formatOptions(options: { tabSize: number; insertSpaces: boolean }, settings: AspSettings) {
@@ -16697,6 +16827,123 @@ function defaultFormattingOptions(settings: AspSettings): {
   };
 }
 
+function isFormatLanguageEnabled(
+  options: AspFormattingOptions,
+  language: "html" | "vbscript" | "css" | "javascript" | "jscript",
+): boolean {
+  return !options.enabledLanguages || options.enabledLanguages.includes(language);
+}
+
+function formatDisabledProtection(
+  text: string,
+  options: AspFormattingOptions,
+): { restore: (formatted: string) => string; text: string } {
+  if (options.respectDisableRegions === false) {
+    return { restore: (formatted) => formatted, text };
+  }
+  const spans = formatDisabledSpans(text);
+  if (spans.length === 0) {
+    return { restore: (formatted) => formatted, text };
+  }
+  const replacements = spans.map((span, index) => ({
+    ...span,
+    placeholder: formatDisabledPlaceholder(text, index),
+    text: text.slice(span.start, span.end),
+  }));
+  const protectedText = applyOffsetEdits(
+    text,
+    replacements.map((span) => ({
+      start: span.start,
+      end: span.end,
+      newText: span.placeholder,
+    })),
+  );
+  return {
+    text: protectedText,
+    restore: (formatted) => {
+      let restored = formatted;
+      for (const span of replacements) {
+        if (placeholderCount(restored, span.placeholder) !== 1) {
+          return text;
+        }
+        restored = restored.replace(span.placeholder, span.text);
+      }
+      return restored;
+    },
+  };
+}
+
+function formatRangeOverlapsDisabled(
+  text: string,
+  start: number,
+  end: number,
+  options: AspFormattingOptions,
+): boolean {
+  return (
+    options.respectDisableRegions !== false &&
+    formatDisabledSpans(text).some((span) => span.start < end && span.end > start)
+  );
+}
+
+function formatDisabledSpans(text: string): Array<{ end: number; start: number }> {
+  const spans: Array<{ end: number; start: number }> = [];
+  const marker = /(?:asp-lsp-format|asp-format)\s+(off|on)\b/gi;
+  let disabledStart: number | undefined;
+  let match: RegExpExecArray | null;
+  while ((match = marker.exec(text))) {
+    const markerLineStart = lineStartOffset(text, match.index);
+    const markerLineEnd = lineEndOffset(text, match.index);
+    if (match[1].toLowerCase() === "off") {
+      disabledStart ??= markerLineStart;
+    } else if (disabledStart !== undefined) {
+      spans.push({ start: disabledStart, end: markerLineEnd });
+      disabledStart = undefined;
+    }
+  }
+  if (disabledStart !== undefined) {
+    spans.push({ start: disabledStart, end: text.length });
+  }
+  return spans;
+}
+
+function formatDisabledPlaceholder(text: string, index: number): string {
+  let placeholder = `AspLspFormatDisabledMarker${index}`;
+  while (text.includes(placeholder)) {
+    placeholder = `X${placeholder}X`;
+  }
+  return placeholder;
+}
+
+function finalizeFormattedDocument(
+  formatted: string,
+  original: string,
+  options: AspFormattingOptions,
+): string {
+  let result = applyFormattedEndOfLine(formatted, original, options);
+  if (options.insertFinalNewline === true && result.length > 0 && !result.endsWith("\n")) {
+    result += "\n";
+  }
+  return result;
+}
+
+function applyFormattedEndOfLine(
+  formatted: string,
+  original: string,
+  options: AspFormattingOptions,
+): string {
+  const endOfLine = options.endOfLine ?? "auto";
+  if (endOfLine === "lf") {
+    return formatted.replace(/\r\n?/g, "\n");
+  }
+  if (endOfLine === "crlf") {
+    return formatted.replace(/\r\n?|\n/g, "\n").replace(/\n/g, "\r\n");
+  }
+  const originalEndOfLine = original.includes("\r\n") ? "\r\n" : "\n";
+  return originalEndOfLine === "\n"
+    ? formatted.replace(/\r\n?/g, "\n")
+    : formatted.replace(/\r\n?|\n/g, "\n").replace(/\n/g, "\r\n");
+}
+
 function formatAspDocumentWithDelegates(
   cached: CachedDocument,
   options: { tabSize: number; insertSpaces: boolean },
@@ -16707,16 +16954,26 @@ function formatAspDocumentWithDelegates(
     formatOptions(options, settings),
   );
   const original = cached.source.getText();
+  const protectedDocument = formatDisabledProtection(original, formattingOptions);
+  const formatInput = protectedDocument.text;
+  const inputParsed =
+    formatInput === original
+      ? cached.parsed
+      : parseSourceDocument(cached.source.uri, formatInput, settings, cached.source.languageId);
   let formatted = measureDebugStep(settings, cached.source.uri, "format.html", () =>
-    formatHtmlDocumentWithPlaceholders(cached.parsed, original, formattingOptions),
+    isFormatLanguageEnabled(formattingOptions, "html")
+      ? formatHtmlDocumentWithPlaceholders(inputParsed, formatInput, formattingOptions)
+      : formatInput,
   );
   let parsed = measureDebugStep(settings, cached.source.uri, "format.html.reparse", () =>
-    formatted === original
-      ? cached.parsed
+    formatted === formatInput
+      ? inputParsed
       : parseSourceDocument(cached.source.uri, formatted, settings, cached.source.languageId),
   );
   formatted = measureDebugStep(settings, cached.source.uri, "format.core", () =>
-    applyTextEdits(formatted, formatAspDocument(parsed, formattingOptions)),
+    isFormatLanguageEnabled(formattingOptions, "vbscript")
+      ? applyTextEdits(formatted, formatAspDocument(parsed, formattingOptions))
+      : formatted,
   );
   parsed = measureDebugStep(settings, cached.source.uri, "format.reparse", () =>
     parseSourceDocument(cached.source.uri, formatted, settings, cached.source.languageId),
@@ -16724,6 +16981,11 @@ function formatAspDocumentWithDelegates(
   formatted = applyOffsetEdits(
     formatted,
     embeddedFormattingEdits(parsed, formatted, formattingOptions, settings, cached.source.uri),
+  );
+  formatted = finalizeFormattedDocument(
+    protectedDocument.restore(formatted),
+    original,
+    formattingOptions,
   );
   const edits = measureDebugStep(settings, cached.source.uri, "format.editAssembly", () =>
     formatted === original
@@ -16753,17 +17015,33 @@ async function formatAspDocumentWithDelegatesAsync(
     formatOptions(options, settings),
   );
   const original = cached.source.getText();
+  const protectedDocument = formatDisabledProtection(original, formattingOptions);
+  const formatInput = protectedDocument.text;
+  const inputParsed =
+    formatInput === original
+      ? cached.parsed
+      : await parseSourceDocumentAsync(
+          cached.source.uri,
+          formatInput,
+          settings,
+          cached.source.languageId,
+        );
+  await hydrateVbscriptCst(inputParsed, settings);
   let formatted = measureDebugStep(settings, cached.source.uri, "format.html", () =>
-    formatHtmlDocumentWithPlaceholders(cached.parsed, original, formattingOptions),
+    isFormatLanguageEnabled(formattingOptions, "html")
+      ? formatHtmlDocumentWithPlaceholders(inputParsed, formatInput, formattingOptions)
+      : formatInput,
   );
   let parsed = await measureDebugStepAsync(settings, cached.source.uri, "format.html.reparse", () =>
-    formatted === original
-      ? Promise.resolve(cached.parsed)
+    formatted === formatInput
+      ? Promise.resolve(inputParsed)
       : parseSourceDocumentAsync(cached.source.uri, formatted, settings, cached.source.languageId),
   );
   await hydrateVbscriptCst(parsed, settings);
   formatted = measureDebugStep(settings, cached.source.uri, "format.core", () =>
-    applyTextEdits(formatted, formatAspDocument(parsed, formattingOptions)),
+    isFormatLanguageEnabled(formattingOptions, "vbscript")
+      ? applyTextEdits(formatted, formatAspDocument(parsed, formattingOptions))
+      : formatted,
   );
   parsed = await measureDebugStepAsync(settings, cached.source.uri, "format.reparse", () =>
     parseSourceDocumentAsync(cached.source.uri, formatted, settings, cached.source.languageId),
@@ -16772,6 +17050,11 @@ async function formatAspDocumentWithDelegatesAsync(
   formatted = applyOffsetEdits(
     formatted,
     embeddedFormattingEdits(parsed, formatted, formattingOptions, settings, cached.source.uri),
+  );
+  formatted = finalizeFormattedDocument(
+    protectedDocument.restore(formatted),
+    original,
+    formattingOptions,
   );
   const edits = measureDebugStep(settings, cached.source.uri, "format.editAssembly", () =>
     formatted === original
@@ -16804,8 +17087,14 @@ async function formatAspRangeWithDelegatesAsync(
   const original = cached.source.getText();
   const rangeStart = lineStartOffset(original, cached.source.offsetAt(range.start));
   const rangeEnd = lineEndOffset(original, cached.source.offsetAt(range.end));
+  if (formatRangeOverlapsDisabled(original, rangeStart, rangeEnd, formattingOptions)) {
+    finishFormattingLog(cached, settings, "range", startedAt, 0);
+    return [];
+  }
   const coreEdits = measureDebugStep(settings, cached.source.uri, "format.core", () =>
-    formatAspRange(cached.parsed, range, formattingOptions),
+    isFormatLanguageEnabled(formattingOptions, "vbscript")
+      ? formatAspRange(cached.parsed, range, formattingOptions)
+      : [],
   );
   let formatted = measureDebugStep(settings, cached.source.uri, "format.core.apply", () =>
     applyTextEdits(original, coreEdits),
@@ -16862,22 +17151,25 @@ function formatHtmlDocumentWithPlaceholders(
       newText: htmlProtectedReplacement(span, text),
     })),
   );
-  const document = TextDocument.create("__asp_lsp_format.html", "html", 0, protectedText);
-  const edits = htmlService.format(document, undefined, {
-    tabSize: options.indentSize ?? options.tabSize,
-    insertSpaces: (options.indentStyle ?? (options.insertSpaces ? "space" : "tab")) !== "tab",
-  });
+  const htmlInput = htmlFormatterInput(protectedText, options);
+  const document = TextDocument.create("__asp_lsp_format.html", "html", 0, htmlInput.text);
+  const edits = htmlService.format(document, undefined, htmlFormattingOptions(options));
   if (edits.length === 0) {
     return text;
   }
   let formatted = applyOffsetEdits(
-    protectedText,
+    htmlInput.text,
     edits.map((edit) => ({
-      start: offsetAtText(protectedText, edit.range.start),
-      end: offsetAtText(protectedText, edit.range.end),
+      start: offsetAtText(htmlInput.text, edit.range.start),
+      end: offsetAtText(htmlInput.text, edit.range.end),
       newText: edit.newText,
     })),
   );
+  const restoredHtmlInput = htmlInput.restore(formatted);
+  if (restoredHtmlInput === undefined) {
+    return text;
+  }
+  formatted = restoredHtmlInput;
   for (const span of protectedSpans) {
     if (placeholderCount(formatted, span.placeholder) !== 1) {
       return text;
@@ -16885,6 +17177,57 @@ function formatHtmlDocumentWithPlaceholders(
     formatted = formatted.replace(span.placeholder, span.text);
   }
   return formatted;
+}
+
+function htmlFormatterInput(
+  text: string,
+  options: AspFormattingOptions,
+): { restore: (formatted: string) => string | undefined; text: string } {
+  if (options.fragmentMode !== "fragment") {
+    return { text, restore: (formatted) => formatted };
+  }
+  const tag = htmlFragmentWrapperTag(text);
+  return {
+    text: `<${tag}>\n${text}\n</${tag}>`,
+    restore: (formatted) => unwrapHtmlFragmentText(formatted, tag, options),
+  };
+}
+
+function htmlFragmentWrapperTag(text: string): string {
+  let index = 0;
+  let tag = "asp-lsp-fragment";
+  while (new RegExp(`<\\s*/?\\s*${escapeRegExp(tag)}\\b`, "i").test(text)) {
+    index += 1;
+    tag = `asp-lsp-fragment-${index}`;
+  }
+  return tag;
+}
+
+function unwrapHtmlFragmentText(
+  formatted: string,
+  tag: string,
+  options: AspFormattingOptions,
+): string | undefined {
+  const lines = formatted.replace(/\r\n?/g, "\n").split("\n");
+  const escapedTag = escapeRegExp(tag);
+  const opening = new RegExp(`^\\s*<${escapedTag}(?:\\s[^>]*)?>\\s*$`, "i");
+  const closing = new RegExp(`^\\s*</${escapedTag}>\\s*$`, "i");
+  const openingIndex = lines.findIndex((line) => opening.test(line));
+  let closingIndex = -1;
+  for (let index = lines.length - 1; index >= 0; index -= 1) {
+    if (closing.test(lines[index])) {
+      closingIndex = index;
+      break;
+    }
+  }
+  if (openingIndex === -1 || closingIndex === -1 || closingIndex < openingIndex) {
+    return undefined;
+  }
+  const indent = indentUnitForLanguage(options, "html");
+  return lines
+    .slice(openingIndex + 1, closingIndex)
+    .map((line) => (line.startsWith(indent) ? line.slice(indent.length) : line))
+    .join("\n");
 }
 
 function htmlProtectedSpans(parsed: AspParsedDocument, text: string): HtmlProtectedSpan[] {
@@ -16986,13 +17329,22 @@ function embeddedFormattingEdits(
   spanEnd = text.length,
 ): OffsetEdit[] {
   const startedAt = process.hrtime.bigint();
+  if (options.embeddedLanguageFormatting === "off") {
+    finishDebugStep(settings, uri, "format.embedded", startedAt);
+    return [];
+  }
   const edits = [
-    ...measureDebugStep(settings, uri, "format.embedded.css", () =>
-      cssFormattingEdits(parsed, text, options, spanStart, spanEnd),
-    ),
-    ...measureDebugStep(settings, uri, "format.embedded.javascript", () =>
-      javaScriptFormattingEdits(parsed, text, options, spanStart, spanEnd),
-    ),
+    ...(isFormatLanguageEnabled(options, "css")
+      ? measureDebugStep(settings, uri, "format.embedded.css", () =>
+          cssFormattingEdits(parsed, text, options, spanStart, spanEnd),
+        )
+      : []),
+    ...(isFormatLanguageEnabled(options, "javascript") ||
+    isFormatLanguageEnabled(options, "jscript")
+      ? measureDebugStep(settings, uri, "format.embedded.javascript", () =>
+          javaScriptFormattingEdits(parsed, text, options, spanStart, spanEnd),
+        )
+      : []),
   ];
   finishDebugStep(settings, uri, "format.embedded", startedAt);
   return edits;
@@ -17018,11 +17370,12 @@ function cssFormattingEdits(
       (region) =>
         region.language === "css" && region.contentEnd > spanStart && region.contentStart < spanEnd,
     )
-    .filter((region) => !regionHasNestedAsp(parsed, region))
-    .flatMap((region) => formatCssRegion(text, region, options, spanStart, spanEnd));
+    .filter((region) => shouldFormatNestedAspRegion(parsed, region, options))
+    .flatMap((region) => formatCssRegion(parsed, text, region, options, spanStart, spanEnd));
 }
 
 function formatCssRegion(
+  parsed: AspParsedDocument,
   text: string,
   region: AspRegion,
   options: AspFormattingOptions,
@@ -17030,25 +17383,53 @@ function formatCssRegion(
   spanEnd: number,
 ): OffsetEdit[] {
   const content = text.slice(region.contentStart, region.contentEnd);
-  const doc = TextDocument.create("__asp_lsp_format.css", "css", 0, content);
   const localStart = Math.max(0, spanStart - region.contentStart);
   const localEnd = Math.min(content.length, spanEnd - region.contentStart);
   if (localStart >= localEnd) {
     return [];
   }
+  const nestedProtection =
+    options.nestedAspInCssJs === "protectAspOnly" && regionHasNestedAsp(parsed, region)
+      ? embeddedAspProtection(parsed, region, content)
+      : undefined;
+  if (nestedProtection && (localStart !== 0 || localEnd !== content.length)) {
+    return [];
+  }
+  const formatContent = nestedProtection?.text ?? content;
+  const doc = TextDocument.create("__asp_lsp_format.css", "css", 0, formatContent);
+  const formatStart = nestedProtection ? 0 : localStart;
+  const formatEnd = nestedProtection ? formatContent.length : localEnd;
   const edits = cssService.format(
     doc,
-    { start: doc.positionAt(localStart), end: doc.positionAt(localEnd) },
-    {
-      tabSize: options.indentSize ?? options.tabSize,
-      insertSpaces: (options.indentStyle ?? (options.insertSpaces ? "space" : "tab")) !== "tab",
-    },
+    { start: doc.positionAt(formatStart), end: doc.positionAt(formatEnd) },
+    cssFormattingOptions(options),
   );
   const offsetEdits = edits.map((edit) => ({
-    start: offsetAtText(content, edit.range.start),
-    end: offsetAtText(content, edit.range.end),
+    start: offsetAtText(formatContent, edit.range.start),
+    end: offsetAtText(formatContent, edit.range.end),
     newText: edit.newText,
   }));
+  const formattedContent = nestedProtection?.restore(applyOffsetEdits(formatContent, offsetEdits));
+  if (formattedContent !== undefined) {
+    if (region.kind === "style") {
+      return [
+        {
+          start: region.contentStart,
+          end: region.contentEnd,
+          newText: wrapEmbeddedElementContent(
+            text,
+            region,
+            options,
+            formattedContent,
+            "css",
+            isTagIndentIgnored(options, "css"),
+            false,
+          ),
+        },
+      ];
+    }
+    return [{ start: region.contentStart, end: region.contentEnd, newText: formattedContent }];
+  }
   if (region.kind === "style" && localStart === 0 && localEnd === content.length) {
     return [
       {
@@ -17059,7 +17440,8 @@ function formatCssRegion(
           region,
           options,
           applyOffsetEdits(content, offsetEdits),
-          options.ignoreCssTagIndent === true,
+          "css",
+          isTagIndentIgnored(options, "css"),
           false,
         ),
       },
@@ -17083,11 +17465,83 @@ function javaScriptFormattingEdits(
     .filter(
       (region) =>
         isJavaScriptLikeRegion(region) &&
+        isFormatLanguageEnabled(
+          options,
+          region.language === "jscript" ? "jscript" : "javascript",
+        ) &&
         region.contentEnd > spanStart &&
         region.contentStart < spanEnd,
     )
-    .filter((region) => !regionHasNestedAsp(parsed, region))
-    .flatMap((region) => formatJavaScriptRegion(text, region, options, spanStart, spanEnd));
+    .filter((region) => shouldFormatNestedAspRegion(parsed, region, options))
+    .flatMap((region) => formatJavaScriptRegion(parsed, text, region, options, spanStart, spanEnd));
+}
+
+function shouldFormatNestedAspRegion(
+  parsed: AspParsedDocument,
+  region: AspRegion,
+  options: AspFormattingOptions,
+): boolean {
+  if (!regionHasNestedAsp(parsed, region)) {
+    return true;
+  }
+  return (
+    options.nestedAspInCssJs === "protectAspOnly" || options.nestedAspInCssJs === "formatAroundAsp"
+  );
+}
+
+function embeddedAspProtection(
+  parsed: AspParsedDocument,
+  owner: AspRegion,
+  content: string,
+): { restore: (formatted: string) => string; text: string } | undefined {
+  const spans = parsed.regions
+    .filter(
+      (region) =>
+        region !== owner &&
+        (region.kind === "asp-block" ||
+          region.kind === "asp-expression" ||
+          region.kind === "asp-directive") &&
+        region.start >= owner.contentStart &&
+        region.end <= owner.contentEnd,
+    )
+    .map((region, index) => ({
+      start: region.start - owner.contentStart,
+      end: region.end - owner.contentStart,
+      placeholder: embeddedAspPlaceholder(content, index),
+      text: content.slice(region.start - owner.contentStart, region.end - owner.contentStart),
+    }));
+  if (spans.length === 0) {
+    return undefined;
+  }
+  const protectedText = applyOffsetEdits(
+    content,
+    spans.map((span) => ({
+      start: span.start,
+      end: span.end,
+      newText: span.placeholder,
+    })),
+  );
+  return {
+    text: protectedText,
+    restore: (formatted) => {
+      let restored = formatted;
+      for (const span of spans) {
+        if (placeholderCount(restored, span.placeholder) !== 1) {
+          return content;
+        }
+        restored = restored.replace(span.placeholder, span.text);
+      }
+      return restored;
+    },
+  };
+}
+
+function embeddedAspPlaceholder(content: string, index: number): string {
+  let placeholder = `__ASP_LSP_EMBEDDED_ASP_${index}__`;
+  while (content.includes(placeholder)) {
+    placeholder = `_${placeholder}_`;
+  }
+  return placeholder;
 }
 
 function regionHasNestedAsp(parsed: AspParsedDocument, owner: AspRegion): boolean {
@@ -17103,6 +17557,7 @@ function regionHasNestedAsp(parsed: AspParsedDocument, owner: AspRegion): boolea
 }
 
 function formatJavaScriptRegion(
+  parsed: AspParsedDocument,
   text: string,
   region: AspRegion,
   options: AspFormattingOptions,
@@ -17115,12 +17570,26 @@ function formatJavaScriptRegion(
   if (localStart >= localEnd) {
     return [];
   }
+  const nestedProtection =
+    options.nestedAspInCssJs === "protectAspOnly" && regionHasNestedAsp(parsed, region)
+      ? embeddedAspProtection(parsed, region, content)
+      : undefined;
+  if (nestedProtection && (localStart !== 0 || localEnd !== content.length)) {
+    return [];
+  }
+  const formatContent = nestedProtection?.text ?? content;
   const formatOptions = tsFormatOptions(
     options,
-    embeddedBodyBaseIndentSize(text, region, options, options.ignoreJavaScriptTagIndent === true),
+    region.language === "jscript" ? "jscript" : "javascript",
+    embeddedBodyBaseIndentSize(
+      text,
+      region,
+      options,
+      isTagIndentIgnored(options, region.language === "jscript" ? "jscript" : "javascript"),
+    ),
   );
   if (localStart === 0 && localEnd === content.length) {
-    const trimmedContent = content.trim();
+    const trimmedContent = formatContent.trim();
     if (trimmedContent.length === 0) {
       return [];
     }
@@ -17136,6 +17605,7 @@ function formatJavaScriptRegion(
         newText: change.newText,
       })),
     );
+    const restored = nestedProtection?.restore(formatted) ?? formatted;
     return [
       {
         start: region.contentStart,
@@ -17144,8 +17614,9 @@ function formatJavaScriptRegion(
           text,
           region,
           options,
-          formatted,
-          options.ignoreJavaScriptTagIndent === true,
+          restored,
+          region.language === "jscript" ? "jscript" : "javascript",
+          isTagIndentIgnored(options, region.language === "jscript" ? "jscript" : "javascript"),
           true,
         ),
       },
@@ -17188,19 +17659,144 @@ function getJavaScriptFormattingService(text: string): ts.LanguageService {
   );
 }
 
+function htmlFormattingOptions(options: AspFormattingOptions) {
+  return {
+    tabSize: formatIndentSizeForLanguage(options, "html"),
+    insertSpaces: formatInsertSpacesForLanguage(options, "html"),
+    indentEmptyLines: options.indentEmptyLines,
+    wrapLineLength: options.htmlWrapLineLength ?? options.printWidth,
+    unformatted: options.htmlUnformatted,
+    contentUnformatted: options.htmlContentUnformatted,
+    indentInnerHtml: options.htmlIndentInnerHtml,
+    wrapAttributes: options.htmlWrapAttributes,
+    wrapAttributesIndentSize: options.htmlWrapAttributesIndentSize,
+    preserveNewLines: options.preserveNewLines,
+    maxPreserveNewLines: options.maxPreserveNewLines,
+    endWithNewline: options.insertFinalNewline,
+    extraLiners: options.htmlExtraLiners,
+  };
+}
+
+function cssFormattingOptions(options: AspFormattingOptions) {
+  return {
+    tabSize: formatIndentSizeForLanguage(options, "css"),
+    insertSpaces: formatInsertSpacesForLanguage(options, "css"),
+    insertFinalNewline: options.insertFinalNewline,
+    newlineBetweenRules: options.cssNewlineBetweenRules,
+    newlineBetweenSelectors: options.cssNewlineBetweenSelectors,
+    spaceAroundSelectorSeparator: options.cssSpaceAroundSelectorSeparator,
+    braceStyle: options.cssBraceStyle,
+    preserveNewLines: options.preserveNewLines,
+    maxPreserveNewLines: options.maxPreserveNewLines,
+    wrapLineLength: options.cssWrapLineLength ?? options.printWidth,
+    indentEmptyLines: options.indentEmptyLines,
+  };
+}
+
 function tsFormatOptions(
   options: AspFormattingOptions,
+  language: "javascript" | "jscript",
   baseIndentSize?: number,
 ): ts.FormatCodeSettings {
-  const indentStyle = options.indentStyle ?? (options.insertSpaces ? "space" : "tab");
   return {
     baseIndentSize,
-    indentSize: options.indentSize ?? options.tabSize,
+    indentSize: formatIndentSizeForLanguage(options, language),
     tabSize: options.tabSize,
-    convertTabsToSpaces: indentStyle !== "tab",
+    convertTabsToSpaces: formatInsertSpacesForLanguage(options, language),
     newLineCharacter: "\n",
-    insertSpaceBeforeAndAfterBinaryOperators: true,
+    semicolons: tsSemicolonPreference(options.javascriptSemicolons),
+    indentSwitchCase: options.javascriptIndentSwitchCase,
+    placeOpenBraceOnNewLineForFunctions: options.javascriptPlaceOpenBraceOnNewLineForFunctions,
+    placeOpenBraceOnNewLineForControlBlocks:
+      options.javascriptPlaceOpenBraceOnNewLineForControlBlocks,
+    insertSpaceAfterCommaDelimiter: options.javascriptInsertSpaceAfterCommaDelimiter,
+    insertSpaceAfterSemicolonInForStatements:
+      options.javascriptInsertSpaceAfterSemicolonInForStatements,
+    insertSpaceBeforeAndAfterBinaryOperators:
+      options.javascriptInsertSpaceBeforeAndAfterBinaryOperators ?? true,
+    insertSpaceAfterKeywordsInControlFlowStatements:
+      options.javascriptInsertSpaceAfterKeywordsInControlFlowStatements,
+    insertSpaceAfterFunctionKeywordForAnonymousFunctions:
+      options.javascriptInsertSpaceAfterFunctionKeywordForAnonymousFunctions,
+    insertSpaceAfterOpeningAndBeforeClosingNonemptyParenthesis:
+      options.javascriptInsertSpaceAfterOpeningAndBeforeClosingNonemptyParenthesis,
+    insertSpaceAfterOpeningAndBeforeClosingNonemptyBrackets:
+      options.javascriptInsertSpaceAfterOpeningAndBeforeClosingNonemptyBrackets,
+    insertSpaceAfterOpeningAndBeforeClosingNonemptyBraces:
+      options.javascriptInsertSpaceAfterOpeningAndBeforeClosingNonemptyBraces,
+    insertSpaceAfterOpeningAndBeforeClosingEmptyBraces:
+      options.javascriptInsertSpaceAfterOpeningAndBeforeClosingEmptyBraces,
+    insertSpaceBeforeFunctionParenthesis: options.javascriptInsertSpaceBeforeFunctionParenthesis,
   };
+}
+
+function tsSemicolonPreference(
+  value: AspFormattingOptions["javascriptSemicolons"],
+): ts.SemicolonPreference | undefined {
+  switch (value) {
+    case "ignore":
+      return ts.SemicolonPreference.Ignore;
+    case "insert":
+      return ts.SemicolonPreference.Insert;
+    case "remove":
+      return ts.SemicolonPreference.Remove;
+    default:
+      return undefined;
+  }
+}
+
+function formatIndentSizeForLanguage(
+  options: AspFormattingOptions,
+  language: "html" | "css" | "javascript" | "jscript",
+): number {
+  switch (language) {
+    case "html":
+      return options.htmlIndentSize ?? options.indentSize ?? options.tabSize;
+    case "css":
+      return options.cssIndentSize ?? options.indentSize ?? options.tabSize;
+    case "javascript":
+      return options.javascriptIndentSize ?? options.indentSize ?? options.tabSize;
+    case "jscript":
+      return (
+        options.jscriptIndentSize ??
+        options.javascriptIndentSize ??
+        options.indentSize ??
+        options.tabSize
+      );
+  }
+}
+
+function formatIndentStyleForLanguage(
+  options: AspFormattingOptions,
+  language: "html" | "css" | "javascript" | "jscript",
+): "space" | "tab" {
+  const fallback = options.indentStyle ?? (options.insertSpaces ? "space" : "tab");
+  switch (language) {
+    case "html":
+      return options.htmlIndentStyle ?? fallback;
+    case "css":
+      return options.cssIndentStyle ?? fallback;
+    case "javascript":
+      return options.javascriptIndentStyle ?? fallback;
+    case "jscript":
+      return options.jscriptIndentStyle ?? options.javascriptIndentStyle ?? fallback;
+  }
+}
+
+function formatInsertSpacesForLanguage(
+  options: AspFormattingOptions,
+  language: "html" | "css" | "javascript" | "jscript",
+): boolean {
+  return formatIndentStyleForLanguage(options, language) !== "tab";
+}
+
+function indentUnitForLanguage(
+  options: AspFormattingOptions,
+  language: "html" | "css" | "javascript" | "jscript",
+): string {
+  return formatInsertSpacesForLanguage(options, language)
+    ? " ".repeat(formatIndentSizeForLanguage(options, language))
+    : "\t";
 }
 
 function isJavaScriptLikeRegion(region: AspRegion): boolean {
@@ -17212,6 +17808,7 @@ function wrapEmbeddedElementContent(
   region: AspRegion,
   options: AspFormattingOptions,
   content: string,
+  language: "css" | "javascript" | "jscript",
   ignoreTagIndent: boolean,
   contentAlreadyIndented: boolean,
 ): string {
@@ -17219,12 +17816,11 @@ function wrapEmbeddedElementContent(
   if (trimmed.length === 0) {
     return "";
   }
-  const tagLevel = ignoreTagIndent ? 0 : leadingIndentLevel(text, region.start, options);
-  const tagIndent = indentUnit(options).repeat(tagLevel);
+  const tagIndent = embeddedTagIndent(text, region, options, language, ignoreTagIndent);
   const body =
     contentAlreadyIndented || ignoreTagIndent
       ? trimmed
-      : indentLines(trimmed, indentUnit(options).repeat(tagLevel + 1));
+      : indentLines(trimmed, `${tagIndent}${indentUnitForLanguage(options, language)}`);
   return `\n${body}\n${tagIndent}`;
 }
 
@@ -17244,7 +17840,51 @@ function embeddedBodyBaseIndentSize(
   if (ignoreTagIndent) {
     return 0;
   }
-  return leadingIndentWidth(text, region.start, options) + (options.indentSize ?? options.tabSize);
+  const language = region.language === "jscript" ? "jscript" : "javascript";
+  return (
+    leadingIndentWidth(text, region.start, options) + formatIndentSizeForLanguage(options, language)
+  );
+}
+
+function isTagIndentIgnored(
+  options: AspFormattingOptions,
+  language: "css" | "javascript" | "jscript",
+): boolean {
+  const mode = tagIndentMode(options, language);
+  return mode === "ignoreTag";
+}
+
+function tagIndentMode(
+  options: AspFormattingOptions,
+  language: "css" | "javascript" | "jscript",
+): NonNullable<AspFormattingOptions["cssTagIndentMode"]> {
+  if (language === "css") {
+    return options.cssTagIndentMode ?? (options.ignoreCssTagIndent ? "ignoreTag" : "relativeToTag");
+  }
+  return (
+    options.javascriptTagIndentMode ??
+    (options.ignoreJavaScriptTagIndent ? "ignoreTag" : "relativeToTag")
+  );
+}
+
+function embeddedTagIndent(
+  text: string,
+  region: AspRegion,
+  options: AspFormattingOptions,
+  language: "css" | "javascript" | "jscript",
+  ignoreTagIndent: boolean,
+): string {
+  if (ignoreTagIndent) {
+    return "";
+  }
+  if (tagIndentMode(options, language) === "preserveExisting") {
+    const lineStart = lineStartOffset(text, region.start);
+    return text.slice(lineStart, region.start).match(/^[\t ]*/)?.[0] ?? "";
+  }
+  const htmlIndentSize = formatIndentSizeForLanguage(options, "html");
+  return indentUnitForLanguage(options, "html").repeat(
+    Math.floor(leadingIndentWidth(text, region.start, options) / htmlIndentSize),
+  );
 }
 
 function indentLines(text: string, indent: string): string {
@@ -17254,21 +17894,10 @@ function indentLines(text: string, indent: string): string {
     .join("\n");
 }
 
-function leadingIndentLevel(text: string, offset: number, options: AspFormattingOptions): number {
-  return Math.floor(
-    leadingIndentWidth(text, offset, options) / (options.indentSize ?? options.tabSize),
-  );
-}
-
 function leadingIndentWidth(text: string, offset: number, options: AspFormattingOptions): number {
   const lineStart = lineStartOffset(text, offset);
   const indent = text.slice(lineStart, offset).match(/^[\t ]*/)?.[0] ?? "";
   return [...indent].reduce((width, char) => width + (char === "\t" ? options.tabSize : 1), 0);
-}
-
-function indentUnit(options: AspFormattingOptions): string {
-  const style = options.indentStyle ?? (options.insertSpaces ? "space" : "tab");
-  return style === "tab" ? "\t" : " ".repeat(options.indentSize ?? options.tabSize);
 }
 
 function applyTextEdits(text: string, edits: TextEdit[]): string {
@@ -25196,7 +25825,10 @@ async function jsOnTypeFormattingAsync(
       context.fileName,
       context.offset,
       character,
-      tsFormatOptions(formatOptions(formattingOptions, cachedSettings(cached.source.uri))),
+      tsFormatOptions(
+        formatOptions(formattingOptions, cachedSettings(cached.source.uri)),
+        context.virtual.languageId === "jscript" ? "jscript" : "javascript",
+      ),
     )
     .map((change) => textChangeToSourceTextEdit(context.virtual, change))
     .filter((edit): edit is TextEdit => Boolean(edit));

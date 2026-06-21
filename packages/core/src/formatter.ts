@@ -90,21 +90,35 @@ function formatRegion(
       parsed.text.slice(region.contentStart, region.contentEnd).trim(),
       options,
     );
-    return `<%= ${expression} %>`;
+    return aspExpressionText(expression, options);
   }
   if (region.kind === "asp-directive") {
     const directive = oneLine(parsed.text.slice(region.contentStart, region.contentEnd));
     const normalized = directive.startsWith("@") ? directive.slice(1).trim() : directive;
-    return `<%@ ${normalized} %>`;
+    return aspDirectiveText(normalized, options);
   }
   if (region.kind === "asp-block") {
     const content = parsed.text.slice(region.contentStart, region.contentEnd);
-    if (!content.includes("\n") && !content.includes("\r")) {
-      return `<% ${formatVbscriptLine(content.trim(), options)} %>`;
+    const hasLineBreak = content.includes("\n") || content.includes("\r");
+    if (!hasLineBreak && options.aspBlockNewline === "alwaysMultiline") {
+      const baseIndent = vbscriptTagIndent(parsed.text, region, options);
+      const contentIndent = baseIndent + vbscriptBlockIndent(options);
+      return `<%\n${formatVbscriptBlock(content, options, contentIndent)}\n${baseIndent}%>`;
+    }
+    if (!hasLineBreak) {
+      return aspBlockText(formatVbscriptLine(content.trim(), options), options);
     }
     const baseIndent = vbscriptTagIndent(parsed.text, region, options);
     const contentIndent = baseIndent + vbscriptBlockIndent(options);
-    return `<%\n${formatVbscriptBlock(content, options, contentIndent)}\n${baseIndent}%>`;
+    const formattedBlock = formatVbscriptBlock(content, options, contentIndent);
+    if (
+      options.aspBlockNewline === "singleLineWhenPossible" &&
+      !formattedBlock.includes("\n") &&
+      !formattedBlock.includes("\r")
+    ) {
+      return aspBlockText(formattedBlock.trim(), options);
+    }
+    return `<%\n${formattedBlock}\n${baseIndent}%>`;
   }
   const before = parsed.text.slice(region.start, region.contentStart);
   const after = parsed.text.slice(region.contentEnd, region.end);
@@ -153,14 +167,20 @@ function formatVbscriptBlock(
     } else if (!continuesPreviousLine && isCaseLine(code)) {
       const selectIndent = selectIndentStack.at(-1);
       if (selectIndent !== undefined) {
-        indentLevel = previousSignificantLine ? selectIndent + 1 : Math.max(0, indentLevel);
+        indentLevel =
+          options.vbscriptSelectCaseIndent === "caseAligned"
+            ? selectIndent
+            : previousSignificantLine
+              ? selectIndent + 1
+              : Math.max(0, indentLevel);
       }
     } else if (!continuesPreviousLine && dedentsBeforeLine(code)) {
       indentLevel = Math.max(0, indentLevel - 1);
     }
-    const lineIndentLevel = indentLevel + (continuesPreviousLine ? 1 : 0);
     const formattedLine = formatVbscriptTokens(tokens, options);
-    formatted.push(`${baseIndent}${unit.repeat(lineIndentLevel)}${formattedLine}`);
+    formatted.push(
+      `${baseIndent}${unit.repeat(indentLevel)}${continuesPreviousLine ? vbscriptLineContinuationIndent(options) : ""}${formattedLine}`,
+    );
     if (/^Select\b/i.test(code)) {
       selectIndentStack.push(indentLevel);
       indentLevel += 1;
@@ -233,9 +253,19 @@ function tokenizeVbscriptLines(lines: string[]): VbToken[][] {
 }
 
 function formatToken(token: VbToken, options: AspFormattingOptions): string {
-  return token.kind === "keyword" && options.uppercaseKeywords
-    ? token.text.toUpperCase()
-    : token.text;
+  if (token.kind !== "keyword") {
+    return token.text;
+  }
+  switch (vbscriptKeywordCase(options)) {
+    case "upper":
+      return token.text.toUpperCase();
+    case "lower":
+      return token.text.toLowerCase();
+    case "title":
+      return `${token.text.slice(0, 1).toUpperCase()}${token.text.slice(1).toLowerCase()}`;
+    case "preserve":
+      return token.text;
+  }
 }
 
 function needsSpaceBetween(left: VbToken, right: VbToken): boolean {
@@ -297,6 +327,24 @@ function oneLine(text: string): string {
   return text.replace(/\s+/g, " ").trim();
 }
 
+function aspExpressionText(expression: string, options: AspFormattingOptions): string {
+  return options.aspDelimiterSpacing === "compact" ? `<%=${expression}%>` : `<%= ${expression} %>`;
+}
+
+function aspDirectiveText(directive: string, options: AspFormattingOptions): string {
+  return options.aspDelimiterSpacing === "compact" ? `<%@${directive}%>` : `<%@ ${directive} %>`;
+}
+
+function aspBlockText(code: string, options: AspFormattingOptions): string {
+  return options.aspDelimiterSpacing === "compact" ? `<%${code}%>` : `<% ${code} %>`;
+}
+
+function vbscriptKeywordCase(
+  options: AspFormattingOptions,
+): NonNullable<AspFormattingOptions["vbscriptKeywordCase"]> {
+  return options.vbscriptKeywordCase ?? (options.uppercaseKeywords ? "upper" : "preserve");
+}
+
 function vbscriptIndentUnit(options: AspFormattingOptions): string {
   const style =
     options.vbscriptIndentStyle ?? options.indentStyle ?? (options.insertSpaces ? "space" : "tab");
@@ -304,6 +352,13 @@ function vbscriptIndentUnit(options: AspFormattingOptions): string {
     return "\t";
   }
   return " ".repeat(options.vbscriptIndentSize ?? options.indentSize ?? options.tabSize);
+}
+
+function vbscriptLineContinuationIndent(options: AspFormattingOptions): string {
+  return typeof options.vbscriptLineContinuationIndentSize === "number" &&
+    options.vbscriptLineContinuationIndentSize > 0
+    ? " ".repeat(options.vbscriptLineContinuationIndentSize)
+    : vbscriptIndentUnit(options);
 }
 
 function indentUnit(options: AspFormattingOptions): string {
@@ -351,10 +406,12 @@ function alignAssignments(lines: string[]): string[] {
 }
 
 function vbscriptTagIndent(text: string, region: AspRegion, options: AspFormattingOptions): string {
-  if (options.ignoreVbscriptTagIndent === true) {
+  const mode =
+    options.vbscriptTagIndentMode ?? (options.ignoreVbscriptTagIndent ? "ignoreTag" : undefined);
+  if (mode === "ignoreTag") {
     return "";
   }
-  if (hasSeparateVbscriptIndent(options)) {
+  if (mode === "preserveExisting" || hasSeparateVbscriptIndent(options)) {
     return leadingIndentText(text, region.start);
   }
   return indentUnit(options).repeat(leadingIndentLevel(text, region.start, options));

@@ -337,6 +337,482 @@
           ],
           "description": "%configuration.format.indentStyle.description%"
         },
+        "aspLsp.format.printWidth": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "default": null,
+          "minimum": 0,
+          "tags": [
+            "advanced"
+          ],
+          "description": "%configuration.format.printWidth.description%"
+        },
+        "aspLsp.format.endOfLine": {
+          "type": "string",
+          "enum": [
+            "lf",
+            "crlf",
+            "auto"
+          ],
+          "default": "auto",
+          "tags": [
+            "advanced"
+          ],
+          "description": "%configuration.format.endOfLine.description%"
+        },
+        "aspLsp.format.insertFinalNewline": {
+          "type": "boolean",
+          "default": false,
+          "tags": [
+            "advanced"
+          ],
+          "description": "%configuration.format.insertFinalNewline.description%"
+        },
+        "aspLsp.format.preserveNewLines": {
+          "type": "boolean",
+          "default": true,
+          "tags": [
+            "advanced"
+          ],
+          "description": "%configuration.format.preserveNewLines.description%"
+        },
+        "aspLsp.format.maxPreserveNewLines": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "default": null,
+          "minimum": 0,
+          "tags": [
+            "advanced"
+          ],
+          "description": "%configuration.format.maxPreserveNewLines.description%"
+        },
+        "aspLsp.format.indentEmptyLines": {
+          "type": "boolean",
+          "default": false,
+          "tags": [
+            "advanced"
+          ],
+          "description": "%configuration.format.indentEmptyLines.description%"
+        },
+        "aspLsp.format.enabledLanguages": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "enum": [
+              "html",
+              "vbscript",
+              "css",
+              "javascript",
+              "jscript"
+            ]
+          },
+          "default": [
+            "html",
+            "vbscript",
+            "css",
+            "javascript",
+            "jscript"
+          ],
+          "uniqueItems": true,
+          "tags": [
+            "advanced"
+          ],
+          "description": "%configuration.format.enabledLanguages.description%"
+        },
+        "aspLsp.format.embeddedLanguageFormatting": {
+          "type": "string",
+          "enum": [
+            "auto",
+            "off"
+          ],
+          "default": "auto",
+          "tags": [
+            "advanced"
+          ],
+          "description": "%configuration.format.embeddedLanguageFormatting.description%"
+        },
+        "aspLsp.format.respectDisableRegions": {
+          "type": "boolean",
+          "default": true,
+          "tags": [
+            "advanced"
+          ],
+          "description": "%configuration.format.respectDisableRegions.description%"
+        },
+        "aspLsp.format.htmlIndentSize": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "default": null,
+          "minimum": 1,
+          "tags": [
+            "advanced"
+          ],
+          "description": "%configuration.format.htmlIndentSize.description%"
+        },
+        "aspLsp.format.htmlIndentStyle": {
+          "type": "string",
+          "enum": [
+            "space",
+            "tab"
+          ],
+          "tags": [
+            "advanced"
+          ],
+          "description": "%configuration.format.htmlIndentStyle.description%"
+        },
+        "aspLsp.format.htmlWrapLineLength": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "default": null,
+          "minimum": 0,
+          "tags": [
+            "advanced"
+          ],
+          "description": "%configuration.format.htmlWrapLineLength.description%"
+        },
+        "aspLsp.format.htmlWrapAttributes": {
+          "type": "string",
+          "enum": [
+            "auto",
+            "force",
+            "force-aligned",
+            "force-expand-multiline",
+            "aligned-multiple",
+            "preserve",
+            "preserve-aligned"
+          ],
+          "default": "auto",
+          "tags": [
+            "advanced"
+          ],
+          "description": "%configuration.format.htmlWrapAttributes.description%"
+        },
+        "aspLsp.format.htmlWrapAttributesIndentSize": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "default": null,
+          "minimum": 1,
+          "tags": [
+            "advanced"
+          ],
+          "description": "%configuration.format.htmlWrapAttributesIndentSize.description%"
+        },
+        "aspLsp.format.htmlIndentInnerHtml": {
+          "type": "boolean",
+          "default": false,
+          "tags": [
+            "advanced"
+          ],
+          "description": "%configuration.format.htmlIndentInnerHtml.description%"
+        },
+        "aspLsp.format.htmlUnformatted": {
+          "type": "string",
+          "default": "",
+          "tags": [
+            "advanced"
+          ],
+          "description": "%configuration.format.htmlUnformatted.description%"
+        },
+        "aspLsp.format.htmlContentUnformatted": {
+          "type": "string",
+          "default": "",
+          "tags": [
+            "advanced"
+          ],
+          "description": "%configuration.format.htmlContentUnformatted.description%"
+        },
+        "aspLsp.format.htmlExtraLiners": {
+          "type": "string",
+          "default": "",
+          "tags": [
+            "advanced"
+          ],
+          "description": "%configuration.format.htmlExtraLiners.description%"
+        },
+        "aspLsp.format.cssIndentSize": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "default": null,
+          "minimum": 1,
+          "tags": [
+            "advanced"
+          ],
+          "description": "%configuration.format.cssIndentSize.description%"
+        },
+        "aspLsp.format.cssIndentStyle": {
+          "type": "string",
+          "enum": [
+            "space",
+            "tab"
+          ],
+          "tags": [
+            "advanced"
+          ],
+          "description": "%configuration.format.cssIndentStyle.description%"
+        },
+        "aspLsp.format.cssWrapLineLength": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "default": null,
+          "minimum": 0,
+          "tags": [
+            "advanced"
+          ],
+          "description": "%configuration.format.cssWrapLineLength.description%"
+        },
+        "aspLsp.format.cssNewlineBetweenRules": {
+          "type": "boolean",
+          "default": true,
+          "tags": [
+            "advanced"
+          ],
+          "description": "%configuration.format.cssNewlineBetweenRules.description%"
+        },
+        "aspLsp.format.cssNewlineBetweenSelectors": {
+          "type": "boolean",
+          "default": true,
+          "tags": [
+            "advanced"
+          ],
+          "description": "%configuration.format.cssNewlineBetweenSelectors.description%"
+        },
+        "aspLsp.format.cssSpaceAroundSelectorSeparator": {
+          "type": "boolean",
+          "default": false,
+          "tags": [
+            "advanced"
+          ],
+          "description": "%configuration.format.cssSpaceAroundSelectorSeparator.description%"
+        },
+        "aspLsp.format.cssBraceStyle": {
+          "type": "string",
+          "enum": [
+            "collapse",
+            "expand"
+          ],
+          "default": "collapse",
+          "tags": [
+            "advanced"
+          ],
+          "description": "%configuration.format.cssBraceStyle.description%"
+        },
+        "aspLsp.format.javascriptIndentSize": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "default": null,
+          "minimum": 1,
+          "tags": [
+            "advanced"
+          ],
+          "description": "%configuration.format.javascriptIndentSize.description%"
+        },
+        "aspLsp.format.javascriptIndentStyle": {
+          "type": "string",
+          "enum": [
+            "space",
+            "tab"
+          ],
+          "tags": [
+            "advanced"
+          ],
+          "description": "%configuration.format.javascriptIndentStyle.description%"
+        },
+        "aspLsp.format.jscriptIndentSize": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "default": null,
+          "minimum": 1,
+          "tags": [
+            "advanced"
+          ],
+          "description": "%configuration.format.jscriptIndentSize.description%"
+        },
+        "aspLsp.format.jscriptIndentStyle": {
+          "type": "string",
+          "enum": [
+            "space",
+            "tab"
+          ],
+          "tags": [
+            "advanced"
+          ],
+          "description": "%configuration.format.jscriptIndentStyle.description%"
+        },
+        "aspLsp.format.javascriptSemicolons": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "enum": [
+            "ignore",
+            "insert",
+            "remove",
+            null
+          ],
+          "default": null,
+          "tags": [
+            "advanced"
+          ],
+          "description": "%configuration.format.javascriptSemicolons.description%"
+        },
+        "aspLsp.format.javascriptIndentSwitchCase": {
+          "type": [
+            "boolean",
+            "null"
+          ],
+          "default": null,
+          "tags": [
+            "advanced"
+          ],
+          "description": "%configuration.format.javascriptIndentSwitchCase.description%"
+        },
+        "aspLsp.format.javascriptPlaceOpenBraceOnNewLineForFunctions": {
+          "type": [
+            "boolean",
+            "null"
+          ],
+          "default": null,
+          "tags": [
+            "advanced"
+          ],
+          "description": "%configuration.format.javascriptPlaceOpenBraceOnNewLineForFunctions.description%"
+        },
+        "aspLsp.format.javascriptPlaceOpenBraceOnNewLineForControlBlocks": {
+          "type": [
+            "boolean",
+            "null"
+          ],
+          "default": null,
+          "tags": [
+            "advanced"
+          ],
+          "description": "%configuration.format.javascriptPlaceOpenBraceOnNewLineForControlBlocks.description%"
+        },
+        "aspLsp.format.javascriptInsertSpaceAfterCommaDelimiter": {
+          "type": [
+            "boolean",
+            "null"
+          ],
+          "default": null,
+          "tags": [
+            "advanced"
+          ],
+          "description": "%configuration.format.javascriptInsertSpaceAfterCommaDelimiter.description%"
+        },
+        "aspLsp.format.javascriptInsertSpaceAfterSemicolonInForStatements": {
+          "type": [
+            "boolean",
+            "null"
+          ],
+          "default": null,
+          "tags": [
+            "advanced"
+          ],
+          "description": "%configuration.format.javascriptInsertSpaceAfterSemicolonInForStatements.description%"
+        },
+        "aspLsp.format.javascriptInsertSpaceBeforeAndAfterBinaryOperators": {
+          "type": "boolean",
+          "default": true,
+          "tags": [
+            "advanced"
+          ],
+          "description": "%configuration.format.javascriptInsertSpaceBeforeAndAfterBinaryOperators.description%"
+        },
+        "aspLsp.format.javascriptInsertSpaceAfterKeywordsInControlFlowStatements": {
+          "type": [
+            "boolean",
+            "null"
+          ],
+          "default": null,
+          "tags": [
+            "advanced"
+          ],
+          "description": "%configuration.format.javascriptInsertSpaceAfterKeywordsInControlFlowStatements.description%"
+        },
+        "aspLsp.format.javascriptInsertSpaceAfterFunctionKeywordForAnonymousFunctions": {
+          "type": [
+            "boolean",
+            "null"
+          ],
+          "default": null,
+          "tags": [
+            "advanced"
+          ],
+          "description": "%configuration.format.javascriptInsertSpaceAfterFunctionKeywordForAnonymousFunctions.description%"
+        },
+        "aspLsp.format.javascriptInsertSpaceAfterOpeningAndBeforeClosingNonemptyParenthesis": {
+          "type": [
+            "boolean",
+            "null"
+          ],
+          "default": null,
+          "tags": [
+            "advanced"
+          ],
+          "description": "%configuration.format.javascriptInsertSpaceAfterOpeningAndBeforeClosingNonemptyParenthesis.description%"
+        },
+        "aspLsp.format.javascriptInsertSpaceAfterOpeningAndBeforeClosingNonemptyBrackets": {
+          "type": [
+            "boolean",
+            "null"
+          ],
+          "default": null,
+          "tags": [
+            "advanced"
+          ],
+          "description": "%configuration.format.javascriptInsertSpaceAfterOpeningAndBeforeClosingNonemptyBrackets.description%"
+        },
+        "aspLsp.format.javascriptInsertSpaceAfterOpeningAndBeforeClosingNonemptyBraces": {
+          "type": [
+            "boolean",
+            "null"
+          ],
+          "default": null,
+          "tags": [
+            "advanced"
+          ],
+          "description": "%configuration.format.javascriptInsertSpaceAfterOpeningAndBeforeClosingNonemptyBraces.description%"
+        },
+        "aspLsp.format.javascriptInsertSpaceAfterOpeningAndBeforeClosingEmptyBraces": {
+          "type": [
+            "boolean",
+            "null"
+          ],
+          "default": null,
+          "tags": [
+            "advanced"
+          ],
+          "description": "%configuration.format.javascriptInsertSpaceAfterOpeningAndBeforeClosingEmptyBraces.description%"
+        },
+        "aspLsp.format.javascriptInsertSpaceBeforeFunctionParenthesis": {
+          "type": [
+            "boolean",
+            "null"
+          ],
+          "default": null,
+          "tags": [
+            "advanced"
+          ],
+          "description": "%configuration.format.javascriptInsertSpaceBeforeFunctionParenthesis.description%"
+        },
         "aspLsp.format.vbscriptIndentSize": {
           "type": [
             "number",
@@ -360,6 +836,48 @@
           ],
           "description": "%configuration.format.vbscriptIndentStyle.description%"
         },
+        "aspLsp.format.vbscriptKeywordCase": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "enum": [
+            "preserve",
+            "upper",
+            "lower",
+            "title",
+            null
+          ],
+          "default": null,
+          "tags": [
+            "advanced"
+          ],
+          "description": "%configuration.format.vbscriptKeywordCase.description%"
+        },
+        "aspLsp.format.vbscriptLineContinuationIndentSize": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "default": null,
+          "minimum": 1,
+          "tags": [
+            "advanced"
+          ],
+          "description": "%configuration.format.vbscriptLineContinuationIndentSize.description%"
+        },
+        "aspLsp.format.vbscriptSelectCaseIndent": {
+          "type": "string",
+          "enum": [
+            "caseIndented",
+            "caseAligned"
+          ],
+          "default": "caseIndented",
+          "tags": [
+            "advanced"
+          ],
+          "description": "%configuration.format.vbscriptSelectCaseIndent.description%"
+        },
         "aspLsp.format.uppercaseKeywords": {
           "type": "boolean",
           "default": false,
@@ -381,6 +899,108 @@
             "advanced"
           ],
           "description": "%configuration.format.vbscriptBlockIndent.description%"
+        },
+        "aspLsp.format.vbscriptTagIndentMode": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "enum": [
+            "relativeToTag",
+            "ignoreTag",
+            "preserveExisting",
+            null
+          ],
+          "default": null,
+          "tags": [
+            "advanced"
+          ],
+          "description": "%configuration.format.vbscriptTagIndentMode.description%"
+        },
+        "aspLsp.format.cssTagIndentMode": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "enum": [
+            "relativeToTag",
+            "ignoreTag",
+            "preserveExisting",
+            null
+          ],
+          "default": null,
+          "tags": [
+            "advanced"
+          ],
+          "description": "%configuration.format.cssTagIndentMode.description%"
+        },
+        "aspLsp.format.javascriptTagIndentMode": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "enum": [
+            "relativeToTag",
+            "ignoreTag",
+            "preserveExisting",
+            null
+          ],
+          "default": null,
+          "tags": [
+            "advanced"
+          ],
+          "description": "%configuration.format.javascriptTagIndentMode.description%"
+        },
+        "aspLsp.format.aspDelimiterSpacing": {
+          "type": "string",
+          "enum": [
+            "padded",
+            "compact"
+          ],
+          "default": "padded",
+          "tags": [
+            "advanced"
+          ],
+          "description": "%configuration.format.aspDelimiterSpacing.description%"
+        },
+        "aspLsp.format.aspBlockNewline": {
+          "type": "string",
+          "enum": [
+            "preserve",
+            "alwaysMultiline",
+            "singleLineWhenPossible"
+          ],
+          "default": "preserve",
+          "tags": [
+            "advanced"
+          ],
+          "description": "%configuration.format.aspBlockNewline.description%"
+        },
+        "aspLsp.format.nestedAspInCssJs": {
+          "type": "string",
+          "enum": [
+            "skipRegion",
+            "protectAspOnly",
+            "formatAroundAsp"
+          ],
+          "default": "skipRegion",
+          "tags": [
+            "advanced"
+          ],
+          "description": "%configuration.format.nestedAspInCssJs.description%"
+        },
+        "aspLsp.format.fragmentMode": {
+          "type": "string",
+          "enum": [
+            "auto",
+            "fragment",
+            "document"
+          ],
+          "default": "auto",
+          "tags": [
+            "advanced"
+          ],
+          "description": "%configuration.format.fragmentMode.description%"
         },
         "aspLsp.format.ignoreVbscriptTagIndent": {
           "type": "boolean",
