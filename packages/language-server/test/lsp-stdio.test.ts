@@ -4108,13 +4108,13 @@ Response.Write finalName
           textDocument: { uri },
         });
 
-        await delay(200);
-        const diagnostics = server
+        const diagnostics = await waitForDiagnosticsCleared(server, uri);
+        expect(diagnostics.params).toMatchObject({ uri, diagnostics: [] });
+        const staleDiagnostics = server
           .takePendingNotifications("textDocument/publishDiagnostics")
-          .map((item) => item.params as { diagnostics?: unknown[]; uri?: string });
-        expect(
-          diagnostics.some((item) => item.uri === uri && (item.diagnostics?.length ?? 0) > 0),
-        ).toBe(false);
+          .map((item) => item.params as { diagnostics?: unknown[]; uri?: string })
+          .filter((item) => item.uri === uri && (item.diagnostics?.length ?? 0) > 0);
+        expect(staleDiagnostics).toHaveLength(0);
 
         await server.request("shutdown", null);
         server.notify("exit", undefined);
@@ -19503,6 +19503,17 @@ async function waitForDiagnosticsPublished(
     }
   }
   throw new Error(`Timed out waiting for diagnostics published for ${uri}.`);
+}
+
+async function waitForDiagnosticsCleared(server: RpcServer, uri: string): Promise<JsonRpcMessage> {
+  for (let attempt = 0; attempt < 10; attempt += 1) {
+    const diagnostics = await server.waitForNotification("textDocument/publishDiagnostics");
+    const params = diagnostics.params as { diagnostics?: unknown[]; uri?: string };
+    if (params.uri === uri && (params.diagnostics?.length ?? 0) === 0) {
+      return diagnostics;
+    }
+  }
+  throw new Error(`Timed out waiting for diagnostics cleared for ${uri}.`);
 }
 
 function diagnosticMessages(message: JsonRpcMessage): string[] {
