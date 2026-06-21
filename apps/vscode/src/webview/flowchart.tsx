@@ -474,7 +474,8 @@ function App(): React.ReactElement {
               aria-label={text("searchNodes")}
               className="h-7 min-w-0 flex-1 rounded border border-[#334255] bg-[#0c1117] px-2 text-xs text-[#d9e0ea] outline-none placeholder:text-[#6f7e91] focus:border-[#7dd3fc]"
               placeholder={text("searchPlaceholder")}
-              type="search"
+              role="searchbox"
+              type="text"
               value={searchQuery}
               onValueChange={(value) => {
                 setSearchQuery(value);

@@ -136,6 +136,33 @@ export function imeSafeCommittedText(
   return compositionEndText;
 }
 
+function fallbackPreservesCompositionRemainder(
+  snapshot: ImeCompositionSnapshot,
+  committedText: string,
+  fallbackValue: string,
+): boolean {
+  const prefix = snapshot.value.slice(0, snapshot.selectionStart);
+  const suffix = snapshot.value.slice(snapshot.selectionEnd);
+  if (!fallbackValue.startsWith(prefix) || !fallbackValue.endsWith(suffix)) {
+    return false;
+  }
+  const middleEnd = fallbackValue.length - suffix.length;
+  const middle = fallbackValue.slice(prefix.length, middleEnd);
+  const selectedText = snapshotHasSelection(snapshot)
+    ? snapshot.value.slice(snapshot.selectionStart, snapshot.selectionEnd)
+    : committedText;
+  const afterCommit = middle.startsWith(committedText)
+    ? middle.slice(committedText.length)
+    : undefined;
+  const beforeCommit = middle.endsWith(committedText)
+    ? middle.slice(0, middle.length - committedText.length)
+    : undefined;
+  return [afterCommit, beforeCommit].some(
+    (remainder) =>
+      remainder !== undefined && remainder.length > 0 && selectedText.includes(remainder),
+  );
+}
+
 export function imeSafeCompositionEndValue(
   snapshot: ImeCompositionSnapshot | undefined,
   committedText: string,
@@ -144,9 +171,25 @@ export function imeSafeCompositionEndValue(
   if (!snapshot || committedText.length === 0) {
     return fallbackValue;
   }
-  return `${snapshot.value.slice(0, snapshot.selectionStart)}${committedText}${snapshot.value.slice(
+  const nextValue = `${snapshot.value.slice(0, snapshot.selectionStart)}${committedText}${snapshot.value.slice(
     snapshot.selectionEnd,
   )}`;
+  return fallbackValue === nextValue ||
+    fallbackPreservesCompositionRemainder(snapshot, committedText, fallbackValue)
+    ? nextValue
+    : fallbackValue;
+}
+
+export function imeSafeShouldWriteExternalValue(
+  currentValue: string,
+  nextValue: string,
+  lastEmittedValue: string | undefined,
+  isComposing: boolean,
+): boolean {
+  if (isComposing || currentValue === nextValue) {
+    return false;
+  }
+  return !(lastEmittedValue !== undefined && currentValue === lastEmittedValue);
 }
 
 function useImeSafeTextControl<T extends TextControlElement>(
@@ -165,14 +208,31 @@ function useImeSafeTextControl<T extends TextControlElement>(
   const isComposingRef = useRef(false);
   const compositionSnapshotRef = useRef<ImeCompositionSnapshot | undefined>(undefined);
   const latestCompositionTextRef = useRef<string | undefined>(undefined);
+  const lastEmittedValueRef = useRef<string | undefined>(undefined);
   const previousSelectionSnapshotRef = useRef<ImeCompositionSnapshot | undefined>(undefined);
+  const emitValueChange = (nextValue: string): void => {
+    lastEmittedValueRef.current = nextValue;
+    onValueChange(nextValue);
+  };
 
   useEffect(() => {
     const element = elementRef.current;
-    if (!element || isComposingRef.current || element.value === value) {
+    if (!element) {
       return;
     }
-    element.value = value;
+    if (lastEmittedValueRef.current === value) {
+      lastEmittedValueRef.current = undefined;
+    }
+    if (
+      imeSafeShouldWriteExternalValue(
+        element.value,
+        value,
+        lastEmittedValueRef.current,
+        isComposingRef.current,
+      )
+    ) {
+      element.value = value;
+    }
   }, [value]);
 
   return {
@@ -186,7 +246,7 @@ function useImeSafeTextControl<T extends TextControlElement>(
     onChange(event) {
       if (!isComposingRef.current && !nativeEventIsComposing(event)) {
         previousSelectionSnapshotRef.current = undefined;
-        onValueChange(event.currentTarget.value);
+        emitValueChange(event.currentTarget.value);
       }
     },
     onCompositionEnd(event) {
@@ -202,7 +262,7 @@ function useImeSafeTextControl<T extends TextControlElement>(
       if (event.currentTarget.value !== nextValue) {
         event.currentTarget.value = nextValue;
       }
-      onValueChange(nextValue);
+      emitValueChange(nextValue);
     },
     onCompositionStart(event) {
       isComposingRef.current = true;

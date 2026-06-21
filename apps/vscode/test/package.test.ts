@@ -11,6 +11,7 @@ import {
   imeSafeCompositionEndValue,
   imeSafeCompositionStartSnapshot,
   imeSafeKeyboardEventIsComposing,
+  imeSafeShouldWriteExternalValue,
 } from "../src/webview/ime-safe-input";
 import { getServerModulePath } from "../src/server-path";
 
@@ -209,6 +210,10 @@ describe("VS Code extension package", () => {
     expect(readFlowchartWebviewSource()).toContain("ImeSafeInput");
     expect(readGraphWebviewSource()).toContain("imeSafeKeyboardEventIsComposing(event)");
     expect(readFlowchartWebviewSource()).toContain("imeSafeKeyboardEventIsComposing(event)");
+    expect(readGraphWebviewSource()).toContain('role="searchbox"');
+    expect(readFlowchartWebviewSource()).toContain('role="searchbox"');
+    expect(readGraphWebviewSource()).not.toContain('type="search"');
+    expect(readFlowchartWebviewSource()).not.toContain('type="search"');
   });
 
   it("replaces the original selection when IME commits text", () => {
@@ -253,6 +258,57 @@ describe("VS Code extension package", () => {
     ).toBe("AC");
   });
 
+  it("keeps the current DOM value when IME replacement no longer has selected-text leftovers", () => {
+    expect(
+      imeSafeCompositionEndValue(
+        { selectionEnd: 6, selectionStart: 3, value: "abcXYZdef" },
+        "q",
+        "abcqdef",
+      ),
+    ).toBe("abcqdef");
+    expect(
+      imeSafeCompositionEndValue(
+        { selectionEnd: 6, selectionStart: 3, value: "abcXYZdef" },
+        "q",
+        "abcq-live",
+      ),
+    ).toBe("abcq-live");
+  });
+
+  it("only removes selected-text leftovers from IME replacement fallbacks", () => {
+    expect(
+      imeSafeCompositionEndValue(
+        { selectionEnd: 6, selectionStart: 3, value: "abcXYZdef" },
+        "q",
+        "abcqXYZdef",
+      ),
+    ).toBe("abcqdef");
+    expect(
+      imeSafeCompositionEndValue(
+        { selectionEnd: 6, selectionStart: 3, value: "abcXYZdef" },
+        "q",
+        "abcXYZqdef",
+      ),
+    ).toBe("abcqdef");
+  });
+
+  it("still removes committed-text leftovers when IME duplicates at a collapsed cursor", () => {
+    expect(
+      imeSafeCompositionEndValue(
+        { selectionEnd: 3, selectionStart: 3, value: "abc" },
+        "XY",
+        "abcXYY",
+      ),
+    ).toBe("abcXY");
+    expect(
+      imeSafeCompositionEndValue(
+        { selectionEnd: 3, selectionStart: 3, value: "abc" },
+        "XY",
+        "abcXY-live",
+      ),
+    ).toBe("abcXY-live");
+  });
+
   it("detects IME composing keyboard events from DOM and React wrappers", () => {
     expect(
       imeSafeKeyboardEventIsComposing({ isComposing: true, keyCode: 0 } as KeyboardEvent),
@@ -268,6 +324,13 @@ describe("VS Code extension package", () => {
     expect(
       imeSafeKeyboardEventIsComposing({ isComposing: false, keyCode: 13 } as KeyboardEvent),
     ).toBe(false);
+  });
+
+  it("does not write stale external values over the last emitted IME value", () => {
+    expect(imeSafeShouldWriteExternalValue("abcqdef", "abcqdef", undefined, false)).toBe(false);
+    expect(imeSafeShouldWriteExternalValue("abcqdef", "abcXYZdef", "abcqdef", false)).toBe(false);
+    expect(imeSafeShouldWriteExternalValue("abcXYZdef", "abcqdef", undefined, true)).toBe(false);
+    expect(imeSafeShouldWriteExternalValue("abcXYZdef", "abcqdef", undefined, false)).toBe(true);
   });
 
   it("recovers the previous selected range when compositionstart sees a collapsed selection", () => {

@@ -802,10 +802,11 @@ function App(): React.ReactElement {
         <div className="grid min-w-0 grid-cols-[minmax(0,1fr)_auto] items-center gap-2">
           <ImeSafeInput
             ref={searchInputRef}
-            type="search"
             className="h-7 min-w-0 rounded-md border border-[#394456] bg-[#11151c] px-2.5 text-xs text-[#d7dde8] outline-none placeholder:text-[#717b8c] focus:border-[#89ddff]"
             aria-label={graphText("toolbar.searchNodes")}
             placeholder={graphText("toolbar.searchNodes")}
+            role="searchbox"
+            type="text"
             value={searchInput}
             onValueChange={updateSearchInput}
           />
