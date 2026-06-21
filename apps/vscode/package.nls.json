@@ -209,6 +209,5 @@
   "command.exportCurrentFileAnalysisExcel.title": "Classic ASP: Export Current File Analysis to Excel",
   "command.showCurrentFileFlowchart.title": "Classic ASP: Show Current File Flowchart",
   "command.exportCurrentFileFlowchart.title": "Classic ASP: Export Current File Flowchart as Mermaid",
-  "taskDefinition.task.description": "Classic ASP LSP workspace task name.",
   "capability.untrustedWorkspaces.description": "Classic ASP LSP runs local analysis and does not require workspace trust for language features."
 }

@@ -545,7 +545,7 @@ describe("VS Code extension package", () => {
       string
     >;
 
-    expect(manifest.activationEvents).not.toContain("onCommand:aspLsp.openSettings");
+    expect(manifest.activationEvents ?? []).not.toContain("onCommand:aspLsp.openSettings");
     expect(manifest.contributes?.commands?.map((command) => command.command)).not.toContain(
       "aspLsp.openSettings",
     );
@@ -638,7 +638,7 @@ describe("VS Code extension package", () => {
     expect(graphWebviewSource).not.toContain("unresolvedGlobalVariable");
   });
 
-  it("contributes commands, task definition and settings", () => {
+  it("contributes commands and settings", () => {
     const manifest = JSON.parse(fs.readFileSync("package.json", "utf8")) as {
       repository?: { url?: string };
       icon?: string;
@@ -665,8 +665,6 @@ describe("VS Code extension package", () => {
           "editor/title"?: Array<{ command?: string; when?: string; group?: string }>;
           "explorer/context"?: Array<{ command?: string; when?: string; group?: string }>;
         };
-        problemMatchers?: Array<{ name: string }>;
-        taskDefinitions?: Array<{ type: string }>;
         configuration?: { properties?: Record<string, unknown> };
       };
       capabilities?: { untrustedWorkspaces?: { supported?: boolean } };
@@ -806,12 +804,10 @@ describe("VS Code extension package", () => {
     expect(languageServerSource).toContain("appendAspGraphRanges(");
     expect(graphSource).not.toContain("documentsForGraph.push(...indexedGraphDocuments)");
     expect(languageServerSource).not.toContain("existing.push(...references)");
-    expect(manifest.contributes?.taskDefinitions?.some((task) => task.type === "asp-lsp")).toBe(
-      true,
-    );
-    expect(
-      manifest.contributes?.problemMatchers?.some((matcher) => matcher.name === "asp-lsp"),
-    ).toBe(true);
+    expect(manifest.contributes).not.toHaveProperty("taskDefinitions");
+    expect(manifest.contributes).not.toHaveProperty("problemMatchers");
+    expect(extensionSourceText).not.toContain("registerTaskProvider");
+    expect(extensionSourceText).not.toContain("AspLspTaskProvider");
     const removedIisSettings = [
       "aspLsp.iis.url",
       "aspLsp.iis.webRoot",
@@ -1494,17 +1490,7 @@ describe("VS Code extension package", () => {
     expect(nlsJa["command.exportWorkspaceAnalysisExcel.title"]).toBeUndefined();
     expect(nlsJa["command.showCurrentFileFlowchart.title"]).toBeTruthy();
     expect(nlsJa["command.exportCurrentFileFlowchart.title"]).toBeTruthy();
-    expect(manifest.activationEvents).toContain("onCommand:aspLsp.showCurrentFileGraph");
-    expect(manifest.activationEvents).toContain("onCommand:aspLsp.showFolderGraph");
-    expect(manifest.activationEvents).toContain("onCommand:aspLsp.showWorkspaceGraph");
-    expect(manifest.activationEvents).toContain("onCommand:aspLsp.exportCurrentFileAnalysisExcel");
-    expect(manifest.activationEvents).not.toContain("onCommand:aspLsp.exportFolderAnalysisExcel");
-    expect(manifest.activationEvents).not.toContain(
-      "onCommand:aspLsp.exportWorkspaceAnalysisExcel",
-    );
-    expect(manifest.activationEvents).toContain("onCommand:aspLsp.showCurrentFileFlowchart");
-    expect(manifest.activationEvents).toContain("onCommand:aspLsp.exportCurrentFileFlowchart");
-    expect(manifest.activationEvents).toContain("onLanguage:vbscript");
+    expect(manifest.activationEvents).toBeUndefined();
     expect(extensionSource).toContain('registerCommand("aspLsp.showCurrentFileGraph"');
     expect(extensionSource).toContain('registerCommand("aspLsp.showFolderGraph"');
     expect(extensionSource).toContain('registerCommand("aspLsp.showWorkspaceGraph"');

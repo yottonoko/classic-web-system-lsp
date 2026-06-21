@@ -1905,51 +1905,8 @@
           "group": "navigation"
         }
       ]
-    },
-    "problemMatchers": [
-      {
-        "name": "asp-lsp",
-        "owner": "asp-lsp",
-        "fileLocation": [
-          "relative",
-          "${workspaceFolder}"
-        ],
-        "pattern": {
-          "regexp": "^(.*)\\((\\d+),(\\d+)\\):\\s+(error|warning|info)\\s+([^:]+):\\s+(.*)$",
-          "file": 1,
-          "line": 2,
-          "column": 3,
-          "severity": 4,
-          "code": 5,
-          "message": 6
-        }
-      }
-    ],
-    "taskDefinitions": [
-      {
-        "type": "asp-lsp",
-        "required": [
-          "task"
-        ],
-        "properties": {
-          "task": {
-            "type": "string",
-            "description": "%taskDefinition.task.description%"
-          }
-        }
-      }
-    ]
+    }
   },
-  "activationEvents": [
-    "onCommand:aspLsp.exportCurrentFileAnalysisExcel",
-    "onCommand:aspLsp.exportCurrentFileFlowchart",
-    "onCommand:aspLsp.showCurrentFileFlowchart",
-    "onCommand:aspLsp.showCurrentFileGraph",
-    "onCommand:aspLsp.showFolderGraph",
-    "onCommand:aspLsp.showWorkspaceGraph",
-    "onLanguage:classic-asp",
-    "onLanguage:vbscript"
-  ],
   "icon": "assets/icon.png",
   "galleryBanner": {
     "color": "#6f5bd5",

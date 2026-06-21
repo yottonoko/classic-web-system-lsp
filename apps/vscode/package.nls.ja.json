@@ -209,6 +209,5 @@
   "command.exportCurrentFileAnalysisExcel.title": "Classic ASP: 現在のファイル解析を Excel 出力",
   "command.showCurrentFileFlowchart.title": "Classic ASP: 現在のファイルフローチャートを表示",
   "command.exportCurrentFileFlowchart.title": "Classic ASP: 現在のファイルフローチャートを Mermaid として出力",
-  "taskDefinition.task.description": "Classic ASP LSP workspace task name です。",
   "capability.untrustedWorkspaces.description": "Classic ASP LSP は local analysis を実行し、language features に workspace trust は不要です。"
 }
