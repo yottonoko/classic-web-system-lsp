@@ -991,10 +991,12 @@ class CompletionSessionCache {
     if (prefix.length === 0) {
       return undefined;
     }
+    // CompletionItems carry text edit ranges, so replay them only for the exact
+    // document snapshot and position that produced them.
     if (
-      !prefix.startsWith(entry.prefix) ||
-      offset < entry.offset ||
-      !completionCacheContinuation(cached, entry, offset, prefix)
+      cached.source.version !== entry.documentVersion ||
+      offset !== entry.offset ||
+      prefix !== entry.prefix
     ) {
       return undefined;
     }
@@ -1893,7 +1895,9 @@ connection.onInitialize((params: InitializeParams): InitializeResult => {
         save: { includeText: false },
       },
       completionProvider: {
-        triggerCharacters: ["<", ".", '"', "'", ":", "#", "(", " ", ";"],
+        // Space is used to convert IME candidates, and LSP completion requests cannot
+        // tell whether the editor is composing text.
+        triggerCharacters: ["<", ".", '"', "'", ":", "#", "(", ";"],
         resolveProvider: true,
       },
       signatureHelpProvider: { triggerCharacters: ["(", ",", " "] },
@@ -6717,22 +6721,6 @@ function completionSettingsIdentity(settings: AspSettings): string {
 function completionPrefixAt(text: string, offset: number): string {
   const prefix = /[A-Za-z0-9_$]*$/.exec(text.slice(0, offset));
   return prefix?.[0] ?? "";
-}
-
-function completionCacheContinuation(
-  cached: CachedDocument,
-  entry: CompletionCacheEntry,
-  offset: number,
-  prefix: string,
-): boolean {
-  if (cached.source.version === entry.documentVersion) {
-    return offset === entry.offset && prefix === entry.prefix;
-  }
-  return (
-    cached.source.version > entry.documentVersion &&
-    offset >= entry.offset &&
-    prefix.length >= entry.prefix.length
-  );
 }
 
 function completionItemMatchesPrefix(item: CompletionItem, prefix: string): boolean {

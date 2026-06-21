@@ -112,15 +112,21 @@ describe(
         });
         const initializeText = JSON.stringify(initialize);
         expect(initializeText).toContain("completionProvider");
-        expect(
-          (
-            initialize as {
-              capabilities?: {
-                completionProvider?: { triggerCharacters?: string[] };
-              };
-            }
-          ).capabilities?.completionProvider?.triggerCharacters,
-        ).toEqual(expect.arrayContaining([" ", ";"]));
+        const capabilities = (
+          initialize as {
+            capabilities?: {
+              completionProvider?: { triggerCharacters?: string[] };
+              signatureHelpProvider?: { triggerCharacters?: string[] };
+            };
+          }
+        ).capabilities;
+        expect(capabilities?.completionProvider?.triggerCharacters).toEqual(
+          expect.arrayContaining(["<", ".", ";"]),
+        );
+        expect(capabilities?.completionProvider?.triggerCharacters).not.toContain(" ");
+        expect(capabilities?.signatureHelpProvider?.triggerCharacters).toEqual(
+          expect.arrayContaining([" "]),
+        );
         expect(initializeText).toContain('"aspLsp.server.reindexWorkspace"');
         expect(initializeText).toContain('"aspLsp.server.clearCache"');
         expect(initializeText).toContain('"aspLsp.server.clearDiskCache"');
@@ -409,6 +415,59 @@ Server.HTMLEe▮
         expect(disabledLabels).not.toContain("If Then");
         expect(disabledLabels).toContain("Response");
         expect(disabledLabels).toContain("Dim");
+
+        await server.request("shutdown", null);
+        server.notify("exit", undefined);
+      } finally {
+        server.stop();
+      }
+    });
+
+    it("refreshes completion edit ranges after typed prefix changes", async () => {
+      const server = new RpcServer();
+      try {
+        await server.start();
+        await server.request("initialize", {
+          processId: process.pid,
+          rootUri: "file:///tmp",
+          capabilities: {},
+        });
+
+        const uri = "file:///tmp/html-class-completion-cache-range.asp";
+        const marked = markedDocument(
+          '<style>.lead { color: red; }</style>\n<div class="le▮"></div>',
+        );
+        server.notify("textDocument/didOpen", {
+          textDocument: {
+            uri,
+            languageId: "classic-asp",
+            version: 1,
+            text: marked.text,
+          },
+        });
+        await server.waitForNotification("textDocument/publishDiagnostics");
+
+        const firstCompletions = await server.request("textDocument/completion", {
+          textDocument: { uri },
+          position: marked.position,
+          context: { triggerKind: 1 },
+        });
+        expect(completionLabels(firstCompletions)).toContain("lead");
+
+        const insertOffset = offsetAt(marked.text, marked.position);
+        const typed = notifyTypedInsertion(server, uri, marked.text, 1, insertOffset, "a");
+        const typedPosition = positionAt(typed.text, insertOffset + "a".length);
+        const secondCompletions = await server.request("textDocument/completion", {
+          textDocument: { uri },
+          position: typedPosition,
+          context: { triggerKind: 1 },
+        });
+        const leadItem = completionItems(secondCompletions).find((item) => item.label === "lead");
+        const prefixStart = positionAt(typed.text, typed.text.lastIndexOf("lea"));
+        expect(completionEditRange(leadItem)).toEqual({
+          start: prefixStart,
+          end: typedPosition,
+        });
 
         await server.request("shutdown", null);
         server.notify("exit", undefined);
@@ -17596,7 +17655,7 @@ alph
       }
     });
 
-    it("reuses completion results for prefix continuation", async () => {
+    it("does not reuse completion results after prefix document edits", async () => {
       let source = `<%
 Response.W
 %>`;
@@ -17649,12 +17708,12 @@ Response.W
         });
         source = `${source.slice(0, insertOffset)}r${source.slice(insertOffset)}`;
         await waitForLogContaining(server, "LSP check completed");
-        const reused = await server.request("textDocument/completion", {
+        const refreshed = await server.request("textDocument/completion", {
           textDocument: { uri },
           position: positionAt(source, source.indexOf("Response.Wr") + "Response.Wr".length),
         });
-        expect(JSON.stringify(reused)).toContain("Write");
-        await waitForLogContaining(server, "completion.cache.hit");
+        expect(JSON.stringify(refreshed)).toContain("Write");
+        await waitForLogContaining(server, "completion.cache.miss");
 
         await server.request("shutdown", null);
         server.notify("exit", undefined);
