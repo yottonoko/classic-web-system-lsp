@@ -12,11 +12,6 @@ import {
   imeSafeCompositionStartSnapshot,
 } from "../src/webview/ime-safe-input";
 import { getServerModulePath } from "../src/server-path";
-import { allSettingsMetadata, valueStateForTarget } from "../src/settings-metadata";
-import {
-  isFormatterPreviewSetting,
-  settingsFormatterPreview,
-} from "../src/webview/settings-preview";
 
 interface JsonRpcMessage {
   id?: number;
@@ -56,16 +51,6 @@ function readWorkspaceFilesWebviewSource(): string {
     "src/workspace-files-webview.ts",
     "src/webview/workspace-files.tsx",
     "src/webview/workspace-files.css",
-  );
-}
-
-function readSettingsWebviewSource(): string {
-  return readWebviewSources(
-    "src/settings-webview.ts",
-    "src/settings-metadata.ts",
-    "src/webview/settings-preview.ts",
-    "src/webview/settings.tsx",
-    "src/webview/settings.css",
   );
 }
 
@@ -217,8 +202,6 @@ describe("VS Code extension package", () => {
     expect(imeInputSource).toContain("defaultValue={value}");
     expect(imeInputSource).toContain("element.value = value");
     expect(imeInputSource).not.toContain("value={value}");
-    expect(readSettingsWebviewSource()).toContain("ImeSafeTextarea");
-    expect(readSettingsWebviewSource()).toContain("ImeSafeInput");
     expect(readWorkspaceFilesWebviewSource()).toContain("ImeSafeInput");
     expect(readGraphWebviewSource()).toContain("ImeSafeInput");
     expect(readFlowchartWebviewSource()).toContain("ImeSafeInput");
@@ -547,7 +530,7 @@ describe("VS Code extension package", () => {
     );
   });
 
-  it("declares the Classic ASP settings webview and command", () => {
+  it("does not contribute the removed Classic ASP settings webview", () => {
     const manifest = JSON.parse(fs.readFileSync("package.json", "utf8")) as {
       activationEvents?: string[];
       contributes?: {
@@ -556,183 +539,34 @@ describe("VS Code extension package", () => {
     };
     const extensionSource = fs.readFileSync("src/extension.ts", "utf8");
     const buildScript = fs.readFileSync("scripts/build-webview.mjs", "utf8");
-    const webviewSource = readSettingsWebviewSource();
     const nls = JSON.parse(fs.readFileSync("package.nls.json", "utf8")) as Record<string, string>;
     const nlsJa = JSON.parse(fs.readFileSync("package.nls.ja.json", "utf8")) as Record<
       string,
       string
     >;
 
-    expect(manifest.activationEvents).toContain("onCommand:aspLsp.openSettings");
-    expect(manifest.contributes?.commands?.map((command) => command.command)).toContain(
+    expect(manifest.activationEvents).not.toContain("onCommand:aspLsp.openSettings");
+    expect(manifest.contributes?.commands?.map((command) => command.command)).not.toContain(
       "aspLsp.openSettings",
     );
     expect(
-      manifest.contributes?.commands?.find((command) => command.command === "aspLsp.openSettings")
-        ?.title,
-    ).toBe("%command.openSettings.title%");
-    expect(nls["command.openSettings.title"]).toBe("Classic ASP: Open Settings");
-    expect(nlsJa["command.openSettings.title"]).toBe("Classic ASP: 設定を開く");
-    expect(extensionSource).toContain(
-      "showAspSettingsWebview(context, extensionLocale(), webviewThemeSetting())",
-    );
-    expect(buildScript).toContain("settings.tsx");
-    expect(buildScript).toContain("settings.js");
-    expect(webviewSource).toContain("__ASP_LSP_SETTINGS__");
-    expect(webviewSource).toContain('type: "saveSettings"');
-    expect(webviewSource).toContain('type: "reloadSettings"');
-    expect(webviewSource).toContain("configuration.update(");
-    expect(webviewSource).toContain('languageId: "classic-asp"');
-    expect(webviewSource).toContain("metadata.languageOverride ? true : false");
-    expect(webviewSource).toContain("const refreshLocale = (): AspSettingsLocale");
-    expect(webviewSource).toContain("settingsPayload(context, nextLocale, theme, target)");
-    expect(webviewSource).toContain('panel.title = settingsHostText(activeLocale, "panelTitle")');
-    expect(webviewSource).toContain('editor.defaultFormatter"');
-    expect(webviewSource).toContain("aspLsp.vbscript.identifierCaseByKind");
-    expect(webviewSource).toContain("aspLsp.vbscript.comTypes");
-    expect(webviewSource).toContain("aspLsp.vbscript.globals");
-    expect(webviewSource).toContain("SettingsList");
-    expect(webviewSource).toContain("SettingsDetailPanel");
-    expect(webviewSource).toContain("SettingPreview");
-    expect(webviewSource).toContain("settingsFormatterPreview");
-    expect(webviewSource).toContain("isFormatterPreviewSetting");
-    expect(webviewSource).toContain("GraphPreview");
-    expect(webviewSource).toContain("WorkspacePreview");
-    expect(webviewSource).toContain('@import "tailwindcss";');
-  });
-
-  it("uses the real Classic ASP formatter for settings code previews", () => {
-    const defaultPreview = settingsFormatterPreview((key) => {
-      if (key === "editor.tabSize") {
-        return 2;
-      }
-      if (key === "editor.insertSpaces") {
-        return true;
-      }
-      return undefined;
-    });
-    const uppercasePreview = settingsFormatterPreview((key) => {
-      if (key === "aspLsp.format.uppercaseKeywords") {
-        return true;
-      }
-      if (key === "editor.tabSize") {
-        return 2;
-      }
-      return undefined;
-    });
-    const vbscriptIndentPreview = settingsFormatterPreview((key) => {
-      if (key === "aspLsp.format.indentSize") {
-        return 4;
-      }
-      if (key === "aspLsp.format.vbscriptIndentSize") {
-        return 2;
-      }
-      if (key === "editor.tabSize") {
-        return 2;
-      }
-      return undefined;
-    });
-
-    expect(isFormatterPreviewSetting("aspLsp.format.alignAssignments")).toBe(true);
-    expect(isFormatterPreviewSetting("aspLsp.format.vbscriptIndentSize")).toBe(true);
-    expect(isFormatterPreviewSetting("aspLsp.format.vbscriptIndentStyle")).toBe(true);
-    expect(isFormatterPreviewSetting("aspLsp.codeLens.references")).toBe(false);
-    expect(defaultPreview.sourceText).toContain('Response.Write "ok"');
-    expect(defaultPreview.formattedText).toContain("  If enabled Then");
-    expect(defaultPreview.formattedText).toContain("  first = 1");
-    expect(defaultPreview.formattedText).not.toContain("2 references");
-    expect(uppercasePreview.formattedText).toContain("  IF enabled THEN");
-    expect(vbscriptIndentPreview.options.indentSize).toBe(4);
-    expect(vbscriptIndentPreview.options.vbscriptIndentSize).toBe(2);
-    expect(vbscriptIndentPreview.formattedText).toContain("  If enabled Then");
-    expect(vbscriptIndentPreview.formattedText).not.toContain("    If enabled Then");
-  });
-
-  it("builds settings metadata for every contributed aspLsp setting and Classic ASP override", () => {
-    const manifest = JSON.parse(fs.readFileSync("package.json", "utf8")) as {
-      contributes?: { configuration?: { properties?: Record<string, unknown> } };
-    };
-    const nlsJa = JSON.parse(fs.readFileSync("package.nls.ja.json", "utf8")) as Record<
-      string,
-      string
-    >;
-    const metadata = allSettingsMetadata(manifest, nlsJa, "ja");
-    const aspSettings = metadata.filter((setting) => setting.key.startsWith("aspLsp."));
-    const contributedAspSettings = Object.keys(
-      manifest.contributes?.configuration?.properties ?? {},
-    ).filter((key) => key.startsWith("aspLsp."));
-    const classicAspOverrides = metadata.filter((setting) => setting.languageOverride);
-
-    expect(aspSettings).toHaveLength(186);
-    expect(aspSettings.map((setting) => setting.key).sort()).toEqual(contributedAspSettings.sort());
-    expect(classicAspOverrides.map((setting) => setting.key)).toEqual([
-      "editor.defaultFormatter",
-      "editor.formatOnSave",
-      "editor.formatOnType",
-      "editor.formatOnPaste",
-      "editor.tabSize",
-      "editor.insertSpaces",
-      "editor.detectIndentation",
-      "editor.wordWrap",
-      "editor.rulers",
-      "editor.inlayHints.enabled",
-      "files.encoding",
-      "files.autoGuessEncoding",
-      "files.eol",
-    ]);
-    expect(
-      metadata.find((setting) => setting.key === "aspLsp.format.uppercaseKeywords")?.description,
-    ).toBe(nlsJa["configuration.format.uppercaseKeywords.description"]);
-    expect(
-      metadata.find((setting) => setting.key === "aspLsp.vbscript.identifierCaseByKind")
-        ?.objectProperties,
-    ).toContain("variable");
-    expect(metadata.find((setting) => setting.key === "aspLsp.graph.maxNodes")?.previewKind).toBe(
-      "graph",
-    );
-  });
-
-  it("summarizes settings values by target scope", () => {
-    const aspSetting = {
-      category: "format",
-      defaultValue: false,
-      description: "",
-      key: "aspLsp.format.uppercaseKeywords",
-      languageOverride: false,
-      nullable: false,
-      previewKind: "code",
-      section: "format.uppercaseKeywords",
-      tags: [],
-      title: "",
-      type: "boolean",
-    } as const;
-    const folderState = valueStateForTarget(
-      aspSetting,
-      { defaultValue: false, globalValue: true, workspaceValue: false },
-      false,
-      "workspaceFolder",
-    );
-    const languageSetting = {
-      ...aspSetting,
-      defaultValue: 2,
-      key: "editor.tabSize",
-      languageOverride: true,
-      section: "editor.tabSize",
-      type: "number",
-    } as const;
-    const globalLanguageState = valueStateForTarget(
-      languageSetting,
-      { defaultLanguageValue: 2, defaultValue: 4, globalLanguageValue: 3 },
-      3,
-      "global",
-    );
-
-    expect(folderState.targetDefined).toBe(false);
-    expect(folderState.inheritedFrom).toBe("workspace");
-    expect(folderState.inheritedValue).toBe(false);
-    expect(globalLanguageState.defaultValue).toBe(2);
-    expect(globalLanguageState.targetDefined).toBe(true);
-    expect(globalLanguageState.targetValue).toBe(3);
+      manifest.contributes?.commands?.find((command) => command.command === "aspLsp.openSettings"),
+    ).toBeUndefined();
+    expect(nls["command.openSettings.title"]).toBeUndefined();
+    expect(nlsJa["command.openSettings.title"]).toBeUndefined();
+    expect(extensionSource).not.toContain("showAspSettingsWebview");
+    expect(extensionSource).not.toContain("aspLsp.openSettings");
+    expect(buildScript).not.toContain("settings.tsx");
+    expect(buildScript).not.toContain("settings.js");
+    for (const file of [
+      "src/settings-webview.ts",
+      "src/settings-metadata.ts",
+      "src/webview/settings-preview.ts",
+      "src/webview/settings.tsx",
+      "src/webview/settings.css",
+    ]) {
+      expect(fs.existsSync(file), file).toBe(false);
+    }
   });
 
   it("keeps graph search responsive and keyboard-accessible", () => {
@@ -874,7 +708,7 @@ describe("VS Code extension package", () => {
     expect(commands).toContain("aspLsp.clearDiskCache");
     expect(commands).toContain("aspLsp.clearProcessCache");
     expect(commands).toContain("aspLsp.openOutput");
-    expect(commands).toContain("aspLsp.openSettings");
+    expect(commands).not.toContain("aspLsp.openSettings");
     expect(commands).toContain("aspLsp.showProgressDetails");
     expect(commands).not.toContain("aspLsp.debugIisUrl");
     expect(commands).not.toContain("aspLsp.debugIisExpressUrl");
@@ -1574,7 +1408,7 @@ describe("VS Code extension package", () => {
     expect(commands).toContain("aspLsp.showFolderGraph");
     expect(commands).toContain("aspLsp.showWorkspaceGraph");
     expect(commands).toContain("aspLsp.showWorkspaceGlobFiles");
-    expect(commands).toContain("aspLsp.openSettings");
+    expect(commands).not.toContain("aspLsp.openSettings");
     expect(commands).not.toContain("aspLsp.openAnalysisExcelExport");
     expect(commands).toContain("aspLsp.exportCurrentFileAnalysisExcel");
     expect(commands).not.toContain("aspLsp.exportFolderAnalysisExcel");
@@ -1916,7 +1750,6 @@ describe("VS Code extension package", () => {
     expect(nls["command.clearProcessCache.title"]).toBe(
       "Classic ASP: Clear Process Analysis Cache",
     );
-    expect(nls["command.openSettings.title"]).toBe("Classic ASP: Open Settings");
     for (const key of keys) {
       expect(nls[key], key).toBeTruthy();
       expect(nlsJa[key], key).toBeTruthy();
@@ -2520,7 +2353,7 @@ new Intl.DateTimeFormat("en");
       const listing = execFileSync("unzip", ["-l", vsixPath], { encoding: "utf8" });
       expect(listing).toContain("extension/dist/extension.js");
       expect(listing).toContain("extension/dist/webview/include-graph.js");
-      expect(listing).toContain("extension/dist/webview/settings.js");
+      expect(listing).not.toContain("extension/dist/webview/settings.js");
       expect(listing).toContain("extension/syntaxes/classic-asp-tag-injection.tmLanguage.json");
       expect(listing).toContain("extension/syntaxes/classic-asp.tmLanguage.json");
       expect(listing).toContain("extension/package.nls.json");

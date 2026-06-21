@@ -3,6 +3,9 @@ test/**
 scripts/**
 node_modules/**
 server/language-server/node_modules/**
+dist/settings-metadata.*
+dist/settings-webview.*
+dist/webview/settings.js
 tsconfig.json
 tsconfig.tsbuildinfo
 *.vsix

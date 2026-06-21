@@ -1,6 +1,5 @@
 {
   "extension.description": "Classic ASP language support backed by asp-lsp.",
-  "command.openSettings.title": "Classic ASP: Open Settings",
   "configuration.title": "Classic ASP LSP",
   "configuration.locale.description": "Display language for asp-lsp generated diagnostics, code actions, CodeLens, and extension messages. Auto follows the VS Code or LSP client locale.",
   "configuration.defaultLanguage.description": "Default server-side script language for Classic ASP pages.",

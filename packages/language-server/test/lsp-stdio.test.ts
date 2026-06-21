@@ -15810,6 +15810,659 @@ End If
       }
     });
 
+    it("applies every contributed formatter setting through LSP formatting", async () => {
+      interface FormatSettingCase {
+        contains?: string[];
+        covers: string[];
+        equals?: string;
+        format: Record<string, unknown>;
+        notContains?: string[];
+        request?: "formatting" | "willSave";
+        source: string;
+        uri: string;
+      }
+
+      const formatSettings = Object.keys(
+        (
+          JSON.parse(fs.readFileSync("../../apps/vscode/package.json", "utf8")) as {
+            contributes?: { configuration?: { properties?: Record<string, unknown> } };
+          }
+        ).contributes?.configuration?.properties ?? {},
+      )
+        .filter((key) => key.startsWith("aspLsp.format."))
+        .map((key) => key.slice("aspLsp.format.".length))
+        .sort();
+      const cases: FormatSettingCase[] = [
+        {
+          uri: "file:///tmp/format-setting-indent-size.asp",
+          covers: ["indentSize"],
+          format: { indentSize: 3 },
+          source: `<div><section><p>x</p></section></div>`,
+          contains: ["\n   <section>", "\n      <p>x</p>"],
+        },
+        {
+          uri: "file:///tmp/format-setting-indent-style.asp",
+          covers: ["indentStyle"],
+          format: { indentSize: 2, indentStyle: "tab" },
+          source: `<div><section><p>x</p></section></div>`,
+          contains: ["\n\t<section>", "\n\t\t<p>x</p>"],
+        },
+        {
+          uri: "file:///tmp/format-setting-eol.asp",
+          covers: ["endOfLine"],
+          format: { endOfLine: "crlf", indentSize: 2 },
+          source: `<div>
+<span>x</span>
+</div>`,
+          contains: ["\r\n  <span>x</span>\r\n"],
+        },
+        {
+          uri: "file:///tmp/format-setting-final-newline.asp",
+          covers: ["insertFinalNewline"],
+          format: { insertFinalNewline: true, indentSize: 2 },
+          source: `<div><span>x</span></div>`,
+          contains: ["</div>\n"],
+        },
+        {
+          uri: "file:///tmp/format-setting-preserve-empty-lines.asp",
+          covers: ["preserveNewLines", "maxPreserveNewLines", "indentEmptyLines"],
+          format: {
+            indentEmptyLines: true,
+            indentSize: 2,
+            maxPreserveNewLines: 1,
+            preserveNewLines: true,
+          },
+          source: `<div>
+
+
+<span>x</span>
+</div>`,
+          contains: ["<div>\n  \n  <span>x</span>\n</div>"],
+          notContains: ["\n\n\n"],
+        },
+        {
+          uri: "file:///tmp/format-setting-enabled-languages.asp",
+          covers: ["enabledLanguages"],
+          format: { enabledLanguages: ["css"], indentSize: 2 },
+          source: `<div><style>.x{color:red}</style><%if enabled then%></div>`,
+          contains: ["<style>\n  .x {", "<%if enabled then%>"],
+          notContains: ["\n  <style>"],
+        },
+        {
+          uri: "file:///tmp/format-setting-embedded-off.asp",
+          covers: ["embeddedLanguageFormatting"],
+          format: { embeddedLanguageFormatting: "off", indentSize: 2 },
+          source: `<div><style>.x{color:red}</style><script>function greet(){console.log("x");}</script><%if enabled then%></div>`,
+          contains: [
+            ".x{color:red}",
+            'function greet(){console.log("x");}',
+            "<% if enabled then %>",
+          ],
+        },
+        {
+          uri: "file:///tmp/format-setting-disable-regions.asp",
+          covers: ["respectDisableRegions"],
+          format: { indentSize: 2, respectDisableRegions: false },
+          source: `<%
+' asp-format off
+If enabled Then
+Response.Write "ok"
+End If
+' asp-format on
+%>`,
+          contains: ['  If enabled Then\n    Response.Write "ok"\n  End If'],
+        },
+        {
+          uri: "file:///tmp/format-setting-html-indent-size.asp",
+          covers: ["htmlIndentSize"],
+          format: { htmlIndentSize: 3, indentSize: 2 },
+          source: `<div><section><p>x</p></section></div>`,
+          contains: ["\n   <section>", "\n      <p>x</p>"],
+        },
+        {
+          uri: "file:///tmp/format-setting-html-indent-style.asp",
+          covers: ["htmlIndentStyle"],
+          format: { htmlIndentStyle: "tab", indentSize: 2 },
+          source: `<div><section><p>x</p></section></div>`,
+          contains: ["\n\t<section>", "\n\t\t<p>x</p>"],
+        },
+        {
+          uri: "file:///tmp/format-setting-print-width.asp",
+          covers: ["printWidth"],
+          format: { indentSize: 2, printWidth: 20 },
+          source: `<div class="a" id="b" data-x="c"></div>`,
+          contains: ['<div class="a"\n  id="b" data-x="c">'],
+        },
+        {
+          uri: "file:///tmp/format-setting-html-wrap-line.asp",
+          covers: ["htmlWrapLineLength"],
+          format: { htmlWrapLineLength: 20, indentSize: 2 },
+          source: `<div class="a" id="b" data-x="c"></div>`,
+          contains: ['<div class="a"\n  id="b" data-x="c">'],
+        },
+        {
+          uri: "file:///tmp/format-setting-html-wrap-attributes.asp",
+          covers: ["htmlWrapAttributes", "htmlWrapAttributesIndentSize"],
+          format: {
+            htmlWrapAttributes: "force",
+            htmlWrapAttributesIndentSize: 6,
+            indentSize: 2,
+          },
+          source: `<div class="a" id="b" data-x="c"></div>`,
+          contains: ['<div class="a"\n      id="b"\n      data-x="c">'],
+        },
+        {
+          uri: "file:///tmp/format-setting-html-inner.asp",
+          covers: ["htmlIndentInnerHtml"],
+          format: { htmlIndentInnerHtml: true, indentSize: 2 },
+          source: `<html><body><main><p>x</p></main></body></html>`,
+          contains: ["<html>\n\n  <body>\n    <main>"],
+        },
+        {
+          uri: "file:///tmp/format-setting-html-unformatted.asp",
+          covers: ["htmlUnformatted"],
+          format: { htmlUnformatted: "custom", indentSize: 2 },
+          source: `<div><custom><span>x</span></custom></div>`,
+          contains: ["<custom><span>x</span></custom>\n</div>"],
+        },
+        {
+          uri: "file:///tmp/format-setting-html-content-unformatted.asp",
+          covers: ["htmlContentUnformatted"],
+          format: { htmlContentUnformatted: "custom", indentSize: 2 },
+          source: `<div><custom><span>x</span></custom></div>`,
+          contains: ["<div>\n  <custom><span>x</span></custom>\n</div>"],
+        },
+        {
+          uri: "file:///tmp/format-setting-html-extra-liners.asp",
+          covers: ["htmlExtraLiners"],
+          format: { htmlExtraLiners: "body", indentSize: 2 },
+          source: `<html><head></head><body></body></html>`,
+          contains: ["<head></head>\n\n<body></body>"],
+        },
+        {
+          uri: "file:///tmp/format-setting-css-indent-size.asp",
+          covers: ["cssIndentSize"],
+          format: { cssIndentSize: 3, indentSize: 2 },
+          source: `<style>.x{color:red}</style>`,
+          contains: ["<style>\n   .x {\n      color: red"],
+        },
+        {
+          uri: "file:///tmp/format-setting-css-indent-style.asp",
+          covers: ["cssIndentStyle"],
+          format: { cssIndentStyle: "tab", indentSize: 2 },
+          source: `<style>.x{color:red}</style>`,
+          contains: ["<style>\n\t.x {\n\t\tcolor: red"],
+        },
+        {
+          uri: "file:///tmp/format-setting-css-wrap-line.asp",
+          covers: ["cssWrapLineLength"],
+          format: { cssWrapLineLength: 20, indentSize: 2 },
+          source: `<style>.x{box-shadow:0 0 0 1px red, 0 0 0 2px blue}</style>`,
+          contains: ["box-shadow: 0 0 0 1px red, 0 0 0 2px blue"],
+        },
+        {
+          uri: "file:///tmp/format-setting-css-rules.asp",
+          covers: ["cssNewlineBetweenRules"],
+          format: { cssNewlineBetweenRules: false, indentSize: 2 },
+          source: `<style>.a{color:red}.b{color:blue}</style>`,
+          contains: ["color: red\n  }\n  .b {"],
+          notContains: ["color: red\n  }\n\n  .b {"],
+        },
+        {
+          uri: "file:///tmp/format-setting-css-selectors.asp",
+          covers: ["cssNewlineBetweenSelectors", "cssSpaceAroundSelectorSeparator"],
+          format: {
+            cssNewlineBetweenSelectors: false,
+            cssSpaceAroundSelectorSeparator: true,
+            indentSize: 2,
+          },
+          source: `<style>.a,.b{color:red}</style>`,
+          contains: [".a, .b {"],
+          notContains: [".a,\n  .b {"],
+        },
+        {
+          uri: "file:///tmp/format-setting-css-brace-style.asp",
+          covers: ["cssBraceStyle"],
+          format: { cssBraceStyle: "expand", indentSize: 2 },
+          source: `<style>.x{color:red}</style>`,
+          contains: [".x\n  {"],
+        },
+        {
+          uri: "file:///tmp/format-setting-js-indent-size.asp",
+          covers: ["javascriptIndentSize"],
+          format: { indentSize: 2, javascriptIndentSize: 3 },
+          source: `<script>
+if (x) {
+foo();
+}
+</script>`,
+          contains: ["\n      foo();"],
+        },
+        {
+          uri: "file:///tmp/format-setting-js-indent-style.asp",
+          covers: ["javascriptIndentStyle"],
+          format: { indentSize: 2, javascriptIndentStyle: "tab" },
+          source: `<script>
+if (x) {
+foo();
+}
+</script>`,
+          contains: ["\n\t\tfoo();"],
+        },
+        {
+          uri: "file:///tmp/format-setting-jscript-indent-size.asp",
+          covers: ["jscriptIndentSize"],
+          format: { indentSize: 2, jscriptIndentSize: 3 },
+          source: `<%@ LANGUAGE="JScript" %>
+<%
+if (x) {
+foo();
+}
+%>`,
+          contains: ["if(x) {\n      foo();\n   }"],
+        },
+        {
+          uri: "file:///tmp/format-setting-jscript-indent-style.asp",
+          covers: ["jscriptIndentStyle"],
+          format: { indentSize: 2, jscriptIndentStyle: "tab" },
+          source: `<%@ LANGUAGE="JScript" %>
+<%
+if (x) {
+foo();
+}
+%>`,
+          contains: ["\n\t\tfoo();"],
+        },
+        {
+          uri: "file:///tmp/format-setting-js-semi.asp",
+          covers: ["javascriptSemicolons"],
+          format: { indentSize: 2, javascriptSemicolons: "insert" },
+          source: `<script>const a = 1</script>`,
+          contains: ["const a = 1;"],
+        },
+        {
+          uri: "file:///tmp/format-setting-js-switch.asp",
+          covers: ["javascriptIndentSwitchCase"],
+          format: { indentSize: 2, javascriptIndentSwitchCase: true },
+          source: `<script>
+switch(x){
+case 1:
+foo();
+break;
+}
+</script>`,
+          contains: ["\n    case 1:\n      foo();"],
+        },
+        {
+          uri: "file:///tmp/format-setting-js-function-brace.asp",
+          covers: ["javascriptPlaceOpenBraceOnNewLineForFunctions"],
+          format: { indentSize: 2, javascriptPlaceOpenBraceOnNewLineForFunctions: true },
+          source: `<script>
+function f() {
+return 1;
+}
+</script>`,
+          contains: ["function f()\n  {"],
+        },
+        {
+          uri: "file:///tmp/format-setting-js-control-brace.asp",
+          covers: ["javascriptPlaceOpenBraceOnNewLineForControlBlocks"],
+          format: { indentSize: 2, javascriptPlaceOpenBraceOnNewLineForControlBlocks: true },
+          source: `<script>
+if (x) {
+foo();
+}
+</script>`,
+          contains: ["if(x)\n  {"],
+        },
+        {
+          uri: "file:///tmp/format-setting-js-comma.asp",
+          covers: ["javascriptInsertSpaceAfterCommaDelimiter"],
+          format: { indentSize: 2, javascriptInsertSpaceAfterCommaDelimiter: false },
+          source: `<script>foo(a,b);</script>`,
+          contains: ["foo(a,b);"],
+        },
+        {
+          uri: "file:///tmp/format-setting-js-for-semi.asp",
+          covers: ["javascriptInsertSpaceAfterSemicolonInForStatements"],
+          format: { indentSize: 2, javascriptInsertSpaceAfterSemicolonInForStatements: false },
+          source: `<script>for(let i=0;i<1;i++){foo();}</script>`,
+          contains: ["for(let i = 0;i < 1;i++)"],
+        },
+        {
+          uri: "file:///tmp/format-setting-js-binary.asp",
+          covers: ["javascriptInsertSpaceBeforeAndAfterBinaryOperators"],
+          format: { indentSize: 2, javascriptInsertSpaceBeforeAndAfterBinaryOperators: false },
+          source: `<script>const a = x + 1;</script>`,
+          contains: ["const a=x+1;"],
+        },
+        {
+          uri: "file:///tmp/format-setting-js-keyword.asp",
+          covers: ["javascriptInsertSpaceAfterKeywordsInControlFlowStatements"],
+          format: {
+            indentSize: 2,
+            javascriptInsertSpaceAfterKeywordsInControlFlowStatements: true,
+          },
+          source: `<script>
+if (x) {
+foo();
+}
+</script>`,
+          contains: ["if (x) {"],
+        },
+        {
+          uri: "file:///tmp/format-setting-js-anonymous-function.asp",
+          covers: ["javascriptInsertSpaceAfterFunctionKeywordForAnonymousFunctions"],
+          format: {
+            indentSize: 2,
+            javascriptInsertSpaceAfterFunctionKeywordForAnonymousFunctions: true,
+          },
+          source: `<script>const f=function(){return 1;}</script>`,
+          contains: ["const f = function ()"],
+        },
+        {
+          uri: "file:///tmp/format-setting-js-parenthesis.asp",
+          covers: ["javascriptInsertSpaceAfterOpeningAndBeforeClosingNonemptyParenthesis"],
+          format: {
+            indentSize: 2,
+            javascriptInsertSpaceAfterOpeningAndBeforeClosingNonemptyParenthesis: true,
+          },
+          source: `<script>foo(a);</script>`,
+          contains: ["foo( a );"],
+        },
+        {
+          uri: "file:///tmp/format-setting-js-brackets.asp",
+          covers: ["javascriptInsertSpaceAfterOpeningAndBeforeClosingNonemptyBrackets"],
+          format: {
+            indentSize: 2,
+            javascriptInsertSpaceAfterOpeningAndBeforeClosingNonemptyBrackets: true,
+          },
+          source: `<script>const x=[1];</script>`,
+          contains: ["const x = [ 1 ];"],
+        },
+        {
+          uri: "file:///tmp/format-setting-js-braces.asp",
+          covers: ["javascriptInsertSpaceAfterOpeningAndBeforeClosingNonemptyBraces"],
+          format: {
+            indentSize: 2,
+            javascriptInsertSpaceAfterOpeningAndBeforeClosingNonemptyBraces: true,
+          },
+          source: `<script>const x={a:1};</script>`,
+          contains: ["const x = { a: 1 };"],
+        },
+        {
+          uri: "file:///tmp/format-setting-js-empty-braces.asp",
+          covers: ["javascriptInsertSpaceAfterOpeningAndBeforeClosingEmptyBraces"],
+          format: {
+            indentSize: 2,
+            javascriptInsertSpaceAfterOpeningAndBeforeClosingEmptyBraces: true,
+          },
+          source: `<script>function f(){}</script>`,
+          contains: ["function f() { }"],
+        },
+        {
+          uri: "file:///tmp/format-setting-js-function-paren.asp",
+          covers: ["javascriptInsertSpaceBeforeFunctionParenthesis"],
+          format: { indentSize: 2, javascriptInsertSpaceBeforeFunctionParenthesis: true },
+          source: `<script>function f(){return 1;}</script>`,
+          contains: ["function f ()"],
+        },
+        {
+          uri: "file:///tmp/format-setting-vbs-indent-size.asp",
+          covers: ["vbscriptIndentSize"],
+          format: { indentSize: 4, vbscriptIndentSize: 2 },
+          source: `<%
+If enabled Then
+Response.Write "ok"
+End If
+%>`,
+          contains: ['  If enabled Then\n    Response.Write "ok"'],
+        },
+        {
+          uri: "file:///tmp/format-setting-vbs-indent-style.asp",
+          covers: ["vbscriptIndentStyle"],
+          format: { indentSize: 2, vbscriptIndentStyle: "tab" },
+          source: `<%
+If enabled Then
+Response.Write "ok"
+End If
+%>`,
+          contains: ['\tIf enabled Then\n\t\tResponse.Write "ok"'],
+        },
+        {
+          uri: "file:///tmp/format-setting-vbs-keyword-case.asp",
+          covers: ["vbscriptKeywordCase"],
+          format: { indentSize: 2, vbscriptKeywordCase: "lower" },
+          source: `<%
+IF enabled THEN
+Response.Write "ok"
+END IF
+%>`,
+          contains: ['  if enabled then\n    Response.Write "ok"\n  end if'],
+        },
+        {
+          uri: "file:///tmp/format-setting-vbs-continuation.asp",
+          covers: ["vbscriptLineContinuationIndentSize"],
+          format: { indentSize: 2, vbscriptLineContinuationIndentSize: 6 },
+          source: `<%
+a = _
+"aaa"
+%>`,
+          contains: ['  a = _\n        "aaa"'],
+        },
+        {
+          uri: "file:///tmp/format-setting-vbs-select.asp",
+          covers: ["vbscriptSelectCaseIndent"],
+          format: { indentSize: 2, vbscriptSelectCaseIndent: "caseAligned" },
+          source: `<%
+Select Case kind
+Case "a"
+Response.Write "a"
+End Select
+%>`,
+          contains: ['  Select Case kind\n  Case "a"\n    Response.Write "a"'],
+        },
+        {
+          uri: "file:///tmp/format-setting-vbs-uppercase-legacy.asp",
+          covers: ["uppercaseKeywords"],
+          format: { indentSize: 2, uppercaseKeywords: true },
+          source: `<%if enabled then%>`,
+          contains: ["<% IF enabled THEN %>"],
+        },
+        {
+          uri: "file:///tmp/format-setting-vbs-align.asp",
+          covers: ["alignAssignments"],
+          format: { alignAssignments: true, indentSize: 2 },
+          source: `<%
+first=1
+longerName=2
+%>`,
+          contains: ["  first      = 1\n  longerName = 2"],
+        },
+        {
+          uri: "file:///tmp/format-setting-vbs-block-indent.asp",
+          covers: ["vbscriptBlockIndent"],
+          format: { indentSize: 2, vbscriptBlockIndent: "alignWithDelimiter" },
+          source: `<%
+If enabled Then
+Response.Write "ok"
+End If
+%>`,
+          contains: ['<%\nIf enabled Then\n  Response.Write "ok"'],
+        },
+        {
+          uri: "file:///tmp/format-setting-vbs-tag-indent-mode.asp",
+          covers: ["vbscriptTagIndentMode"],
+          format: { indentSize: 2, vbscriptTagIndentMode: "ignoreTag" },
+          source: `<div>
+  <%
+If enabled Then
+Response.Write "ok"
+End If
+  %>
+</div>`,
+          contains: ['  <%\n  If enabled Then\n    Response.Write "ok"\n  End If\n%>'],
+        },
+        {
+          uri: "file:///tmp/format-setting-css-tag-indent-mode.asp",
+          covers: ["cssTagIndentMode"],
+          format: { cssTagIndentMode: "ignoreTag", indentSize: 2 },
+          source: `<div>
+  <style>.x{color:red}</style>
+</div>`,
+          contains: ["  <style>\n.x {\n  color: red"],
+        },
+        {
+          uri: "file:///tmp/format-setting-js-tag-indent-mode.asp",
+          covers: ["javascriptTagIndentMode"],
+          format: { indentSize: 2, javascriptTagIndentMode: "ignoreTag" },
+          source: `<div>
+  <script>
+if (x) {
+foo();
+}
+  </script>
+</div>`,
+          contains: ["  <script>\nif(x) {\n  foo();"],
+        },
+        {
+          uri: "file:///tmp/format-setting-asp-delimiter.asp",
+          covers: ["aspDelimiterSpacing"],
+          format: { aspDelimiterSpacing: "compact", indentSize: 2 },
+          source: `<%= title %>
+<%if enabled then%>`,
+          contains: ["<%=title%>\n<%if enabled then%>"],
+        },
+        {
+          uri: "file:///tmp/format-setting-asp-newline.asp",
+          covers: ["aspBlockNewline"],
+          format: { aspBlockNewline: "alwaysMultiline", indentSize: 2 },
+          source: `<% Response.Write "ok" %>`,
+          contains: ['<%\n  Response.Write "ok"\n%>'],
+        },
+        {
+          uri: "file:///tmp/format-setting-nested-asp.asp",
+          covers: ["nestedAspInCssJs"],
+          format: { indentSize: 2, nestedAspInCssJs: "protectAspOnly" },
+          source: `<style>.x{color:<%= color %>}</style>`,
+          contains: ["<style>\n  .x {\n    color: <%= color %>"],
+        },
+        {
+          uri: "file:///tmp/format-setting-fragment.asp",
+          covers: ["fragmentMode"],
+          format: { fragmentMode: "fragment", indentSize: 2 },
+          source: `<div><span>one</span></div>
+<section><p>two</p></section>`,
+          contains: ["<section>\n  <p>two</p>\n</section>"],
+          notContains: ["asp-lsp-fragment"],
+        },
+        {
+          uri: "file:///tmp/format-setting-ignore-vbs.asp",
+          covers: ["ignoreVbscriptTagIndent"],
+          format: { ignoreVbscriptTagIndent: true, indentSize: 2 },
+          source: `<div>
+  <%
+If enabled Then
+Response.Write "ok"
+End If
+  %>
+</div>`,
+          contains: ['  <%\n  If enabled Then\n    Response.Write "ok"\n  End If\n%>'],
+        },
+        {
+          uri: "file:///tmp/format-setting-ignore-css.asp",
+          covers: ["ignoreCssTagIndent"],
+          format: { ignoreCssTagIndent: true, indentSize: 2 },
+          source: `<div>
+  <style>.x{color:red}</style>
+</div>`,
+          contains: ["  <style>\n.x {\n  color: red"],
+        },
+        {
+          uri: "file:///tmp/format-setting-ignore-js.asp",
+          covers: ["ignoreJavaScriptTagIndent"],
+          format: { ignoreJavaScriptTagIndent: true, indentSize: 2 },
+          source: `<div>
+  <script>
+if (x) {
+foo();
+}
+  </script>
+</div>`,
+          contains: ["  <script>\nif(x) {\n  foo();"],
+        },
+        {
+          uri: "file:///tmp/format-setting-on-save.asp",
+          covers: ["onSave"],
+          format: { indentSize: 2, onSave: true },
+          request: "willSave",
+          source: `<%
+If enabled Then
+Response.Write "ok"
+End If
+%>`,
+          contains: ["  Response.Write"],
+        },
+      ];
+      const coveredSettings = [...new Set(cases.flatMap((testCase) => testCase.covers))].sort();
+      expect(coveredSettings).toEqual(formatSettings);
+
+      const server = new RpcServer();
+      try {
+        await server.start();
+        await server.request("initialize", {
+          processId: process.pid,
+          rootUri: "file:///tmp",
+          capabilities: {},
+        });
+
+        for (const [index, testCase] of cases.entries()) {
+          server.notify("workspace/didChangeConfiguration", {
+            settings: { aspLsp: { format: testCase.format } },
+          });
+          server.notify("textDocument/didOpen", {
+            textDocument: {
+              uri: testCase.uri,
+              languageId: "classic-asp",
+              version: index + 1,
+              text: testCase.source,
+            },
+          });
+          await server.waitForNotification("textDocument/publishDiagnostics");
+
+          const result =
+            testCase.request === "willSave"
+              ? await server.request("textDocument/willSaveWaitUntil", {
+                  textDocument: { uri: testCase.uri },
+                  reason: 1,
+                })
+              : await server.request("textDocument/formatting", {
+                  textDocument: { uri: testCase.uri },
+                  options: { tabSize: 2, insertSpaces: true },
+                });
+          const formatted =
+            testCase.request === "willSave"
+              ? JSON.stringify(result)
+              : ((result as Array<{ newText?: string }>)[0]?.newText ?? testCase.source);
+
+          if (testCase.equals !== undefined) {
+            expect(formatted, testCase.uri).toBe(testCase.equals);
+          }
+          for (const expected of testCase.contains ?? []) {
+            expect(formatted, testCase.uri).toContain(expected);
+          }
+          for (const unexpected of testCase.notContains ?? []) {
+            expect(formatted, testCase.uri).not.toContain(unexpected);
+          }
+        }
+
+        await server.request("shutdown", null);
+        server.notify("exit", undefined);
+      } finally {
+        server.stop();
+      }
+    });
+
     it("formats HTML tags without rewriting ASP, CSS, or JavaScript bodies as HTML", async () => {
       const source = `<html><body><main><section><h1><%= title %></h1></section></main><style>.card{color:red}</style><script>
 function greet(){
