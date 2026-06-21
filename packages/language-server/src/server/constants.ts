@@ -13,4 +13,4 @@ export const previewWorkspaceFilesServerCommand = "aspLsp.server.previewWorkspac
 export const cancelProgressTaskServerCommand = "aspLsp.server.cancelProgressTask";
 export const statusNotificationMethod = "aspLsp/status";
 export const graphUpdatedNotificationMethod = "aspLsp/graphUpdated";
-export const languageServerVersion = "0.7.13";
+export const languageServerVersion = "0.7.14";
