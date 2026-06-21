@@ -10,6 +10,7 @@ import {
   imeSafeCommittedText,
   imeSafeCompositionEndValue,
   imeSafeCompositionStartSnapshot,
+  imeSafeKeyboardEventIsComposing,
 } from "../src/webview/ime-safe-input";
 import { getServerModulePath } from "../src/server-path";
 
@@ -199,12 +200,15 @@ describe("VS Code extension package", () => {
     expect(imeInputSource).toContain("previousSelectionSnapshotRef.current");
     expect(imeInputSource).toContain('inputType === "insertCompositionText"');
     expect(imeInputSource).toContain("onCompositionUpdate");
+    expect(imeInputSource).toContain("imeSafeKeyboardEventIsComposing");
     expect(imeInputSource).toContain("defaultValue={value}");
     expect(imeInputSource).toContain("element.value = value");
     expect(imeInputSource).not.toContain("value={value}");
     expect(readWorkspaceFilesWebviewSource()).toContain("ImeSafeInput");
     expect(readGraphWebviewSource()).toContain("ImeSafeInput");
     expect(readFlowchartWebviewSource()).toContain("ImeSafeInput");
+    expect(readGraphWebviewSource()).toContain("imeSafeKeyboardEventIsComposing(event)");
+    expect(readFlowchartWebviewSource()).toContain("imeSafeKeyboardEventIsComposing(event)");
   });
 
   it("replaces the original selection when IME commits text", () => {
@@ -234,6 +238,36 @@ describe("VS Code extension package", () => {
         "ACCC",
       ),
     ).toBe("AC");
+  });
+
+  it("keeps complete half-width IME text when compositionend reports a partial commit", () => {
+    expect(imeSafeCommittedText("C", "AC")).toBe("AC");
+    expect(imeSafeCommittedText("A", "AC")).toBe("AC");
+    expect(imeSafeCommittedText("京", "東京")).toBe("京");
+    expect(
+      imeSafeCompositionEndValue(
+        { selectionEnd: 3, selectionStart: 0, value: "ACC" },
+        imeSafeCommittedText("C", "AC"),
+        "ACCC",
+      ),
+    ).toBe("AC");
+  });
+
+  it("detects IME composing keyboard events from DOM and React wrappers", () => {
+    expect(
+      imeSafeKeyboardEventIsComposing({ isComposing: true, keyCode: 0 } as KeyboardEvent),
+    ).toBe(true);
+    expect(
+      imeSafeKeyboardEventIsComposing({ isComposing: false, keyCode: 229 } as KeyboardEvent),
+    ).toBe(true);
+    expect(
+      imeSafeKeyboardEventIsComposing({
+        nativeEvent: { isComposing: true, keyCode: 0 },
+      } as React.KeyboardEvent<HTMLInputElement>),
+    ).toBe(true);
+    expect(
+      imeSafeKeyboardEventIsComposing({ isComposing: false, keyCode: 13 } as KeyboardEvent),
+    ).toBe(false);
   });
 
   it("recovers the previous selected range when compositionstart sees a collapsed selection", () => {

@@ -5,7 +5,7 @@ import type { AnnotationHandler, CodeAnnotation, HighlightedCode } from "codehik
 import mermaid from "mermaid";
 import tailwindStyles from "./flowchart.css?inline";
 import { VirtualList } from "./virtual-list";
-import { ImeSafeInput } from "./ime-safe-input";
+import { ImeSafeInput, imeSafeKeyboardEventIsComposing } from "./ime-safe-input";
 import { cn } from "../lib/utils";
 import {
   attachSvgNodeHandlers,
@@ -349,6 +349,9 @@ function App(): React.ReactElement {
   );
   const handleSearchKeyDown = useCallback(
     (event: React.KeyboardEvent<HTMLInputElement>) => {
+      if (imeSafeKeyboardEventIsComposing(event)) {
+        return;
+      }
       if (event.key === "Enter") {
         event.preventDefault();
         selectSearchMatch(activeSearchIndex + (event.shiftKey ? -1 : 1));
@@ -397,6 +400,9 @@ function App(): React.ReactElement {
   }, []);
   useEffect(() => {
     const listener = (event: KeyboardEvent) => {
+      if (imeSafeKeyboardEventIsComposing(event)) {
+        return;
+      }
       if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "f") {
         event.preventDefault();
         searchInputRef.current?.focus();

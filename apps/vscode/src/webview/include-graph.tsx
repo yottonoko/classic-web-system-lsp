@@ -14,7 +14,7 @@ import { INITIAL, Registry, parseRawGrammar } from "vscode-textmate";
 import { graphMessages } from "./include-graph-i18n";
 import { graphThemePalettes } from "./include-graph-theme";
 import { isFileLikeGraphNode } from "./include-graph-types";
-import { ImeSafeInput } from "./ime-safe-input";
+import { ImeSafeInput, imeSafeKeyboardEventIsComposing } from "./ime-safe-input";
 import type { GraphTextKey, GraphTextParams } from "./include-graph-i18n";
 import type {
   GraphData,
@@ -596,6 +596,9 @@ function App(): React.ReactElement {
 
   useEffect(() => {
     const handleSearchKeyDown = (event: KeyboardEvent) => {
+      if (imeSafeKeyboardEventIsComposing(event)) {
+        return;
+      }
       if (isSearchFocusShortcut(event)) {
         event.preventDefault();
         searchInputRef.current?.focus();

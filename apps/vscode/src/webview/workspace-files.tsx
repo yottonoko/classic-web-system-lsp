@@ -1,6 +1,6 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
-import { ImeSafeInput } from "./ime-safe-input";
+import { ImeSafeInput, imeSafeKeyboardEventIsComposing } from "./ime-safe-input";
 import { VirtualList } from "./virtual-list";
 import styles from "./workspace-files.css?inline";
 import { cn } from "../lib/utils";
@@ -241,11 +241,6 @@ function previewRequestFromPayload(payload: WorkspaceFilesPayload): WorkspaceFil
     respectGitIgnore: payload.respectGitIgnore,
     showUnmatched: payload.showUnmatched,
   };
-}
-
-function keyboardEventIsComposing(event: React.KeyboardEvent<HTMLInputElement>): boolean {
-  const nativeEvent = event.nativeEvent as KeyboardEvent & { isComposing?: boolean };
-  return nativeEvent.isComposing === true || nativeEvent.keyCode === 229;
 }
 
 function App(): React.ReactElement {
@@ -892,7 +887,7 @@ function GlobEditor({
                 onValueChange={(value) => onChange(item.id, value)}
                 onBlur={(event) => onCommit(item.id, event.currentTarget.value)}
                 onKeyDown={(event) => {
-                  if (event.key !== "Enter" || keyboardEventIsComposing(event)) {
+                  if (event.key !== "Enter" || imeSafeKeyboardEventIsComposing(event)) {
                     return;
                   }
                   onCommit(item.id, event.currentTarget.value);

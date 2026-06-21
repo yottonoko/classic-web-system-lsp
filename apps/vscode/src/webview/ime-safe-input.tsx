@@ -20,6 +20,14 @@ function nativeEventIsComposing(event: React.ChangeEvent<TextControlElement>): b
   return (event.nativeEvent as Event & { isComposing?: boolean }).isComposing === true;
 }
 
+export function imeSafeKeyboardEventIsComposing(
+  event: KeyboardEvent | React.KeyboardEvent<Element>,
+): boolean {
+  const nativeEvent = "nativeEvent" in event ? event.nativeEvent : event;
+  const keyboardEvent = nativeEvent as KeyboardEvent & { isComposing?: boolean };
+  return keyboardEvent.isComposing === true || keyboardEvent.keyCode === 229;
+}
+
 function inputEventCompositionText(event: React.FormEvent<TextControlElement>): string | undefined {
   const nativeEvent = event.nativeEvent as Event & {
     data?: string | null;
@@ -112,7 +120,20 @@ export function imeSafeCommittedText(
   compositionEndText: string,
   latestCompositionText: string | undefined,
 ): string {
-  return compositionEndText.length > 0 ? compositionEndText : (latestCompositionText ?? "");
+  if (compositionEndText.length === 0) {
+    return latestCompositionText ?? "";
+  }
+  if (
+    latestCompositionText &&
+    latestCompositionText.length > compositionEndText.length &&
+    /^[\x20-\x7e]+$/.test(latestCompositionText) &&
+    /^[\x20-\x7e]+$/.test(compositionEndText) &&
+    (latestCompositionText.startsWith(compositionEndText) ||
+      latestCompositionText.endsWith(compositionEndText))
+  ) {
+    return latestCompositionText;
+  }
+  return compositionEndText;
 }
 
 export function imeSafeCompositionEndValue(
