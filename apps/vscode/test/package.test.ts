@@ -814,16 +814,22 @@ describe("VS Code extension package", () => {
     const extensionSourceText = fs.readFileSync("src/extension.ts", "utf8");
     expect(extensionSourceText).not.toContain(removedAnalysisEnv);
     expect(extensionSourceText).not.toContain(`aspLsp.${removedAnalysisSetting}`);
-    expect(configuration["aspLsp.debug.logFile.enabled"]).toEqual({
-      type: "boolean",
-      default: false,
-      description: "%configuration.debug.logFile.enabled.description%",
-    });
-    expect(configuration["aspLsp.debug.logFile.path"]).toEqual({
-      type: "string",
-      default: "",
-      description: "%configuration.debug.logFile.path.description%",
-    });
+    expect(configuration["aspLsp.debug.logFile.enabled"]).toEqual(
+      expect.objectContaining({
+        type: "boolean",
+        default: false,
+        description: "%configuration.debug.logFile.enabled.description%",
+        tags: ["advanced"],
+      }),
+    );
+    expect(configuration["aspLsp.debug.logFile.path"]).toEqual(
+      expect.objectContaining({
+        type: "string",
+        default: "",
+        description: "%configuration.debug.logFile.path.description%",
+        tags: ["advanced"],
+      }),
+    );
     expect(nls["configuration.debug.logFile.enabled.description"]).toBeTruthy();
     expect(nls["configuration.debug.logFile.path.description"]).toBeTruthy();
     expect(nlsJa["configuration.debug.logFile.enabled.description"]).toBeTruthy();
@@ -833,6 +839,67 @@ describe("VS Code extension package", () => {
     expect(extensionSourceText).toContain(
       'const graphUpdatedNotificationMethod = "aspLsp/graphUpdated"',
     );
+    const advancedConfigurationSettings = [
+      "aspLsp.incremental.mode",
+      "aspLsp.incremental.analysis",
+      "aspLsp.diagnostics.debounceMs",
+      "aspLsp.debug.output",
+      "aspLsp.debug.logFile.enabled",
+      "aspLsp.debug.logFile.path",
+      "aspLsp.javascript.ignoreProjectConfig",
+      "aspLsp.windowsPathResolution",
+      "aspLsp.legacyEncoding",
+      "aspLsp.vbscript.identifierCaseByKind",
+      "aspLsp.vbscript.comTypes",
+      "aspLsp.vbscript.globals",
+      "aspLsp.vbscript.showUnresolvedSymbolsInCompletion",
+      "aspLsp.vbscript.initializedDimQuickFixStyle",
+      "aspLsp.vbscript.ifSyntaxDiagnostics",
+      "aspLsp.codeLens.referenceScope",
+      "aspLsp.codeLens.includeRelatedIncludeTreesForUnresolved",
+      "aspLsp.rename.updateIncludesOnFileRename",
+      "aspLsp.rename.workspaceSymbolRename",
+      "aspLsp.flowchart.maxTextSize",
+      "aspLsp.flowchart.maxEdges",
+      "aspLsp.flowchart.minZoom",
+      "aspLsp.flowchart.maxZoom",
+      "aspLsp.graph.showIncomingDocumentIncludes",
+      "aspLsp.graph.showIncomingFolderIncludes",
+      "aspLsp.graph.useReverseIncludeIndex",
+      "aspLsp.graph.includeRelatedIncludeTreesForUnresolved",
+      "aspLsp.graph.maxDocuments",
+      "aspLsp.graph.maxTextLength",
+      "aspLsp.graph.maxNodes",
+      "aspLsp.graph.includeTreeMaxDocuments",
+      "aspLsp.graph.includeTreeMaxTextLength",
+      "aspLsp.graph.workerSymbolExtraction",
+      "aspLsp.excel.includeRelatedIncludeTreesForUnresolved",
+      "aspLsp.excel.skipTypeInference",
+      "aspLsp.excel.maxDocuments",
+      "aspLsp.excel.maxTextLength",
+      "aspLsp.excel.includeTreeMaxDocuments",
+      "aspLsp.excel.includeTreeMaxTextLength",
+      "aspLsp.cache.enabled",
+      "aspLsp.cache.directory",
+      "aspLsp.cache.freshness",
+      "aspLsp.cache.ttlHours",
+      "aspLsp.cache.maxSizeMb",
+      "aspLsp.memory.maxCacheBytes",
+      "aspLsp.memory.debugTelemetry",
+      "aspLsp.network.profile",
+      "aspLsp.network.statCacheTtlMs",
+      "aspLsp.network.readdirCacheTtlMs",
+      "aspLsp.network.includeReadConcurrency",
+      "aspLsp.network.caseResolution",
+      "aspLsp.workspace.maxIndexFiles",
+      "aspLsp.workspace.scanChunkSize",
+      "aspLsp.workspace.busyAnalysisConcurrency",
+      "aspLsp.workspace.vbProjectMaxDocuments",
+      "aspLsp.workspace.vbProjectMaxTextLength",
+    ];
+    for (const setting of advancedConfigurationSettings) {
+      expect(configuration[setting]).toEqual(expect.objectContaining({ tags: ["advanced"] }));
+    }
     expect(extensionSourceText).toContain(
       'const cancelProgressTaskServerCommand = "aspLsp.server.cancelProgressTask"',
     );

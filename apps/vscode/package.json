@@ -281,18 +281,27 @@
             "off"
           ],
           "default": "full",
-          "description": "%configuration.incremental.mode.description%"
+          "description": "%configuration.incremental.mode.description%",
+          "tags": [
+            "advanced"
+          ]
         },
         "aspLsp.incremental.analysis": {
           "type": "boolean",
           "default": true,
-          "description": "%configuration.incremental.analysis.description%"
+          "description": "%configuration.incremental.analysis.description%",
+          "tags": [
+            "advanced"
+          ]
         },
         "aspLsp.diagnostics.debounceMs": {
           "type": "number",
           "minimum": 0,
           "default": 250,
-          "description": "%configuration.diagnostics.debounceMs.description%"
+          "description": "%configuration.diagnostics.debounceMs.description%",
+          "tags": [
+            "advanced"
+          ]
         },
         "aspLsp.debug.output": {
           "type": "string",
@@ -302,17 +311,26 @@
             "verbose"
           ],
           "default": "off",
-          "description": "%configuration.debug.output.description%"
+          "description": "%configuration.debug.output.description%",
+          "tags": [
+            "advanced"
+          ]
         },
         "aspLsp.debug.logFile.enabled": {
           "type": "boolean",
           "default": false,
-          "description": "%configuration.debug.logFile.enabled.description%"
+          "description": "%configuration.debug.logFile.enabled.description%",
+          "tags": [
+            "advanced"
+          ]
         },
         "aspLsp.debug.logFile.path": {
           "type": "string",
           "default": "",
-          "description": "%configuration.debug.logFile.path.description%"
+          "description": "%configuration.debug.logFile.path.description%",
+          "tags": [
+            "advanced"
+          ]
         },
         "aspLsp.javascript.unusedDiagnostics": {
           "type": "boolean",
@@ -327,7 +345,10 @@
         "aspLsp.javascript.ignoreProjectConfig": {
           "type": "boolean",
           "default": false,
-          "description": "%configuration.javascript.ignoreProjectConfig.description%"
+          "description": "%configuration.javascript.ignoreProjectConfig.description%",
+          "tags": [
+            "advanced"
+          ]
         },
         "aspLsp.javascript.compilerOptions": {
           "type": "object",
@@ -354,7 +375,10 @@
         "aspLsp.windowsPathResolution": {
           "type": "boolean",
           "default": true,
-          "description": "%configuration.windowsPathResolution.description%"
+          "description": "%configuration.windowsPathResolution.description%",
+          "tags": [
+            "advanced"
+          ]
         },
         "aspLsp.legacyEncoding": {
           "type": "string",
@@ -365,7 +389,10 @@
             "cp932"
           ],
           "default": "auto",
-          "description": "%configuration.legacyEncoding.description%"
+          "description": "%configuration.legacyEncoding.description%",
+          "tags": [
+            "advanced"
+          ]
         },
         "aspLsp.format.indentSize": {
           "type": [
@@ -1143,7 +1170,10 @@
               "$ref": "#/contributes/configuration/properties/aspLsp.vbscript.identifierCase"
             }
           },
-          "additionalProperties": false
+          "additionalProperties": false,
+          "tags": [
+            "advanced"
+          ]
         },
         "aspLsp.vbscript.comTypes": {
           "type": "object",
@@ -1216,7 +1246,10 @@
               }
             },
             "additionalProperties": false
-          }
+          },
+          "tags": [
+            "advanced"
+          ]
         },
         "aspLsp.vbscript.globals": {
           "type": "object",
@@ -1247,7 +1280,10 @@
                 "additionalProperties": false
               }
             ]
-          }
+          },
+          "tags": [
+            "advanced"
+          ]
         },
         "aspLsp.vbscript.unusedDiagnostics": {
           "type": "boolean",
@@ -1272,7 +1308,10 @@
         "aspLsp.vbscript.showUnresolvedSymbolsInCompletion": {
           "type": "boolean",
           "default": false,
-          "description": "%configuration.vbscript.showUnresolvedSymbolsInCompletion.description%"
+          "description": "%configuration.vbscript.showUnresolvedSymbolsInCompletion.description%",
+          "tags": [
+            "advanced"
+          ]
         },
         "aspLsp.vbscript.initializedDimQuickFixStyle": {
           "type": "string",
@@ -1281,7 +1320,10 @@
             "sameLineColon"
           ],
           "default": "sameLineColon",
-          "description": "%configuration.vbscript.initializedDimQuickFixStyle.description%"
+          "description": "%configuration.vbscript.initializedDimQuickFixStyle.description%",
+          "tags": [
+            "advanced"
+          ]
         },
         "aspLsp.vbscript.ifSyntaxDiagnostics": {
           "type": "string",
@@ -1291,7 +1333,10 @@
             "strict"
           ],
           "default": "basic",
-          "description": "%configuration.vbscript.ifSyntaxDiagnostics.description%"
+          "description": "%configuration.vbscript.ifSyntaxDiagnostics.description%",
+          "tags": [
+            "advanced"
+          ]
         },
         "aspLsp.inlayHints.variableTypes": {
           "type": "boolean",
@@ -1360,12 +1405,18 @@
             "workspace"
           ],
           "default": "analyzed",
-          "description": "%configuration.codeLens.referenceScope.description%"
+          "description": "%configuration.codeLens.referenceScope.description%",
+          "tags": [
+            "advanced"
+          ]
         },
         "aspLsp.codeLens.includeRelatedIncludeTreesForUnresolved": {
           "type": "boolean",
           "default": true,
-          "description": "%configuration.codeLens.includeRelatedIncludeTreesForUnresolved.description%"
+          "description": "%configuration.codeLens.includeRelatedIncludeTreesForUnresolved.description%",
+          "tags": [
+            "advanced"
+          ]
         },
         "aspLsp.codeLens.includes": {
           "type": "boolean",
@@ -1375,12 +1426,18 @@
         "aspLsp.rename.updateIncludesOnFileRename": {
           "type": "boolean",
           "default": false,
-          "description": "%configuration.rename.updateIncludesOnFileRename.description%"
+          "description": "%configuration.rename.updateIncludesOnFileRename.description%",
+          "tags": [
+            "advanced"
+          ]
         },
         "aspLsp.rename.workspaceSymbolRename": {
           "type": "boolean",
           "default": false,
-          "description": "%configuration.rename.workspaceSymbolRename.description%"
+          "description": "%configuration.rename.workspaceSymbolRename.description%",
+          "tags": [
+            "advanced"
+          ]
         },
         "aspLsp.styleExtraction.insertionMode": {
           "type": "string",
@@ -1395,13 +1452,19 @@
           "type": "number",
           "minimum": 1,
           "default": 2000000,
-          "description": "%configuration.flowchart.maxTextSize.description%"
+          "description": "%configuration.flowchart.maxTextSize.description%",
+          "tags": [
+            "advanced"
+          ]
         },
         "aspLsp.flowchart.maxEdges": {
           "type": "number",
           "minimum": 1,
           "default": 100000,
-          "description": "%configuration.flowchart.maxEdges.description%"
+          "description": "%configuration.flowchart.maxEdges.description%",
+          "tags": [
+            "advanced"
+          ]
         },
         "aspLsp.flowchart.labelLineLength": {
           "type": "number",
@@ -1423,13 +1486,19 @@
           "type": "number",
           "minimum": 0.1,
           "default": 0.1,
-          "description": "%configuration.flowchart.minZoom.description%"
+          "description": "%configuration.flowchart.minZoom.description%",
+          "tags": [
+            "advanced"
+          ]
         },
         "aspLsp.flowchart.maxZoom": {
           "type": "number",
           "minimum": 0.1,
           "default": 4,
-          "description": "%configuration.flowchart.maxZoom.description%"
+          "description": "%configuration.flowchart.maxZoom.description%",
+          "tags": [
+            "advanced"
+          ]
         },
         "aspLsp.flowchart.infoPanelPosition": {
           "type": "string",
@@ -1588,57 +1657,87 @@
         "aspLsp.graph.showIncomingDocumentIncludes": {
           "type": "boolean",
           "default": false,
-          "description": "%configuration.graph.showIncomingDocumentIncludes.description%"
+          "description": "%configuration.graph.showIncomingDocumentIncludes.description%",
+          "tags": [
+            "advanced"
+          ]
         },
         "aspLsp.graph.showIncomingFolderIncludes": {
           "type": "boolean",
           "default": false,
-          "description": "%configuration.graph.showIncomingFolderIncludes.description%"
+          "description": "%configuration.graph.showIncomingFolderIncludes.description%",
+          "tags": [
+            "advanced"
+          ]
         },
         "aspLsp.graph.useReverseIncludeIndex": {
           "type": "boolean",
           "default": true,
-          "description": "%configuration.graph.useReverseIncludeIndex.description%"
+          "description": "%configuration.graph.useReverseIncludeIndex.description%",
+          "tags": [
+            "advanced"
+          ]
         },
         "aspLsp.graph.includeRelatedIncludeTreesForUnresolved": {
           "type": "boolean",
           "default": true,
-          "description": "%configuration.graph.includeRelatedIncludeTreesForUnresolved.description%"
+          "description": "%configuration.graph.includeRelatedIncludeTreesForUnresolved.description%",
+          "tags": [
+            "advanced"
+          ]
         },
         "aspLsp.graph.maxDocuments": {
           "type": "number",
           "minimum": 1,
           "default": 5000,
-          "description": "%configuration.graph.maxDocuments.description%"
+          "description": "%configuration.graph.maxDocuments.description%",
+          "tags": [
+            "advanced"
+          ]
         },
         "aspLsp.graph.maxTextLength": {
           "type": "number",
           "minimum": 1,
           "default": 268435456,
-          "description": "%configuration.graph.maxTextLength.description%"
+          "description": "%configuration.graph.maxTextLength.description%",
+          "tags": [
+            "advanced"
+          ]
         },
         "aspLsp.graph.maxNodes": {
           "type": "number",
           "minimum": 1,
           "default": 5000,
-          "description": "%configuration.graph.maxNodes.description%"
+          "description": "%configuration.graph.maxNodes.description%",
+          "tags": [
+            "advanced"
+          ]
         },
         "aspLsp.graph.includeTreeMaxDocuments": {
           "type": "number",
           "minimum": 1,
           "default": 256,
-          "description": "%configuration.graph.includeTreeMaxDocuments.description%"
+          "description": "%configuration.graph.includeTreeMaxDocuments.description%",
+          "tags": [
+            "advanced"
+          ]
         },
         "aspLsp.graph.includeTreeMaxTextLength": {
           "type": "number",
           "minimum": 1,
           "default": 16777216,
-          "description": "%configuration.graph.includeTreeMaxTextLength.description%"
+          "description": "%configuration.graph.includeTreeMaxTextLength.description%",
+          "tags": [
+            "advanced"
+          ]
         },
         "aspLsp.graph.workerSymbolExtraction": {
           "type": "boolean",
           "default": false,
-          "description": "%configuration.graph.workerSymbolExtraction.description%"
+          "description": "%configuration.graph.workerSymbolExtraction.description%",
+          "tags": [
+            "advanced"
+          ]
         },
         "aspLsp.graph.initialViewMode": {
           "type": "string",
@@ -1670,36 +1769,54 @@
         "aspLsp.excel.includeRelatedIncludeTreesForUnresolved": {
           "type": "boolean",
           "default": true,
-          "description": "%configuration.excel.includeRelatedIncludeTreesForUnresolved.description%"
+          "description": "%configuration.excel.includeRelatedIncludeTreesForUnresolved.description%",
+          "tags": [
+            "advanced"
+          ]
         },
         "aspLsp.excel.skipTypeInference": {
           "type": "boolean",
           "default": false,
-          "description": "%configuration.excel.skipTypeInference.description%"
+          "description": "%configuration.excel.skipTypeInference.description%",
+          "tags": [
+            "advanced"
+          ]
         },
         "aspLsp.excel.maxDocuments": {
           "type": "number",
           "minimum": 1,
           "default": 8192,
-          "description": "%configuration.excel.maxDocuments.description%"
+          "description": "%configuration.excel.maxDocuments.description%",
+          "tags": [
+            "advanced"
+          ]
         },
         "aspLsp.excel.maxTextLength": {
           "type": "number",
           "minimum": 1,
           "default": 536870912,
-          "description": "%configuration.excel.maxTextLength.description%"
+          "description": "%configuration.excel.maxTextLength.description%",
+          "tags": [
+            "advanced"
+          ]
         },
         "aspLsp.excel.includeTreeMaxDocuments": {
           "type": "number",
           "minimum": 1,
           "default": 1024,
-          "description": "%configuration.excel.includeTreeMaxDocuments.description%"
+          "description": "%configuration.excel.includeTreeMaxDocuments.description%",
+          "tags": [
+            "advanced"
+          ]
         },
         "aspLsp.excel.includeTreeMaxTextLength": {
           "type": "number",
           "minimum": 1,
           "default": 67108864,
-          "description": "%configuration.excel.includeTreeMaxTextLength.description%"
+          "description": "%configuration.excel.includeTreeMaxTextLength.description%",
+          "tags": [
+            "advanced"
+          ]
         },
         "aspLsp.excel.locale": {
           "type": "string",
@@ -1714,12 +1831,18 @@
         "aspLsp.cache.enabled": {
           "type": "boolean",
           "default": true,
-          "description": "%configuration.cache.enabled.description%"
+          "description": "%configuration.cache.enabled.description%",
+          "tags": [
+            "advanced"
+          ]
         },
         "aspLsp.cache.directory": {
           "type": "string",
           "default": "",
-          "description": "%configuration.cache.directory.description%"
+          "description": "%configuration.cache.directory.description%",
+          "tags": [
+            "advanced"
+          ]
         },
         "aspLsp.cache.freshness": {
           "type": "string",
@@ -1729,30 +1852,45 @@
             "watch"
           ],
           "default": "auto",
-          "description": "%configuration.cache.freshness.description%"
+          "description": "%configuration.cache.freshness.description%",
+          "tags": [
+            "advanced"
+          ]
         },
         "aspLsp.cache.ttlHours": {
           "type": "number",
           "minimum": 1,
           "default": 336,
-          "description": "%configuration.cache.ttlHours.description%"
+          "description": "%configuration.cache.ttlHours.description%",
+          "tags": [
+            "advanced"
+          ]
         },
         "aspLsp.cache.maxSizeMb": {
           "type": "number",
           "minimum": 1,
           "default": 128,
-          "description": "%configuration.cache.maxSizeMb.description%"
+          "description": "%configuration.cache.maxSizeMb.description%",
+          "tags": [
+            "advanced"
+          ]
         },
         "aspLsp.memory.maxCacheBytes": {
           "type": "number",
           "minimum": 1,
           "default": 536870912,
-          "description": "%configuration.memory.maxCacheBytes.description%"
+          "description": "%configuration.memory.maxCacheBytes.description%",
+          "tags": [
+            "advanced"
+          ]
         },
         "aspLsp.memory.debugTelemetry": {
           "type": "boolean",
           "default": false,
-          "description": "%configuration.memory.debugTelemetry.description%"
+          "description": "%configuration.memory.debugTelemetry.description%",
+          "tags": [
+            "advanced"
+          ]
         },
         "aspLsp.network.profile": {
           "type": "string",
@@ -1762,25 +1900,37 @@
             "network"
           ],
           "default": "auto",
-          "description": "%configuration.network.profile.description%"
+          "description": "%configuration.network.profile.description%",
+          "tags": [
+            "advanced"
+          ]
         },
         "aspLsp.network.statCacheTtlMs": {
           "type": "number",
           "minimum": -1,
           "default": -1,
-          "description": "%configuration.network.statCacheTtlMs.description%"
+          "description": "%configuration.network.statCacheTtlMs.description%",
+          "tags": [
+            "advanced"
+          ]
         },
         "aspLsp.network.readdirCacheTtlMs": {
           "type": "number",
           "minimum": -1,
           "default": -1,
-          "description": "%configuration.network.readdirCacheTtlMs.description%"
+          "description": "%configuration.network.readdirCacheTtlMs.description%",
+          "tags": [
+            "advanced"
+          ]
         },
         "aspLsp.network.includeReadConcurrency": {
           "type": "number",
           "minimum": 0,
           "default": 0,
-          "description": "%configuration.network.includeReadConcurrency.description%"
+          "description": "%configuration.network.includeReadConcurrency.description%",
+          "tags": [
+            "advanced"
+          ]
         },
         "aspLsp.network.caseResolution": {
           "type": "string",
@@ -1790,7 +1940,10 @@
             "fast"
           ],
           "default": "auto",
-          "description": "%configuration.network.caseResolution.description%"
+          "description": "%configuration.network.caseResolution.description%",
+          "tags": [
+            "advanced"
+          ]
         },
         "aspLsp.workspace.includes": {
           "type": "array",
@@ -1819,31 +1972,46 @@
           "type": "number",
           "minimum": 1,
           "default": 5000,
-          "description": "%configuration.workspace.maxIndexFiles.description%"
+          "description": "%configuration.workspace.maxIndexFiles.description%",
+          "tags": [
+            "advanced"
+          ]
         },
         "aspLsp.workspace.scanChunkSize": {
           "type": "number",
           "minimum": 1,
           "default": 200,
-          "description": "%configuration.workspace.scanChunkSize.description%"
+          "description": "%configuration.workspace.scanChunkSize.description%",
+          "tags": [
+            "advanced"
+          ]
         },
         "aspLsp.workspace.busyAnalysisConcurrency": {
           "type": "number",
           "minimum": 0,
           "default": 0,
-          "description": "%configuration.workspace.busyAnalysisConcurrency.description%"
+          "description": "%configuration.workspace.busyAnalysisConcurrency.description%",
+          "tags": [
+            "advanced"
+          ]
         },
         "aspLsp.workspace.vbProjectMaxDocuments": {
           "type": "number",
           "minimum": 1,
           "default": 256,
-          "description": "%configuration.workspace.vbProjectMaxDocuments.description%"
+          "description": "%configuration.workspace.vbProjectMaxDocuments.description%",
+          "tags": [
+            "advanced"
+          ]
         },
         "aspLsp.workspace.vbProjectMaxTextLength": {
           "type": "number",
           "minimum": 1,
           "default": 16777216,
-          "description": "%configuration.workspace.vbProjectMaxTextLength.description%"
+          "description": "%configuration.workspace.vbProjectMaxTextLength.description%",
+          "tags": [
+            "advanced"
+          ]
         }
       }
     },
