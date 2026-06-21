@@ -1718,6 +1718,67 @@ describe("VS Code extension package", () => {
     expect(classicAspTagInjection?.embeddedLanguages?.["source.css.embedded.html"]).toBe("css");
   });
 
+  it("contributes a getting started walkthrough for new users", () => {
+    const manifest = JSON.parse(fs.readFileSync("package.json", "utf8")) as {
+      contributes?: {
+        walkthroughs?: Array<{
+          id?: string;
+          title?: string;
+          description?: string;
+          steps?: Array<{
+            id?: string;
+            title?: string;
+            description?: string;
+            media?: { markdown?: string };
+            completionEvents?: string[];
+          }>;
+        }>;
+      };
+    };
+    const walkthrough = manifest.contributes?.walkthroughs?.find(
+      (candidate) => candidate.id === "classicAspLsp.gettingStarted",
+    );
+    expect(walkthrough?.title).toBe("%walkthrough.gettingStarted.title%");
+    expect(walkthrough?.description).toBe("%walkthrough.gettingStarted.description%");
+    expect(walkthrough?.steps?.map((step) => step.id)).toEqual([
+      "openClassicAspFile",
+      "readEditorSignals",
+      "understandHintsAndCodeLens",
+      "useProjectViews",
+    ]);
+    expect(walkthrough?.steps?.[0]?.completionEvents).toBeUndefined();
+    expect(walkthrough?.steps?.[1]?.completionEvents).toContain(
+      "onCommand:editor.action.triggerSuggest",
+    );
+    expect(walkthrough?.steps?.[2]?.completionEvents).toContain(
+      "onCommand:workbench.action.openSettings",
+    );
+    expect(walkthrough?.steps?.[3]?.completionEvents).toContain(
+      "onCommand:aspLsp.showWorkspaceGlobFiles",
+    );
+    for (const step of walkthrough?.steps ?? []) {
+      expect(step.title).toMatch(/^%walkthrough\.gettingStarted\./);
+      expect(step.description).toMatch(/^%walkthrough\.gettingStarted\./);
+      expect(step.media?.markdown).toMatch(/^%walkthrough\.gettingStarted\./);
+    }
+
+    const englishHintPage = fs.readFileSync(
+      "walkthroughs/getting-started-hints-codelens.md",
+      "utf8",
+    );
+    const japaneseHintPage = fs.readFileSync(
+      "walkthroughs/getting-started-hints-codelens.ja.md",
+      "utf8",
+    );
+    expect(englishHintPage).toContain("Inlay hints are small inline labels");
+    expect(englishHintPage).toContain("CodeLens items are clickable links");
+    expect(englishHintPage).toContain("aspLsp.inlayHints.parameterNames");
+    expect(englishHintPage).toContain("aspLsp.codeLens.references");
+    expect(japaneseHintPage).toContain("Inlay Hints（インレイヒント）");
+    expect(japaneseHintPage).toContain("CodeLens（コードレンズ）");
+    expect(japaneseHintPage).toContain("VS Code では");
+  });
+
   it("keeps package localization keys resolved", () => {
     const manifestText = fs.readFileSync("package.json", "utf8");
     const nls = JSON.parse(fs.readFileSync("package.nls.json", "utf8")) as Record<string, string>;
@@ -2345,6 +2406,10 @@ new Intl.DateTimeFormat("en");
       expect(listing).toContain("extension/package.nls.json");
       expect(listing).toContain("extension/package.nls.ja.json");
       expect(listing).toContain("extension/assets/icon.png");
+      expect(listing).toContain("extension/walkthroughs/getting-started-open-file.md");
+      expect(listing).toContain("extension/walkthroughs/getting-started-open-file.ja.md");
+      expect(listing).toContain("extension/walkthroughs/getting-started-hints-codelens.md");
+      expect(listing).toContain("extension/walkthroughs/getting-started-hints-codelens.ja.md");
       expect(listing).toContain("extension/server/language-server/dist/server.js");
       expect(listing).toContain("extension/server/language-server/dist/js-diagnostics-worker.js");
       expect(listing).toContain("extension/server/language-server/dist/vb-diagnostics-worker.js");

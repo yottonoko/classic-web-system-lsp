@@ -193,6 +193,59 @@
         ]
       }
     },
+    "walkthroughs": [
+      {
+        "id": "classicAspLsp.gettingStarted",
+        "title": "%walkthrough.gettingStarted.title%",
+        "description": "%walkthrough.gettingStarted.description%",
+        "steps": [
+          {
+            "id": "openClassicAspFile",
+            "title": "%walkthrough.gettingStarted.openClassicAspFile.title%",
+            "description": "%walkthrough.gettingStarted.openClassicAspFile.description%",
+            "media": {
+              "markdown": "%walkthrough.gettingStarted.openClassicAspFile.markdown%"
+            }
+          },
+          {
+            "id": "readEditorSignals",
+            "title": "%walkthrough.gettingStarted.readEditorSignals.title%",
+            "description": "%walkthrough.gettingStarted.readEditorSignals.description%",
+            "media": {
+              "markdown": "%walkthrough.gettingStarted.readEditorSignals.markdown%"
+            },
+            "completionEvents": [
+              "onCommand:editor.action.triggerSuggest",
+              "onCommand:editor.action.showHover"
+            ]
+          },
+          {
+            "id": "understandHintsAndCodeLens",
+            "title": "%walkthrough.gettingStarted.understandHintsAndCodeLens.title%",
+            "description": "%walkthrough.gettingStarted.understandHintsAndCodeLens.description%",
+            "media": {
+              "markdown": "%walkthrough.gettingStarted.understandHintsAndCodeLens.markdown%"
+            },
+            "completionEvents": [
+              "onCommand:workbench.action.openSettings"
+            ]
+          },
+          {
+            "id": "useProjectViews",
+            "title": "%walkthrough.gettingStarted.useProjectViews.title%",
+            "description": "%walkthrough.gettingStarted.useProjectViews.description%",
+            "media": {
+              "markdown": "%walkthrough.gettingStarted.useProjectViews.markdown%"
+            },
+            "completionEvents": [
+              "onCommand:aspLsp.showWorkspaceGlobFiles",
+              "onCommand:aspLsp.showCurrentFileGraph",
+              "onCommand:aspLsp.showCurrentFileFlowchart"
+            ]
+          }
+        ]
+      }
+    ],
     "configuration": {
       "title": "%configuration.title%",
       "properties": {
