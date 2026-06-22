@@ -9,6 +9,8 @@ import {
   collectVbscriptSymbols,
   collectVbscriptSymbolsAsync,
   extractAspIncludeRefs,
+  extractAspNavigationCandidates,
+  extractHtmlNavigationCandidates,
   extractVbscriptSymbolIndex,
   formatAspDocument,
   formatAspRange,
@@ -50,6 +52,75 @@ function collectVbTokenTexts(node: AspCstNode): string[] {
     ...node.children.flatMap((child) => collectVbTokenTexts(child)),
   ];
 }
+
+describe("extractAspNavigationCandidates", () => {
+  it("extracts HTML navigation tags with ranges and form parameters", () => {
+    const source = `<a href="next.asp?id=1">Next</a>
+<area href="map.asp">
+<iframe name="detail" src="detail.asp"></iframe>
+<frame src="legacy.asp">
+<form action="save.asp" method="post"><input type="hidden" name="token" value="abc"><button formaction="delete.asp" formmethod="post" name="delete" value="1"></button></form>
+<meta http-equiv="refresh" content="0; url=refresh.asp">`;
+
+    const candidates = extractHtmlNavigationCandidates(source, "file:///site/default.asp");
+
+    expect(candidates.map((candidate) => candidate.kind)).toEqual([
+      "htmlAnchor",
+      "htmlAnchor",
+      "htmlFrame",
+      "htmlFrame",
+      "htmlForm",
+      "htmlForm",
+      "metaRefresh",
+    ]);
+    expect(candidates[0]?.target).toEqual({ kind: "literal", text: "next.asp?id=1" });
+    expect(candidates[2]?.targetFrame).toBe("detail");
+    expect(candidates[4]?.method).toBe("POST");
+    expect(candidates[4]?.parameters).toEqual([
+      expect.objectContaining({ name: "token", source: "hiddenInput", value: "abc" }),
+      expect.objectContaining({ name: "delete", source: "formControl", value: "1" }),
+    ]);
+    expect(candidates[6]?.target).toEqual({ kind: "literal", text: "refresh.asp" });
+    expect(candidates.every((candidate) => candidate.range.start.line >= 0)).toBe(true);
+  });
+
+  it("extracts VBScript redirects with finite string and Request value inference", () => {
+    const parsed = parseAspDocument(
+      "file:///site/default.asp",
+      `<%
+Const base = "next.asp"
+id = Request.QueryString("id")
+Response.Redirect base & "?id=" & Server.URLEncode(id)
+%>`,
+    );
+
+    const candidates = extractAspNavigationCandidates(parsed);
+    const redirect = candidates.find((candidate) => candidate.kind === "serverRedirect");
+
+    expect(redirect?.target.kind).toBe("template");
+    expect(redirect?.target.text).toContain("next.asp?id=");
+    expect(redirect?.parameters).toEqual([
+      expect.objectContaining({ name: "id", source: "queryString" }),
+    ]);
+    expect(redirect?.confidence).toBe("possible");
+  });
+
+  it("extracts Response.Write generated HTML navigation", () => {
+    const parsed = parseAspDocument(
+      "file:///site/default.asp",
+      `<% Response.Write "<a href=""generated.asp"">Generated</a><form action=""posted.asp""><input type=""hidden"" name=""mode"" value=""x""></form>" %>`,
+    );
+
+    const candidates = extractAspNavigationCandidates(parsed);
+
+    expect(candidates.map((candidate) => candidate.kind)).toEqual(["htmlAnchor", "htmlForm"]);
+    expect(candidates[0]?.target).toEqual({ kind: "literal", text: "generated.asp" });
+    expect(candidates[1]?.parameters).toEqual([
+      expect.objectContaining({ name: "mode", source: "hiddenInput", value: "x" }),
+    ]);
+    expect(candidates.every((candidate) => candidate.source === "vbscript")).toBe(true);
+  });
+});
 
 describe("buildAspFlowchart", () => {
   it("builds Mermaid flow sections for VBScript control flow", () => {

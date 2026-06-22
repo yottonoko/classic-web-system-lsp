@@ -133,6 +133,7 @@ describe(
         expect(initializeText).toContain('"aspLsp.server.clearProcessCache"');
         expect(initializeText).toContain('"aspLsp.server.buildGraph"');
         expect(initializeText).toContain('"aspLsp.server.buildFlowchart"');
+        expect(initializeText).toContain('"aspLsp.server.buildNavigationGraph"');
         expect(initializeText).not.toContain('"aspLsp.server.previewWorkspaceFileRelations"');
         expect(initializeText).not.toContain('"aspLsp.reindexWorkspace"');
         expect(initializeText).not.toContain('"aspLsp.clearCache"');
@@ -10501,6 +10502,113 @@ End Sub
           arguments: [{ uri }],
         })) as { labelMode?: string };
         expect(configuredFlowchart.labelMode).toBe("description");
+
+        await server.request("shutdown", null);
+        server.notify("exit", undefined);
+      } finally {
+        server.stop();
+        fs.rmSync(tempDir, { recursive: true, force: true });
+      }
+    });
+
+    it("builds a navigation graph for static ASP screen transitions", async () => {
+      const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "asp-lsp-navigation-"));
+      const page = path.join(tempDir, "default.asp");
+      fs.writeFileSync(
+        page,
+        `<!-- #include file="common.inc" -->
+<a href="products.asp?category=1">Products</a>
+<form action="search.asp" method="get"><input type="hidden" name="q" value="classic"></form>
+<iframe src="frame.asp"></iframe>
+<script>
+const next = "client.asp";
+location.href = next;
+const f = document.forms["jump"];
+f.action = "submit.asp";
+f.method = "post";
+f.submit();
+history.pushState({}, "", "history.asp");
+</script>
+<%
+target = "redirect.asp?next=" & Request.QueryString("next")
+Response.Redirect target
+%>`,
+        "utf8",
+      );
+      fs.writeFileSync(
+        path.join(tempDir, "common.inc"),
+        `<a href="included.asp">Included</a>`,
+        "utf8",
+      );
+      for (const target of [
+        "products.asp",
+        "search.asp",
+        "frame.asp",
+        "client.asp",
+        "submit.asp",
+        "history.asp",
+        "included.asp",
+      ]) {
+        fs.writeFileSync(path.join(tempDir, target), "", "utf8");
+      }
+      const uri = pathToFileURL(page).toString();
+      const server = new RpcServer();
+      try {
+        await server.start();
+        await server.request("initialize", {
+          processId: process.pid,
+          rootUri: pathToFileURL(tempDir).toString(),
+          capabilities: {},
+        });
+
+        const graph = (await server.request("workspace/executeCommand", {
+          command: "aspLsp.server.buildNavigationGraph",
+          arguments: [{ scope: "document", uri }],
+        })) as {
+          scope?: string;
+          nodes?: Array<Record<string, unknown>>;
+          edges?: Array<Record<string, unknown>>;
+          stats?: Record<string, unknown>;
+        };
+
+        const edgeKinds = new Set((graph.edges ?? []).map((edge) => edge.kind));
+        expect(graph.scope).toBe("document");
+        expect([...edgeKinds]).toEqual(
+          expect.arrayContaining([
+            "htmlAnchor",
+            "htmlForm",
+            "htmlFrame",
+            "serverRedirect",
+            "javascriptLocation",
+            "javascriptHistory",
+            "javascriptFormSubmit",
+          ]),
+        );
+        expect((graph.nodes ?? []).some((node) => node.label === "included.asp")).toBe(true);
+        expect(
+          (graph.edges ?? []).some(
+            (edge) =>
+              edge.kind === "htmlForm" &&
+              edge.method === "GET" &&
+              Array.isArray(edge.parameters) &&
+              edge.parameters.some(
+                (parameter: Record<string, unknown>) =>
+                  parameter.name === "q" && parameter.source === "hiddenInput",
+              ),
+          ),
+        ).toBe(true);
+        expect(
+          (graph.edges ?? []).some(
+            (edge) =>
+              edge.kind === "serverRedirect" &&
+              Array.isArray(edge.parameters) &&
+              edge.parameters.some(
+                (parameter: Record<string, unknown>) =>
+                  parameter.name === "next" && parameter.source === "queryString",
+              ),
+          ),
+        ).toBe(true);
+        expect(graph.stats?.documents).toBeGreaterThanOrEqual(2);
 
         await server.request("shutdown", null);
         server.notify("exit", undefined);

@@ -27,6 +27,14 @@ import {
   type AspFlowchartWebviewThemeSetting,
 } from "./flowchart-webview";
 import {
+  postAspNavigationGraphWebviewUpdate,
+  showAspNavigationGraphWebview,
+  type AspNavigationGraphLocale,
+  type AspNavigationGraphPayload,
+  type AspNavigationGraphWebviewSettings,
+  type AspNavigationGraphWebviewThemeSetting,
+} from "./navigation-graph-webview";
+import {
   showWorkspaceFilesWebview,
   type WorkspaceFilesPayload,
   type WorkspaceFilesPreviewRequest,
@@ -43,11 +51,13 @@ const clearDiskCacheServerCommand = "aspLsp.server.clearDiskCache";
 const clearProcessCacheServerCommand = "aspLsp.server.clearProcessCache";
 const buildGraphServerCommand = "aspLsp.server.buildGraph";
 const buildFlowchartServerCommand = "aspLsp.server.buildFlowchart";
+const buildNavigationGraphServerCommand = "aspLsp.server.buildNavigationGraph";
 const exportAnalysisExcelServerCommand = "aspLsp.server.exportAnalysisExcel";
 const previewWorkspaceFilesServerCommand = "aspLsp.server.previewWorkspaceFiles";
 const cancelProgressTaskServerCommand = "aspLsp.server.cancelProgressTask";
 const serverStatusNotificationMethod = "aspLsp/status";
 const graphUpdatedNotificationMethod = "aspLsp/graphUpdated";
+const navigationGraphUpdatedNotificationMethod = "aspLsp/navigationGraphUpdated";
 const htmlTagCompleteLookBehind = 2000;
 const defaultFlowchartMaxTextSize = 2_000_000;
 const defaultFlowchartMaxEdges = 100_000;
@@ -64,7 +74,9 @@ const defaultExcelIncludeTreeMaxDocuments = 1_024;
 const defaultExcelIncludeTreeMaxTextLength = 64 * 1024 * 1024;
 type GraphOpenLocation = "active" | "beside";
 type GraphScope = "document" | "folder" | "workspace";
-type WebviewThemeSetting = AspGraphWebviewThemeSetting & AspFlowchartWebviewThemeSetting;
+type WebviewThemeSetting = AspGraphWebviewThemeSetting &
+  AspFlowchartWebviewThemeSetting &
+  AspNavigationGraphWebviewThemeSetting;
 type InfoPanelPosition = AspGraphInfoPanelPosition;
 type ServerStatusKind = "idle" | "loading" | "analyzing";
 
@@ -127,12 +139,21 @@ let outputChannel: vscode.OutputChannel | undefined;
 let statusBarItem: vscode.StatusBarItem | undefined;
 let statusNotificationSubscription: vscode.Disposable | undefined;
 let graphUpdatedNotificationSubscription: vscode.Disposable | undefined;
+let navigationGraphUpdatedNotificationSubscription: vscode.Disposable | undefined;
 let serverStatusKind: ServerStatusKind = "idle";
 let serverProgressTasks: ProgressTask[] = [];
 let serverProgress: { current: number; total: number } | undefined;
 let extensionProgressTaskSequence = 0;
 const extensionProgressTasks = new Map<string, ProgressTask>();
 const graphPanelsByCorrelation = new Map<string, TrackedGraphPanel>();
+const navigationGraphPanelsByKey = new Map<
+  string,
+  {
+    panel: vscode.WebviewPanel;
+    locale: AspNavigationGraphLocale;
+    settings: AspNavigationGraphWebviewSettings;
+  }
+>();
 let restartPromise: Promise<void> | undefined;
 let isDeactivating = false;
 let isManualRestarting = false;
@@ -173,6 +194,16 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     ),
     vscode.commands.registerCommand("aspLsp.showWorkspaceGraph", async () =>
       showGraph(context, "workspace"),
+    ),
+    vscode.commands.registerCommand(
+      "aspLsp.showCurrentFileNavigationGraph",
+      async (uri?: vscode.Uri) => showNavigationGraph(context, "document", uri),
+    ),
+    vscode.commands.registerCommand("aspLsp.showFolderNavigationGraph", async (uri?: vscode.Uri) =>
+      showNavigationGraph(context, "folder", uri),
+    ),
+    vscode.commands.registerCommand("aspLsp.showWorkspaceNavigationGraph", async () =>
+      showNavigationGraph(context, "workspace"),
     ),
     vscode.commands.registerCommand("aspLsp.showWorkspaceGlobFiles", async () =>
       showWorkspaceGlobFiles(context),
@@ -567,6 +598,139 @@ function handleGraphUpdatedNotification(notification: AspGraphUpdatedNotificatio
   if (notification.final) {
     graphPanelsByCorrelation.delete(notification.correlationId);
   }
+}
+
+async function showNavigationGraph(
+  context: vscode.ExtensionContext,
+  scope: GraphScope,
+  selectedUri?: vscode.Uri,
+): Promise<void> {
+  if (!client) {
+    void vscode.window.showWarningMessage(
+      extensionLocalizer()("navigationGraph.serverUnavailable"),
+    );
+    return;
+  }
+  const request = navigationGraphCommandRequest(scope, selectedUri);
+  if (!request) {
+    return;
+  }
+  const payload = await loadNavigationGraphPayload(request);
+  const locale = extensionLocale();
+  const settings: AspNavigationGraphWebviewSettings = { theme: webviewThemeSetting() };
+  const panel = showAspNavigationGraphWebview(
+    context,
+    payload,
+    navigationGraphPanelTitle(payload, request.activeDocument),
+    graphViewColumn(),
+    locale,
+    settings,
+  );
+  const key = navigationGraphPanelKey(payload.scope, payload.rootUri ?? request.uri);
+  navigationGraphPanelsByKey.set(key, { panel, locale, settings });
+  panel.onDidDispose(() => navigationGraphPanelsByKey.delete(key));
+}
+
+function navigationGraphCommandRequest(
+  scope: GraphScope,
+  selectedUri?: vscode.Uri,
+): GraphCommandRequest | undefined {
+  const activeDocument = vscode.window.activeTextEditor?.document;
+  const selectedUriText = selectedUri?.toString();
+  const uri =
+    scope === "document"
+      ? (selectedUriText ??
+        (activeDocument?.languageId === "classic-asp" ? activeDocument.uri.toString() : undefined))
+      : scope === "folder"
+        ? selectedUriText
+        : undefined;
+  if (scope === "document" && !uri) {
+    void vscode.window.showWarningMessage(extensionLocalizer()("navigationGraph.noActiveFile"));
+    return undefined;
+  }
+  if (scope === "folder" && !uri) {
+    void vscode.window.showWarningMessage(extensionLocalizer()("navigationGraph.noFolder"));
+    return undefined;
+  }
+  return { scope, uri, activeDocument };
+}
+
+async function loadNavigationGraphPayload(
+  request: GraphCommandRequest,
+): Promise<AspNavigationGraphPayload> {
+  if (!client) {
+    throw new Error(extensionLocalizer()("navigationGraph.serverUnavailable"));
+  }
+  const activeClient = client;
+  const configuration = vscode.workspace.getConfiguration("aspLsp");
+  return vscode.window.withProgress(
+    {
+      location: vscode.ProgressLocation.Notification,
+      title: extensionLocalizer()(navigationGraphTitleKey(request.scope)),
+      cancellable: true,
+    },
+    async (_progress, token) =>
+      activeClient.sendRequest<AspNavigationGraphPayload>(
+        "workspace/executeCommand",
+        {
+          command: buildNavigationGraphServerCommand,
+          arguments: [
+            {
+              scope: request.scope,
+              uri: request.uri,
+              maxNodes: configuration.get<number>("navigationGraph.maxNodes"),
+              maxEdges: configuration.get<number>("navigationGraph.maxEdges"),
+            },
+          ],
+        },
+        token,
+      ),
+  );
+}
+
+function handleNavigationGraphUpdatedNotification(payload: AspNavigationGraphPayload): void {
+  const tracked = navigationGraphPanelsByKey.get(
+    navigationGraphPanelKey(payload.scope, payload.rootUri),
+  );
+  if (!tracked) {
+    return;
+  }
+  void postAspNavigationGraphWebviewUpdate(
+    tracked.panel,
+    payload,
+    tracked.locale,
+    tracked.settings,
+  );
+}
+
+function navigationGraphPanelKey(scope: GraphScope, uri: string | undefined): string {
+  return `${scope}:${uri ?? ""}`;
+}
+
+function navigationGraphTitleKey(scope: GraphScope): ExtensionMessageKey {
+  if (scope === "document") {
+    return "navigationGraph.currentTitle";
+  }
+  if (scope === "folder") {
+    return "navigationGraph.folderTitle";
+  }
+  return "navigationGraph.workspaceTitle";
+}
+
+function navigationGraphPanelTitle(
+  payload: AspNavigationGraphPayload,
+  activeDocument: vscode.TextDocument | undefined,
+): string {
+  const localize = extensionLocalizer();
+  if (payload.scope === "workspace") {
+    return localize("navigationGraph.workspacePanelTitle");
+  }
+  const name =
+    payload.nodes.find((node) => node.isRoot)?.label ??
+    baseNameFromUri(payload.rootUri) ??
+    baseNameFromPath(activeDocument?.fileName) ??
+    "Current File";
+  return localize("navigationGraph.documentPanelTitle", { name });
 }
 
 async function showWorkspaceGlobFiles(context: vscode.ExtensionContext): Promise<void> {
@@ -1077,6 +1241,7 @@ async function startClient(context: vscode.ExtensionContext): Promise<void> {
   );
   statusNotificationSubscription?.dispose();
   graphUpdatedNotificationSubscription?.dispose();
+  navigationGraphUpdatedNotificationSubscription?.dispose();
   statusNotificationSubscription = nextClient.onNotification(
     serverStatusNotificationMethod,
     handleServerStatusNotification,
@@ -1084,6 +1249,10 @@ async function startClient(context: vscode.ExtensionContext): Promise<void> {
   graphUpdatedNotificationSubscription = nextClient.onNotification(
     graphUpdatedNotificationMethod,
     handleGraphUpdatedNotification,
+  );
+  navigationGraphUpdatedNotificationSubscription = nextClient.onNotification(
+    navigationGraphUpdatedNotificationMethod,
+    handleNavigationGraphUpdatedNotification,
   );
   client = nextClient;
   serverStatusKind = "idle";
@@ -1096,6 +1265,8 @@ async function startClient(context: vscode.ExtensionContext): Promise<void> {
     statusNotificationSubscription = undefined;
     graphUpdatedNotificationSubscription?.dispose();
     graphUpdatedNotificationSubscription = undefined;
+    navigationGraphUpdatedNotificationSubscription?.dispose();
+    navigationGraphUpdatedNotificationSubscription = undefined;
     if (client === nextClient) {
       client = undefined;
     }
@@ -1116,7 +1287,10 @@ export async function deactivate(): Promise<void> {
   statusNotificationSubscription = undefined;
   graphUpdatedNotificationSubscription?.dispose();
   graphUpdatedNotificationSubscription = undefined;
+  navigationGraphUpdatedNotificationSubscription?.dispose();
+  navigationGraphUpdatedNotificationSubscription = undefined;
   graphPanelsByCorrelation.clear();
+  navigationGraphPanelsByKey.clear();
   serverStatusKind = "idle";
   clearServerProgressState();
   extensionProgressTasks.clear();
@@ -1241,7 +1415,10 @@ async function restartServerOnce(context: vscode.ExtensionContext): Promise<void
     statusNotificationSubscription = undefined;
     graphUpdatedNotificationSubscription?.dispose();
     graphUpdatedNotificationSubscription = undefined;
+    navigationGraphUpdatedNotificationSubscription?.dispose();
+    navigationGraphUpdatedNotificationSubscription = undefined;
     graphPanelsByCorrelation.clear();
+    navigationGraphPanelsByKey.clear();
     serverStatusKind = "idle";
     clearServerProgressState();
     updateStatusBar();
@@ -1665,6 +1842,16 @@ function progressTaskDisplayLabelKey(label: string): ExtensionMessageKey | undef
       return "status.progress.flowchartCanonicalizeSymbols";
     case "flowchart.buildPayload":
       return "status.progress.flowchartBuildPayload";
+    case "navigationGraph.build":
+      return "status.progress.navigationGraph";
+    case "navigationGraph.collectDocuments":
+      return "status.progress.navigationGraphCollectDocuments";
+    case "navigationGraph.resolveIncludes":
+      return "status.progress.navigationGraphResolveIncludes";
+    case "navigationGraph.extract":
+      return "status.progress.navigationGraphExtract";
+    case "navigationGraph.buildPayload":
+      return "status.progress.navigationGraphBuildPayload";
     case "graph.document":
       return "status.progress.graphDocument";
     case "graph.folder":
@@ -1841,6 +2028,11 @@ type ExtensionMessageKey =
   | "status.progress.flowchartHydrateDocument"
   | "status.progress.flowchartIndexDocuments"
   | "status.progress.flowchartLoadDocument"
+  | "status.progress.navigationGraph"
+  | "status.progress.navigationGraphBuildPayload"
+  | "status.progress.navigationGraphCollectDocuments"
+  | "status.progress.navigationGraphExtract"
+  | "status.progress.navigationGraphResolveIncludes"
   | "status.progress.graphAddStructure"
   | "status.progress.graphAddUsages"
   | "status.progress.graphCanonicalizeSymbols"
@@ -1887,6 +2079,14 @@ type ExtensionMessageKey =
   | "graph.workspaceTitle"
   | "graph.documentPanelTitle"
   | "graph.workspacePanelTitle"
+  | "navigationGraph.serverUnavailable"
+  | "navigationGraph.noActiveFile"
+  | "navigationGraph.noFolder"
+  | "navigationGraph.currentTitle"
+  | "navigationGraph.folderTitle"
+  | "navigationGraph.workspaceTitle"
+  | "navigationGraph.documentPanelTitle"
+  | "navigationGraph.workspacePanelTitle"
   | "excel.serverUnavailable"
   | "excel.currentTitle"
   | "excel.saveLabel"
@@ -1945,6 +2145,11 @@ const extensionMessages: Record<"en" | "ja", Record<ExtensionMessageKey, string>
     "status.progress.flowchartHydrateDocument": "Hydrating flowchart VBScript",
     "status.progress.flowchartIndexDocuments": "Indexing flowchart documents",
     "status.progress.flowchartLoadDocument": "Loading flowchart document",
+    "status.progress.navigationGraph": "Generating navigation graph",
+    "status.progress.navigationGraphBuildPayload": "Building navigation graph payload",
+    "status.progress.navigationGraphCollectDocuments": "Collecting navigation graph documents",
+    "status.progress.navigationGraphExtract": "Extracting navigation transitions",
+    "status.progress.navigationGraphResolveIncludes": "Resolving navigation include owners",
     "status.progress.graphAddStructure": "Adding graph structure",
     "status.progress.graphAddUsages": "Adding graph usages",
     "status.progress.graphCanonicalizeSymbols": "Canonicalizing graph symbols",
@@ -1991,6 +2196,16 @@ const extensionMessages: Record<"en" | "ja", Record<ExtensionMessageKey, string>
     "graph.workspaceTitle": "Classic ASP: Workspace Graph",
     "graph.documentPanelTitle": "Classic ASP Graph: {name}",
     "graph.workspacePanelTitle": "Classic ASP Graph: Workspace",
+    "navigationGraph.serverUnavailable":
+      "Start the Classic ASP Language Server before building a navigation graph.",
+    "navigationGraph.noActiveFile":
+      "Open a Classic ASP file before building the current file navigation graph.",
+    "navigationGraph.noFolder": "Select a folder before building the folder navigation graph.",
+    "navigationGraph.currentTitle": "Classic ASP: Current File Navigation Graph",
+    "navigationGraph.folderTitle": "Classic ASP: Folder Navigation Graph",
+    "navigationGraph.workspaceTitle": "Classic ASP: Workspace Navigation Graph",
+    "navigationGraph.documentPanelTitle": "Classic ASP Navigation Graph: {name}",
+    "navigationGraph.workspacePanelTitle": "Classic ASP Navigation Graph: Workspace",
     "excel.serverUnavailable": "Start the Classic ASP Language Server before exporting analysis.",
     "excel.currentTitle": "Classic ASP: Export Current File Analysis",
     "excel.saveLabel": "Export",
@@ -2049,6 +2264,11 @@ const extensionMessages: Record<"en" | "ja", Record<ExtensionMessageKey, string>
     "status.progress.flowchartHydrateDocument": "フローチャート用 VBScript を復元中",
     "status.progress.flowchartIndexDocuments": "フローチャート用ドキュメントをインデックス中",
     "status.progress.flowchartLoadDocument": "フローチャート用ドキュメントを読み込み中",
+    "status.progress.navigationGraph": "画面遷移グラフを生成中",
+    "status.progress.navigationGraphBuildPayload": "画面遷移グラフ payload を作成中",
+    "status.progress.navigationGraphCollectDocuments": "画面遷移グラフ用ドキュメントを収集中",
+    "status.progress.navigationGraphExtract": "画面遷移を抽出中",
+    "status.progress.navigationGraphResolveIncludes": "画面遷移 include 元を解決中",
     "status.progress.graphAddStructure": "グラフ構造を追加中",
     "status.progress.graphAddUsages": "グラフ使用箇所を追加中",
     "status.progress.graphCanonicalizeSymbols": "グラフ symbol を正規化中",
@@ -2097,6 +2317,17 @@ const extensionMessages: Record<"en" | "ja", Record<ExtensionMessageKey, string>
     "graph.workspaceTitle": "Classic ASP: ワークスペースグラフ",
     "graph.documentPanelTitle": "Classic ASP グラフ: {name}",
     "graph.workspacePanelTitle": "Classic ASP グラフ: ワークスペース",
+    "navigationGraph.serverUnavailable":
+      "画面遷移グラフを作成する前に Classic ASP Language Server を起動してください。",
+    "navigationGraph.noActiveFile":
+      "現在のファイルの画面遷移グラフを作成する前に Classic ASP ファイルを開いてください。",
+    "navigationGraph.noFolder":
+      "フォルダー画面遷移グラフを作成する前にフォルダーを選択してください。",
+    "navigationGraph.currentTitle": "Classic ASP: 現在のファイル画面遷移グラフ",
+    "navigationGraph.folderTitle": "Classic ASP: フォルダー画面遷移グラフ",
+    "navigationGraph.workspaceTitle": "Classic ASP: ワークスペース画面遷移グラフ",
+    "navigationGraph.documentPanelTitle": "Classic ASP 画面遷移グラフ: {name}",
+    "navigationGraph.workspacePanelTitle": "Classic ASP 画面遷移グラフ: ワークスペース",
     "excel.serverUnavailable":
       "解析を出力する前に Classic ASP Language Server を起動してください。",
     "excel.currentTitle": "Classic ASP: 現在のファイル解析を Excel 出力",

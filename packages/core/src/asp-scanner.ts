@@ -1,6 +1,11 @@
 import { DiagnosticSeverity } from "vscode-languageserver-types";
 import type {
   AspInclude,
+  AspNavigationCandidate,
+  AspNavigationEdgeKind,
+  AspNavigationParameterFlow,
+  AspNavigationParameterSource,
+  AspNavigationUrlValue,
   AspParsedDocument,
   AspRegion,
   AspServerObject,
@@ -87,6 +92,346 @@ export function extractAspIncludeRefs(text: string): AspInclude[] {
     }
   }
   return includes;
+}
+
+export function extractHtmlNavigationCandidates(text: string, uri = ""): AspNavigationCandidate[] {
+  const candidates: AspNavigationCandidate[] = [];
+  let cursor = 0;
+  while (cursor < text.length) {
+    if (text.startsWith("<%", cursor)) {
+      const close = findAspClose(text, cursor + 2, text.length);
+      cursor = close === -1 ? text.length : close + 2;
+      continue;
+    }
+    if (text.startsWith("<!--", cursor)) {
+      const commentEnd = text.indexOf("-->", cursor + 4);
+      cursor = commentEnd === -1 ? text.length : commentEnd + 3;
+      continue;
+    }
+    if (text[cursor] !== "<") {
+      cursor += 1;
+      continue;
+    }
+    const tag = readHtmlTag(text, cursor);
+    if (!tag) {
+      cursor += 1;
+      continue;
+    }
+    if (!tag.closing) {
+      addHtmlNavigationCandidatesFromTag(text, uri, tag, candidates);
+    }
+    if ((tag.name === "script" || tag.name === "style") && !tag.closing && !tag.selfClosing) {
+      const close = findElementClose(text, tag.name, tag.end);
+      if (close) {
+        cursor = close.end;
+        continue;
+      }
+    }
+    cursor = tag.end;
+  }
+  return candidates;
+}
+
+function addHtmlNavigationCandidatesFromTag(
+  text: string,
+  uri: string,
+  tag: HtmlTag,
+  candidates: AspNavigationCandidate[],
+): void {
+  if (tag.name === "a" || tag.name === "area") {
+    addAttributeNavigationCandidate(text, uri, tag, candidates, {
+      kind: "htmlAnchor",
+      attributeName: "href",
+      label: `${tag.name} href`,
+      targetFrame: attributeStringValue(tag, "target"),
+    });
+    return;
+  }
+  if (tag.name === "iframe" || tag.name === "frame") {
+    addAttributeNavigationCandidate(text, uri, tag, candidates, {
+      kind: "htmlFrame",
+      attributeName: "src",
+      label: `${tag.name} src`,
+      targetFrame: attributeStringValue(tag, "name") ?? attributeStringValue(tag, "id"),
+    });
+    return;
+  }
+  if (tag.name === "form") {
+    addFormNavigationCandidate(text, uri, tag, candidates);
+    return;
+  }
+  if (tag.name === "button" || tag.name === "input") {
+    addAttributeNavigationCandidate(text, uri, tag, candidates, {
+      kind: "htmlForm",
+      attributeName: "formaction",
+      label: `${tag.name} formaction`,
+      method: normalizeHtmlMethod(attributeStringValue(tag, "formmethod")),
+      targetFrame: attributeStringValue(tag, "formtarget"),
+      parameters: formControlParameterFromTag(text, tag),
+    });
+    return;
+  }
+  if (tag.name === "meta") {
+    addMetaRefreshNavigationCandidate(text, uri, tag, candidates);
+  }
+}
+
+function addAttributeNavigationCandidate(
+  text: string,
+  uri: string,
+  tag: HtmlTag,
+  candidates: AspNavigationCandidate[],
+  options: {
+    kind: AspNavigationEdgeKind;
+    attributeName: string;
+    label: string;
+    method?: string;
+    targetFrame?: string;
+    parameters?: AspNavigationParameterFlow[];
+  },
+): void {
+  const span = attributeSpanByName(tag, options.attributeName);
+  if (!span || span.value === true) {
+    return;
+  }
+  const target = navigationUrlValueFromHtmlValue(span.value);
+  candidates.push({
+    kind: options.kind,
+    target,
+    range: rangeFromOffsets(text, tag.start, tag.end),
+    valueRange: rangeFromOffsets(text, span.valueStart, span.valueEnd),
+    method: options.method,
+    targetFrame: options.targetFrame,
+    parameters: options.parameters,
+    declaredInUri: uri,
+    evidence: [
+      {
+        uri,
+        range: rangeFromOffsets(text, tag.start, tag.end),
+        valueRange: rangeFromOffsets(text, span.valueStart, span.valueEnd),
+        label: options.label,
+        snippet: snippetForRange(text, tag.start, tag.end),
+        extractor: "html",
+      },
+    ],
+    confidence: target.kind === "literal" ? "certain" : "possible",
+    source: "html",
+  });
+}
+
+function addFormNavigationCandidate(
+  text: string,
+  uri: string,
+  tag: HtmlTag,
+  candidates: AspNavigationCandidate[],
+): void {
+  const actionSpan = attributeSpanByName(tag, "action");
+  const target =
+    actionSpan && actionSpan.value !== true
+      ? navigationUrlValueFromHtmlValue(actionSpan.value)
+      : ({ kind: "literal", text: "" } satisfies AspNavigationUrlValue);
+  const close = findGenericElementClose(text, tag.name, tag.end);
+  const formEnd = close?.start ?? tag.end;
+  const parameters = extractFormControlParameters(text, tag.end, formEnd);
+  candidates.push({
+    kind: "htmlForm",
+    target,
+    range: rangeFromOffsets(text, tag.start, close?.end ?? tag.end),
+    valueRange:
+      actionSpan && actionSpan.value !== true
+        ? rangeFromOffsets(text, actionSpan.valueStart, actionSpan.valueEnd)
+        : undefined,
+    method: normalizeHtmlMethod(attributeStringValue(tag, "method")) ?? "GET",
+    targetFrame: attributeStringValue(tag, "target"),
+    parameters,
+    declaredInUri: uri,
+    evidence: [
+      {
+        uri,
+        range: rangeFromOffsets(text, tag.start, tag.end),
+        valueRange:
+          actionSpan && actionSpan.value !== true
+            ? rangeFromOffsets(text, actionSpan.valueStart, actionSpan.valueEnd)
+            : undefined,
+        label: "form action",
+        snippet: snippetForRange(text, tag.start, tag.end),
+        extractor: "html",
+      },
+    ],
+    confidence: target.kind === "literal" ? "certain" : "possible",
+    source: "html",
+  });
+}
+
+function addMetaRefreshNavigationCandidate(
+  text: string,
+  uri: string,
+  tag: HtmlTag,
+  candidates: AspNavigationCandidate[],
+): void {
+  const httpEquiv = attributeStringValue(tag, "http-equiv");
+  if (httpEquiv?.toLowerCase() !== "refresh") {
+    return;
+  }
+  const contentSpan = attributeSpanByName(tag, "content");
+  if (!contentSpan || contentSpan.value === true) {
+    return;
+  }
+  const refreshTarget = parseMetaRefreshTarget(contentSpan.value);
+  if (!refreshTarget) {
+    return;
+  }
+  candidates.push({
+    kind: "metaRefresh",
+    target: navigationUrlValueFromHtmlValue(refreshTarget),
+    range: rangeFromOffsets(text, tag.start, tag.end),
+    valueRange: rangeFromOffsets(text, contentSpan.valueStart, contentSpan.valueEnd),
+    declaredInUri: uri,
+    evidence: [
+      {
+        uri,
+        range: rangeFromOffsets(text, tag.start, tag.end),
+        valueRange: rangeFromOffsets(text, contentSpan.valueStart, contentSpan.valueEnd),
+        label: "meta refresh",
+        snippet: snippetForRange(text, tag.start, tag.end),
+        extractor: "html",
+      },
+    ],
+    confidence: refreshTarget.includes("<%") ? "possible" : "certain",
+    source: "html",
+  });
+}
+
+function extractFormControlParameters(
+  text: string,
+  start: number,
+  end: number,
+): AspNavigationParameterFlow[] {
+  const parameters: AspNavigationParameterFlow[] = [];
+  let cursor = start;
+  while (cursor < end) {
+    if (text.startsWith("<%", cursor)) {
+      const close = findAspClose(text, cursor + 2, end);
+      cursor = close === -1 ? end : close + 2;
+      continue;
+    }
+    if (text[cursor] !== "<") {
+      cursor += 1;
+      continue;
+    }
+    const tag = readHtmlTag(text, cursor, { maxEnd: end });
+    if (!tag) {
+      cursor += 1;
+      continue;
+    }
+    if (!tag.closing) {
+      parameters.push(...formControlParameterFromTag(text, tag));
+    }
+    cursor = tag.end;
+  }
+  return parameters;
+}
+
+function formControlParameterFromTag(text: string, tag: HtmlTag): AspNavigationParameterFlow[] {
+  if (
+    tag.name !== "input" &&
+    tag.name !== "select" &&
+    tag.name !== "textarea" &&
+    tag.name !== "button"
+  ) {
+    return [];
+  }
+  const nameSpan = attributeSpanByName(tag, "name");
+  if (!nameSpan || nameSpan.value === true || nameSpan.value.length === 0) {
+    return [];
+  }
+  const valueSpan = attributeSpanByName(tag, "value");
+  const inputType = attributeStringValue(tag, "type")?.toLowerCase();
+  const source: AspNavigationParameterSource =
+    tag.name === "input" && inputType === "hidden" ? "hiddenInput" : "formControl";
+  return [
+    {
+      name: nameSpan.value,
+      source,
+      value: valueSpan && valueSpan.value !== true ? valueSpan.value : undefined,
+      confidence:
+        valueSpan && valueSpan.value !== true && !valueSpan.value.includes("<%")
+          ? "certain"
+          : "possible",
+      range: rangeFromOffsets(text, nameSpan.valueStart, nameSpan.valueEnd),
+    },
+  ];
+}
+
+function navigationUrlValueFromHtmlValue(value: string): AspNavigationUrlValue {
+  if (!value.includes("<%")) {
+    return { kind: "literal", text: decodeHtmlAttributeValue(value.trim()) };
+  }
+  const parts = value
+    .split(/(<%[\s\S]*?%>)/g)
+    .filter((part) => part.length > 0)
+    .map((part) =>
+      part.startsWith("<%")
+        ? { kind: "unknown" as const, text: part }
+        : { kind: "text" as const, text: decodeHtmlAttributeValue(part) },
+    );
+  return { kind: "template", text: parts.map((part) => part.text ?? "").join(""), parts };
+}
+
+function parseMetaRefreshTarget(value: string): string | undefined {
+  const match = value.match(/(?:^|;)\s*url\s*=\s*(?:"([^"]*)"|'([^']*)'|([^;]+))/i);
+  return (match?.[1] ?? match?.[2] ?? match?.[3])?.trim();
+}
+
+function normalizeHtmlMethod(method: string | undefined): string | undefined {
+  if (!method) {
+    return undefined;
+  }
+  const normalized = method.trim().toUpperCase();
+  return normalized.length > 0 ? normalized : undefined;
+}
+
+function decodeHtmlAttributeValue(value: string): string {
+  return value
+    .replace(/&amp;/gi, "&")
+    .replace(/&quot;/gi, '"')
+    .replace(/&#39;/g, "'")
+    .replace(/&lt;/gi, "<")
+    .replace(/&gt;/gi, ">");
+}
+
+function snippetForRange(text: string, start: number, end: number): string {
+  return text.slice(start, end).replace(/\s+/g, " ").trim().slice(0, 240);
+}
+
+function findGenericElementClose(
+  text: string,
+  tagName: string,
+  offset: number,
+  maxEnd = text.length,
+): { start: number; end: number } | undefined {
+  let cursor = offset;
+  while (cursor < maxEnd) {
+    if (text.startsWith("<%", cursor)) {
+      const close = findAspClose(text, cursor + 2, maxEnd);
+      cursor = close === -1 ? maxEnd : close + 2;
+      continue;
+    }
+    if (text[cursor] !== "<") {
+      cursor += 1;
+      continue;
+    }
+    const tag = readHtmlTag(text, cursor, { maxEnd });
+    if (!tag) {
+      cursor += 1;
+      continue;
+    }
+    if (tag.closing && tag.name === tagName) {
+      return { start: tag.start, end: tag.end };
+    }
+    cursor = tag.end;
+  }
+  return undefined;
 }
 
 function isInsideHtmlTagAt(text: string, index: number): boolean {

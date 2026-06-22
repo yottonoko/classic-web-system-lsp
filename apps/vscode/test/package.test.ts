@@ -48,6 +48,15 @@ function readFlowchartWebviewSource(): string {
   );
 }
 
+function readNavigationGraphWebviewSource(): string {
+  return readWebviewSources(
+    "src/navigation-graph-webview.ts",
+    "src/webview/navigation-graph.tsx",
+    "src/webview/navigation-graph-layout.ts",
+    "src/webview/navigation-graph.css",
+  );
+}
+
 function readWorkspaceFilesWebviewSource(): string {
   return readWebviewSources(
     "src/workspace-files-webview.ts",
@@ -627,6 +636,78 @@ describe("VS Code extension package", () => {
     );
   });
 
+  it("declares a dedicated 2D navigation graph webview without force graph imports", () => {
+    const manifest = JSON.parse(fs.readFileSync("package.json", "utf8")) as {
+      contributes?: {
+        commands?: Array<{ command?: string; title?: string }>;
+        menus?: {
+          "editor/title"?: Array<{ command?: string; when?: string; group?: string }>;
+          "explorer/context"?: Array<{ command?: string; when?: string; group?: string }>;
+        };
+        configuration?: { properties?: Record<string, unknown> };
+      };
+    };
+    const extensionSource = fs.readFileSync("src/extension.ts", "utf8");
+    const buildScript = fs.readFileSync("scripts/build-webview.mjs", "utf8");
+    const webviewSource = readNavigationGraphWebviewSource();
+    const nls = JSON.parse(fs.readFileSync("package.nls.json", "utf8")) as Record<string, string>;
+    const nlsJa = JSON.parse(fs.readFileSync("package.nls.ja.json", "utf8")) as Record<
+      string,
+      string
+    >;
+    const commands = manifest.contributes?.commands?.map((command) => command.command) ?? [];
+
+    expect(commands).toEqual(
+      expect.arrayContaining([
+        "aspLsp.showCurrentFileNavigationGraph",
+        "aspLsp.showFolderNavigationGraph",
+        "aspLsp.showWorkspaceNavigationGraph",
+      ]),
+    );
+    expect(extensionSource).toContain("buildNavigationGraphServerCommand");
+    expect(extensionSource).toContain("navigationGraphUpdatedNotificationMethod");
+    expect(extensionSource).toContain("showAspNavigationGraphWebview");
+    expect(buildScript).toContain("navigation-graph.tsx");
+    expect(buildScript).toContain("navigation-graph.js");
+    expect(webviewSource).toContain("__ASP_LSP_NAVIGATION_GRAPH__");
+    expect(webviewSource).toContain("React");
+    expect(webviewSource).toContain("<svg");
+    expect(webviewSource).toContain("layoutNavigationGraph");
+    expect(webviewSource).toContain("MiniMap");
+    expect(webviewSource).toContain("Inspector");
+    expect(webviewSource).toContain('type: "openRange"');
+    expect(webviewSource).not.toContain("react-force-graph-2d");
+    expect(webviewSource).not.toContain("react-force-graph-3d");
+    expect(webviewSource).not.toContain("include-graph-model");
+    expect(webviewSource).not.toContain("include-graph-theme");
+    expect(manifest.contributes?.menus?.["editor/title"]).toContainEqual(
+      expect.objectContaining({
+        command: "aspLsp.showCurrentFileNavigationGraph",
+        when: "editorLangId == classic-asp",
+        group: "navigation",
+      }),
+    );
+    expect(manifest.contributes?.menus?.["explorer/context"]).toContainEqual(
+      expect.objectContaining({
+        command: "aspLsp.showFolderNavigationGraph",
+        when: "explorerResourceIsFolder",
+        group: "navigation",
+      }),
+    );
+    expect(
+      manifest.contributes?.configuration?.properties?.["aspLsp.navigationGraph.maxNodes"],
+    ).toEqual(expect.objectContaining({ type: "number", minimum: 1, default: 500 }));
+    expect(
+      manifest.contributes?.configuration?.properties?.["aspLsp.navigationGraph.maxEdges"],
+    ).toEqual(expect.objectContaining({ type: "number", minimum: 1, default: 1200 }));
+    expect(nls["command.showCurrentFileNavigationGraph.title"]).toBeTruthy();
+    expect(nls["command.showFolderNavigationGraph.title"]).toBeTruthy();
+    expect(nls["command.showWorkspaceNavigationGraph.title"]).toBeTruthy();
+    expect(nlsJa["command.showCurrentFileNavigationGraph.title"]).toBeTruthy();
+    expect(nls["configuration.navigationGraph.maxNodes.description"]).toBeTruthy();
+    expect(nlsJa["configuration.navigationGraph.maxEdges.description"]).toBeTruthy();
+  });
+
   it("does not contribute the removed Classic ASP settings webview", () => {
     const manifest = JSON.parse(fs.readFileSync("package.json", "utf8")) as {
       activationEvents?: string[];
@@ -863,6 +944,8 @@ describe("VS Code extension package", () => {
       "aspLsp.flowchart.maxEdges",
       "aspLsp.flowchart.minZoom",
       "aspLsp.flowchart.maxZoom",
+      "aspLsp.navigationGraph.maxNodes",
+      "aspLsp.navigationGraph.maxEdges",
       "aspLsp.graph.showIncomingDocumentIncludes",
       "aspLsp.graph.showIncomingFolderIncludes",
       "aspLsp.graph.useReverseIncludeIndex",
@@ -1162,6 +1245,28 @@ describe("VS Code extension package", () => {
     expect(nlsJa["configuration.flowchart.minZoom.description"]).toBeTruthy();
     expect(nls["configuration.flowchart.maxZoom.description"]).toBeTruthy();
     expect(nlsJa["configuration.flowchart.maxZoom.description"]).toBeTruthy();
+    expect(
+      manifest.contributes?.configuration?.properties?.["aspLsp.navigationGraph.maxNodes"],
+    ).toEqual(
+      expect.objectContaining({
+        type: "number",
+        minimum: 1,
+        default: 500,
+      }),
+    );
+    expect(
+      manifest.contributes?.configuration?.properties?.["aspLsp.navigationGraph.maxEdges"],
+    ).toEqual(
+      expect.objectContaining({
+        type: "number",
+        minimum: 1,
+        default: 1200,
+      }),
+    );
+    expect(nls["configuration.navigationGraph.maxNodes.description"]).toBeTruthy();
+    expect(nlsJa["configuration.navigationGraph.maxNodes.description"]).toBeTruthy();
+    expect(nls["configuration.navigationGraph.maxEdges.description"]).toBeTruthy();
+    expect(nlsJa["configuration.navigationGraph.maxEdges.description"]).toBeTruthy();
     for (const key of [
       "referenceProcedures",
       "referenceGlobals",
@@ -1567,6 +1672,9 @@ describe("VS Code extension package", () => {
     expect(commands).toContain("aspLsp.showCurrentFileGraph");
     expect(commands).toContain("aspLsp.showFolderGraph");
     expect(commands).toContain("aspLsp.showWorkspaceGraph");
+    expect(commands).toContain("aspLsp.showCurrentFileNavigationGraph");
+    expect(commands).toContain("aspLsp.showFolderNavigationGraph");
+    expect(commands).toContain("aspLsp.showWorkspaceNavigationGraph");
     expect(commands).toContain("aspLsp.showWorkspaceGlobFiles");
     expect(commands).not.toContain("aspLsp.openSettings");
     expect(commands).not.toContain("aspLsp.openAnalysisExcelExport");
@@ -1580,9 +1688,21 @@ describe("VS Code extension package", () => {
         (command) => command.command === "aspLsp.showCurrentFileGraph",
       ),
     ).toEqual(expect.objectContaining({ icon: "$(graph)" }));
+    expect(
+      manifest.contributes?.commands?.find(
+        (command) => command.command === "aspLsp.showCurrentFileNavigationGraph",
+      ),
+    ).toEqual(expect.objectContaining({ icon: "$(graph)" }));
     expect(manifest.contributes?.menus?.["editor/title"]).toContainEqual(
       expect.objectContaining({
         command: "aspLsp.showCurrentFileGraph",
+        when: "editorLangId == classic-asp",
+        group: "navigation",
+      }),
+    );
+    expect(manifest.contributes?.menus?.["editor/title"]).toContainEqual(
+      expect.objectContaining({
+        command: "aspLsp.showCurrentFileNavigationGraph",
         when: "editorLangId == classic-asp",
         group: "navigation",
       }),
@@ -1610,7 +1730,21 @@ describe("VS Code extension package", () => {
     );
     expect(manifest.contributes?.menus?.["explorer/context"]).toContainEqual(
       expect.objectContaining({
+        command: "aspLsp.showFolderNavigationGraph",
+        when: "explorerResourceIsFolder",
+        group: "navigation",
+      }),
+    );
+    expect(manifest.contributes?.menus?.["explorer/context"]).toContainEqual(
+      expect.objectContaining({
         command: "aspLsp.showCurrentFileGraph",
+        when: "resourceExtname =~ /\\.(asp|asa|inc)$/i",
+        group: "navigation",
+      }),
+    );
+    expect(manifest.contributes?.menus?.["explorer/context"]).toContainEqual(
+      expect.objectContaining({
+        command: "aspLsp.showCurrentFileNavigationGraph",
         when: "resourceExtname =~ /\\.(asp|asa|inc)$/i",
         group: "navigation",
       }),
@@ -1637,6 +1771,9 @@ describe("VS Code extension package", () => {
     expect(nls["command.showCurrentFileGraph.title"]).toBeTruthy();
     expect(nls["command.showFolderGraph.title"]).toBeTruthy();
     expect(nls["command.showWorkspaceGraph.title"]).toBeTruthy();
+    expect(nls["command.showCurrentFileNavigationGraph.title"]).toBeTruthy();
+    expect(nls["command.showFolderNavigationGraph.title"]).toBeTruthy();
+    expect(nls["command.showWorkspaceNavigationGraph.title"]).toBeTruthy();
     expect(nls["command.showWorkspaceGlobFiles.title"]).toBeTruthy();
     expect(nls["command.openAnalysisExcelExport.title"]).toBeUndefined();
     expect(nls["command.exportCurrentFileAnalysisExcel.title"]).toBeTruthy();
@@ -2564,6 +2701,7 @@ new Intl.DateTimeFormat("en");
       const listing = execFileSync("unzip", ["-l", vsixPath], { encoding: "utf8" });
       expect(listing).toContain("extension/dist/extension.js");
       expect(listing).toContain("extension/dist/webview/include-graph.js");
+      expect(listing).toContain("extension/dist/webview/navigation-graph.js");
       expect(listing).not.toContain("extension/dist/webview/settings.js");
       expect(listing).toContain("extension/syntaxes/classic-asp-tag-injection.tmLanguage.json");
       expect(listing).toContain("extension/syntaxes/classic-asp.tmLanguage.json");
