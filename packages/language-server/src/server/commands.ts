@@ -1,6 +1,7 @@
 export {
   buildFlowchartServerCommand,
   buildGraphServerCommand,
+  buildNavigationGraphServerCommand,
   cancelProgressTaskServerCommand,
   clearCacheCommand,
   clearCacheServerCommand,
@@ -12,4 +13,5 @@ export {
   previewWorkspaceFilesServerCommand,
   reindexWorkspaceCommand,
   reindexWorkspaceServerCommand,
+  navigationGraphUpdatedNotificationMethod,
 } from "./constants";

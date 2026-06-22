@@ -1,6 +1,7 @@
 export * from "./types";
+export * from "./position";
 export * from "./parser";
-export { extractAspIncludeRefs } from "./asp-scanner";
+export { extractAspIncludeRefs, extractHtmlNavigationCandidates } from "./asp-scanner";
 export * from "./vbscript-symbol-index";
 export * from "./vbscript-incremental";
 export * from "./virtual-documents";
@@ -10,3 +11,4 @@ export * from "./formatter";
 export * from "./localize";
 export * from "./comments";
 export * from "./flowchart";
+export * from "./navigation";

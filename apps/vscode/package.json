@@ -37,8 +37,10 @@
     "@asp-lsp/core": "workspace:*",
     "@asp-lsp/language-server": "workspace:*",
     "@tanstack/react-virtual": "^3.14.2",
+    "@xyflow/react": "^12.11.0",
     "clsx": "^2.1.1",
     "codehike": "^1.1.0",
+    "elkjs": "^0.11.1",
     "mermaid": "^11.15.0",
     "react": "19.2.7",
     "react-dom": "19.2.7",
@@ -1514,6 +1516,24 @@
           "default": true,
           "description": "%configuration.flowchart.showSourcePanel.description%"
         },
+        "aspLsp.navigationGraph.maxNodes": {
+          "type": "number",
+          "minimum": 1,
+          "default": 500,
+          "description": "%configuration.navigationGraph.maxNodes.description%",
+          "tags": [
+            "advanced"
+          ]
+        },
+        "aspLsp.navigationGraph.maxEdges": {
+          "type": "number",
+          "minimum": 1,
+          "default": 1200,
+          "description": "%configuration.navigationGraph.maxEdges.description%",
+          "tags": [
+            "advanced"
+          ]
+        },
         "aspLsp.webview.theme": {
           "type": "string",
           "enum": [
@@ -2059,6 +2079,20 @@
         "title": "%command.showWorkspaceGraph.title%"
       },
       {
+        "command": "aspLsp.showCurrentFileNavigationGraph",
+        "title": "%command.showCurrentFileNavigationGraph.title%",
+        "icon": "$(graph)"
+      },
+      {
+        "command": "aspLsp.showFolderNavigationGraph",
+        "title": "%command.showFolderNavigationGraph.title%",
+        "icon": "$(graph)"
+      },
+      {
+        "command": "aspLsp.showWorkspaceNavigationGraph",
+        "title": "%command.showWorkspaceNavigationGraph.title%"
+      },
+      {
         "command": "aspLsp.showWorkspaceGlobFiles",
         "title": "%command.showWorkspaceGlobFiles.title%",
         "icon": "$(list-tree)"
@@ -2094,6 +2128,11 @@
           "group": "navigation"
         },
         {
+          "command": "aspLsp.showCurrentFileNavigationGraph",
+          "when": "editorLangId == classic-asp",
+          "group": "navigation"
+        },
+        {
           "command": "aspLsp.exportCurrentFileAnalysisExcel",
           "when": "editorLangId == classic-asp",
           "group": "navigation"
@@ -2111,7 +2150,17 @@
           "group": "navigation"
         },
         {
+          "command": "aspLsp.showFolderNavigationGraph",
+          "when": "explorerResourceIsFolder",
+          "group": "navigation"
+        },
+        {
           "command": "aspLsp.showCurrentFileGraph",
+          "when": "resourceExtname =~ /\\.(asp|asa|inc)$/i",
+          "group": "navigation"
+        },
+        {
+          "command": "aspLsp.showCurrentFileNavigationGraph",
           "when": "resourceExtname =~ /\\.(asp|asa|inc)$/i",
           "group": "navigation"
         },

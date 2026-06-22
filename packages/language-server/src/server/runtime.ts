@@ -224,6 +224,7 @@ import {
   collectVbscriptSymbolsFromTextAsync,
   createLocalizer,
   extractAspIncludeRefs,
+  extractAspNavigationCandidates,
   extractVbscriptSymbolIndex,
   formatAspDocument,
   formatAspRange,
@@ -254,6 +255,7 @@ import {
   parseAspDocumentSkeletonAsync,
   parseVbscriptDocument,
   parseVbscriptDocumentAsync,
+  rangeFromOffsets,
   registerParserMemoryCaches,
   parseVbscriptTypeRef,
   prepareVbscriptCallHierarchy,
@@ -275,6 +277,16 @@ import {
   type AspLegacyEncoding,
   type AspLocale,
   type AspLocaleSetting,
+  type AspNavigationCandidate,
+  type AspNavigationConfidence,
+  type AspNavigationEdge,
+  type AspNavigationEdgeKind,
+  type AspNavigationGraphPayload,
+  type AspNavigationGraphScope,
+  type AspNavigationNode,
+  type AspNavigationParameterFlow,
+  type AspNavigationUrlPart,
+  type AspNavigationUrlValue,
   type AspCstNode,
   type AspParsedDocument,
   type AspSettings,
@@ -311,6 +323,7 @@ import {
 import {
   buildFlowchartServerCommand,
   buildGraphServerCommand,
+  buildNavigationGraphServerCommand,
   cancelProgressTaskServerCommand,
   clearCacheCommand,
   clearCacheServerCommand,
@@ -321,6 +334,7 @@ import {
   exportAnalysisExcelServerCommand,
   graphUpdatedNotificationMethod,
   languageServerVersion,
+  navigationGraphUpdatedNotificationMethod,
   previewWorkspaceFilesServerCommand,
   reindexWorkspaceCommand,
   reindexWorkspaceServerCommand,
@@ -1931,6 +1945,7 @@ connection.onInitialize((params: InitializeParams): InitializeResult => {
           clearProcessCacheServerCommand,
           buildGraphServerCommand,
           buildFlowchartServerCommand,
+          buildNavigationGraphServerCommand,
           exportAnalysisExcelServerCommand,
           previewWorkspaceFilesServerCommand,
           cancelProgressTaskServerCommand,
@@ -2939,6 +2954,9 @@ connection.onExecuteCommand(async (params, token) => {
   }
   if (params.command === buildFlowchartServerCommand) {
     return buildAspFlowchartForCommand(params.arguments?.[0], token);
+  }
+  if (params.command === buildNavigationGraphServerCommand) {
+    return buildAspNavigationGraphForCommand(params.arguments?.[0], token);
   }
   if (params.command === exportAnalysisExcelServerCommand) {
     return exportAnalysisExcelForCommand(params.arguments?.[0], token);
@@ -16167,6 +16185,7 @@ function normalizeSettings(settings: Record<string, unknown> | AspSettings): Asp
     rename: normalizeRenameSettings(settings),
     styleExtraction: normalizeStyleExtractionSettings(settings),
     flowchart: normalizeFlowchartSettings(settings),
+    navigationGraph: normalizeNavigationGraphSettings(settings),
     graph: normalizeGraphSettings(settings),
     excel: normalizeExcelSettings(settings),
     cache: normalizeCacheSettings(settings),
@@ -16436,6 +16455,17 @@ function normalizeFlowchartSettings(
   return {
     labelLineLength: Math.max(8, positiveIntegerSetting(record.labelLineLength, 34)),
     labelMode: flowchartLabelMode(record.labelMode),
+  };
+}
+
+function normalizeNavigationGraphSettings(
+  settings: Record<string, unknown> | AspSettings,
+): NonNullable<AspSettings["navigationGraph"]> {
+  const raw = settings.navigationGraph;
+  const record = raw && typeof raw === "object" ? (raw as Record<string, unknown>) : {};
+  return {
+    maxNodes: positiveIntegerSetting(record.maxNodes, 500),
+    maxEdges: positiveIntegerSetting(record.maxEdges, 1200),
   };
 }
 
@@ -21416,6 +21446,903 @@ function emptyAspFlowchartPayload(uri: string | undefined): AspFlowchartPayload 
     },
   };
   return { ...payload, mermaid: "flowchart TB" };
+}
+
+interface AspNavigationSourceDocument {
+  uri: string;
+  fileName: string;
+  text: string;
+  parsed: AspParsedDocument;
+}
+
+interface AspNavigationBuildState {
+  scope: AspNavigationGraphScope;
+  rootUri?: string;
+  settings: NonNullable<AspSettings["navigationGraph"]>;
+  nodes: Map<string, AspNavigationNode>;
+  edges: Map<string, AspNavigationEdge>;
+  workspaceFileKeys: Set<string>;
+  truncatedNodes: number;
+  truncatedEdges: number;
+}
+
+async function buildAspNavigationGraphForCommand(
+  argument: unknown,
+  token?: GraphCancellationToken,
+): Promise<AspNavigationGraphPayload> {
+  const task = beginProgressTask("analyzing", "navigationGraph.build", {
+    cancellable: true,
+    current: 0,
+    total: 4,
+  });
+  const cancellation = progressCancellation(task, analysisCancellationFromToken(token));
+  try {
+    const scope = navigationGraphCommandScope(argument);
+    const uri =
+      graphCommandUri(argument) ??
+      documents.all().find((document) => isClassicAspGraphUri(document.uri))?.uri;
+    const settings = uri ? cachedSettings(uri) : globalSettings;
+    const navigationSettings = navigationGraphCommandSettings(argument, settings);
+    task.update({
+      label: "navigationGraph.collectDocuments",
+      current: 0,
+      total: 4,
+      detail: uri ? progressFileLabelFromUri(uri) : scope,
+    });
+    const sourceDocuments = await collectNavigationSourceDocumentsAsync(
+      scope,
+      uri,
+      settings,
+      cancellation,
+    );
+    throwIfGraphCancelled(cancellation);
+    task.update({
+      label: "navigationGraph.resolveIncludes",
+      current: 1,
+      total: 4,
+      detail: `${sourceDocuments.length}`,
+    });
+    const includeOwners = await navigationIncludeOwnersAsync(sourceDocuments, settings);
+    const state: AspNavigationBuildState = {
+      scope,
+      rootUri: uri,
+      settings: navigationSettings,
+      nodes: new Map(),
+      edges: new Map(),
+      workspaceFileKeys: new Set(
+        sourceDocuments.map((document) => graphFileKey(document.fileName)),
+      ),
+      truncatedNodes: 0,
+      truncatedEdges: 0,
+    };
+    task.update({
+      label: "navigationGraph.extract",
+      current: 2,
+      total: 4,
+      detail: `${sourceDocuments.length}`,
+    });
+    for (const document of sourceDocuments) {
+      throwIfGraphCancelled(cancellation);
+      const owners = navigationSourceUrisForDocument(document, includeOwners);
+      const candidates = [
+        ...extractAspNavigationCandidates(document.parsed),
+        ...extractJavascriptNavigationCandidates(document.parsed),
+      ];
+      for (const ownerUri of owners) {
+        addNavigationCandidatesForOwner(state, document, ownerUri, candidates);
+      }
+    }
+    task.update({
+      label: "navigationGraph.buildPayload",
+      current: 3,
+      total: 4,
+      detail: `${state.nodes.size}/${state.edges.size}`,
+    });
+    const payload = navigationPayloadFromState(state, sourceDocuments.length);
+    connection.sendNotification(navigationGraphUpdatedNotificationMethod, payload);
+    task.update({
+      label: "navigationGraph.buildPayload",
+      current: 4,
+      total: 4,
+      detail: `${payload.nodes.length}/${payload.edges.length}`,
+    });
+    return payload;
+  } finally {
+    task.end();
+  }
+}
+
+function navigationGraphCommandScope(argument: unknown): AspNavigationGraphScope {
+  if (argument && typeof argument === "object" && "scope" in argument) {
+    const scope = (argument as { scope?: unknown }).scope;
+    if (scope === "folder" || scope === "workspace") {
+      return scope;
+    }
+  }
+  return "document";
+}
+
+function navigationGraphCommandSettings(
+  argument: unknown,
+  settings: AspSettings,
+): NonNullable<AspSettings["navigationGraph"]> {
+  const base = settings.navigationGraph ?? normalizeNavigationGraphSettings(settings);
+  if (!argument || typeof argument !== "object") {
+    return base;
+  }
+  const record = argument as { maxNodes?: unknown; maxEdges?: unknown };
+  return {
+    maxNodes: positiveIntegerSetting(record.maxNodes, base.maxNodes ?? 500),
+    maxEdges: positiveIntegerSetting(record.maxEdges, base.maxEdges ?? 1200),
+  };
+}
+
+async function collectNavigationSourceDocumentsAsync(
+  scope: AspNavigationGraphScope,
+  uri: string | undefined,
+  settings: AspSettings,
+  cancellation: AnalysisCancellation,
+): Promise<AspNavigationSourceDocument[]> {
+  if (scope === "document") {
+    if (!uri) {
+      return [];
+    }
+    const cached = await cachedDocumentForGraphAsync(uri);
+    if (!cached) {
+      return [];
+    }
+    const graphDocuments = await collectDocumentGraphDocumentsAsync(cached, settings, cancellation);
+    return navigationDocumentsFromGraphDocumentsAsync(graphDocuments, settings, cancellation);
+  }
+  const folder =
+    scope === "folder" && uri ? await navigationFolderNameFromUriAsync(uri) : undefined;
+  const maxDocuments = settings.graph?.maxDocuments ?? defaultGraphMaxDocuments;
+  const documentsByKey = new Map<string, AspNavigationSourceDocument>();
+  for (const openDocument of await workspaceAnalyzableOpenDocumentsAsync(settings)) {
+    throwIfGraphCancelled(cancellation);
+    const fileName = graphFileNameFromUri(openDocument.uri);
+    if (folder && !isFileInDirectoryOrEqual(fileName, folder)) {
+      continue;
+    }
+    const cached = await ensureFreshCachedDocumentAsync(openDocument);
+    documentsByKey.set(graphFileKey(fileName), navigationDocumentFromCached(cached));
+  }
+  await ensureWorkspaceIndexAsync(settings, tokenFromAnalysisCancellation(cancellation));
+  for (const entry of workspaceIndex.values()) {
+    throwIfGraphCancelled(cancellation);
+    if (documentsByKey.size >= maxDocuments) {
+      break;
+    }
+    if (folder && !isFileInDirectoryOrEqual(entry.fileName, folder)) {
+      continue;
+    }
+    const key = graphFileKey(entry.fileName);
+    if (documentsByKey.has(key)) {
+      continue;
+    }
+    const cached = await cachedFromIndexedAsync(entry, cachedSettings(entry.uri));
+    documentsByKey.set(key, navigationDocumentFromCached(cached));
+  }
+  return [...documentsByKey.values()];
+}
+
+async function navigationDocumentsFromGraphDocumentsAsync(
+  graphDocuments: AspGraphDocument[],
+  settings: AspSettings,
+  cancellation: AnalysisCancellation,
+): Promise<AspNavigationSourceDocument[]> {
+  const documentsByKey = new Map<string, AspNavigationSourceDocument>();
+  for (const document of graphDocuments) {
+    throwIfGraphCancelled(cancellation);
+    const parsed = await parseAspDocumentAsync(document.uri, document.text, settings);
+    documentsByKey.set(graphFileKey(document.fileName), {
+      uri: document.uri,
+      fileName: document.fileName,
+      text: document.text,
+      parsed,
+    });
+  }
+  return [...documentsByKey.values()];
+}
+
+function navigationDocumentFromCached(cached: CachedDocument): AspNavigationSourceDocument {
+  const fileName = graphFileNameFromUri(cached.source.uri);
+  return {
+    uri: pathToFileUri(fileName),
+    fileName,
+    text: cached.parsed.text,
+    parsed: cached.parsed,
+  };
+}
+
+async function navigationFolderNameFromUriAsync(uri: string): Promise<string> {
+  const fileName = graphFileNameFromUri(uri);
+  const stat = await fsGateway.statAsync(fileName);
+  return stat?.isDirectory() ? normalizeFileName(fileName) : path.dirname(fileName);
+}
+
+async function navigationIncludeOwnersAsync(
+  documents: AspNavigationSourceDocument[],
+  settings: AspSettings,
+): Promise<Map<string, Set<string>>> {
+  const owners = new Map<string, Set<string>>();
+  for (const document of documents) {
+    for (const include of document.parsed.includes) {
+      const resolved = await resolveIncludePathDetailsAsync(
+        document.uri,
+        include.path,
+        include.mode,
+        settings,
+      );
+      const key = graphFileKey(resolved.actualPath ?? resolved.fileName);
+      let set = owners.get(key);
+      if (!set) {
+        set = new Set();
+        owners.set(key, set);
+      }
+      set.add(document.uri);
+    }
+  }
+  return owners;
+}
+
+function navigationSourceUrisForDocument(
+  document: AspNavigationSourceDocument,
+  includeOwners: Map<string, Set<string>>,
+): string[] {
+  const owners = includeOwners.get(graphFileKey(document.fileName));
+  if (owners && owners.size > 0 && isClassicAspFragmentFile(document.fileName)) {
+    return [...owners];
+  }
+  return [document.uri];
+}
+
+function addNavigationCandidatesForOwner(
+  state: AspNavigationBuildState,
+  document: AspNavigationSourceDocument,
+  ownerUri: string,
+  candidates: AspNavigationCandidate[],
+): void {
+  const sourceNode = ensureNavigationUriNode(state, ownerUri);
+  for (const candidate of candidates) {
+    if (shouldSkipNavigationCandidate(candidate)) {
+      continue;
+    }
+    const targetNode = ensureNavigationTargetNode(state, ownerUri, candidate);
+    const parameters = [
+      ...navigationParametersFromLiteralTarget(candidate.target),
+      ...(candidate.parameters ?? []),
+    ];
+    const declaredInUri = candidate.declaredInUri ?? document.uri;
+    const edgeKey = [
+      sourceNode.id,
+      targetNode.id,
+      candidate.kind,
+      candidate.method ?? "",
+      candidate.targetFrame ?? "",
+    ].join("|");
+    const existing = state.edges.get(edgeKey);
+    const evidence = candidate.evidence.map((item) => ({
+      ...item,
+      uri: item.uri || declaredInUri,
+    }));
+    if (existing) {
+      existing.count = (existing.count ?? 1) + 1;
+      existing.ranges.push(candidate.range);
+      existing.evidence.push(...evidence);
+      existing.parameters = mergeNavigationParameters(existing.parameters ?? [], parameters);
+      existing.confidence = lowerNavigationConfidence(
+        existing.confidence,
+        candidate.confidence ?? "unknown",
+      );
+      continue;
+    }
+    if (state.edges.size >= (state.settings.maxEdges ?? 1200)) {
+      state.truncatedEdges += 1;
+      continue;
+    }
+    state.edges.set(edgeKey, {
+      id: `edge:${state.edges.size + 1}`,
+      source: sourceNode.id,
+      target: targetNode.id,
+      kind: candidate.kind,
+      label: navigationEdgeLabel(candidate),
+      confidence: candidate.confidence ?? "unknown",
+      method: candidate.method,
+      targetFrame: candidate.targetFrame,
+      ranges: [candidate.range],
+      parameters,
+      declaredInUri,
+      evidence,
+      count: 1,
+    });
+  }
+}
+
+function ensureNavigationUriNode(state: AspNavigationBuildState, uri: string): AspNavigationNode {
+  const fileName = graphFileNameFromUri(uri);
+  const id = `page:${graphFileKey(fileName)}`;
+  const existing = state.nodes.get(id);
+  if (existing) {
+    return existing;
+  }
+  const node: AspNavigationNode = {
+    id,
+    kind: isClassicAspFragmentFile(fileName) ? "fragment" : "page",
+    label: flowchartDisplayFileName(fileName),
+    uri: pathToFileUri(fileName),
+    fileName: flowchartDisplayFileName(fileName),
+    exists: true,
+    isRoot: state.rootUri ? sameFileIdentityUri(pathToFileUri(fileName), state.rootUri) : false,
+  };
+  return addNavigationNode(state, node);
+}
+
+function ensureNavigationTargetNode(
+  state: AspNavigationBuildState,
+  sourceUri: string,
+  candidate: AspNavigationCandidate,
+): AspNavigationNode {
+  const target = candidate.target;
+  if (target.kind !== "literal") {
+    return ensureNavigationUnknownNode(state, target.text ?? "dynamic target");
+  }
+  const rawTarget = (target.text ?? "").trim();
+  if (rawTarget.length === 0) {
+    return candidate.kind === "htmlForm"
+      ? ensureNavigationUriNode(state, sourceUri)
+      : ensureNavigationUnknownNode(state, "empty target");
+  }
+  if (isExternalNavigationUrl(rawTarget)) {
+    const id = `external:${stableNavigationId(rawTarget)}`;
+    return addNavigationNode(state, {
+      id,
+      kind: "external",
+      label: rawTarget,
+      externalUrl: rawTarget,
+      exists: true,
+    });
+  }
+  const resolved = resolveLiteralNavigationTarget(sourceUri, rawTarget);
+  if (!resolved) {
+    return ensureNavigationUnknownNode(state, rawTarget);
+  }
+  const id = `page:${graphFileKey(resolved.fileName)}`;
+  const existing = state.nodes.get(id);
+  if (existing) {
+    return existing;
+  }
+  return addNavigationNode(state, {
+    id,
+    kind: isClassicAspFragmentFile(resolved.fileName) ? "fragment" : "page",
+    label: flowchartDisplayFileName(resolved.fileName),
+    uri: pathToFileUri(resolved.fileName),
+    fileName: flowchartDisplayFileName(resolved.fileName),
+    exists: resolved.exists,
+  });
+}
+
+function addNavigationNode(
+  state: AspNavigationBuildState,
+  node: AspNavigationNode,
+): AspNavigationNode {
+  const existing = state.nodes.get(node.id);
+  if (existing) {
+    return existing;
+  }
+  if (state.nodes.size >= (state.settings.maxNodes ?? 500)) {
+    state.truncatedNodes += 1;
+    return ensureNavigationUnknownNode(state, "node limit");
+  }
+  state.nodes.set(node.id, node);
+  return node;
+}
+
+function ensureNavigationUnknownNode(
+  state: AspNavigationBuildState,
+  label: string,
+): AspNavigationNode {
+  const id = `unknown:${stableNavigationId(label || "unknown")}`;
+  const existing = state.nodes.get(id);
+  if (existing) {
+    return existing;
+  }
+  const node: AspNavigationNode = {
+    id,
+    kind: "unknown",
+    label: label || "unknown",
+    exists: false,
+  };
+  state.nodes.set(id, node);
+  return node;
+}
+
+function resolveLiteralNavigationTarget(
+  sourceUri: string,
+  target: string,
+): { fileName: string; exists: boolean } | undefined {
+  const pathPart = target.split("#", 1)[0].split("?", 1)[0];
+  const normalizedTarget = pathPart.length > 0 ? pathPart : uriToFileName(sourceUri);
+  if (/^[a-z][a-z0-9+.-]*:/i.test(normalizedTarget) || normalizedTarget.startsWith("//")) {
+    return undefined;
+  }
+  const sourceFileName = graphFileNameFromUri(sourceUri);
+  let fileName: string;
+  if (normalizedTarget.startsWith("/")) {
+    const root =
+      workspaceRootForFileName(sourceFileName) ?? workspaceRoots[0] ?? path.dirname(sourceFileName);
+    fileName = path.resolve(root, normalizedTarget.replace(/^\/+/, ""));
+  } else if (path.isAbsolute(normalizedTarget)) {
+    fileName = normalizeFileName(normalizedTarget);
+  } else {
+    fileName = path.resolve(path.dirname(sourceFileName), normalizedTarget);
+  }
+  return {
+    fileName: normalizeFileName(fileName),
+    exists: fs.existsSync(fileName),
+  };
+}
+
+function shouldSkipNavigationCandidate(candidate: AspNavigationCandidate): boolean {
+  if (candidate.target.kind !== "literal") {
+    return false;
+  }
+  const value = (candidate.target.text ?? "").trim().toLowerCase();
+  return candidate.kind === "htmlAnchor" && (value === "#" || value.startsWith("javascript:void"));
+}
+
+function navigationEdgeLabel(candidate: AspNavigationCandidate): string {
+  if (candidate.method) {
+    return `${candidate.kind} ${candidate.method}`;
+  }
+  return candidate.kind;
+}
+
+function navigationPayloadFromState(
+  state: AspNavigationBuildState,
+  documentCount: number,
+): AspNavigationGraphPayload {
+  const nodes = [...state.nodes.values()].sort((left, right) =>
+    left.label.localeCompare(right.label),
+  );
+  const edges = [...state.edges.values()].sort((left, right) => left.id.localeCompare(right.id));
+  const confidenceCount = (confidence: AspNavigationConfidence) =>
+    edges.filter((edge) => edge.confidence === confidence).length;
+  return {
+    scope: state.scope,
+    rootUri: state.rootUri,
+    nodes,
+    edges,
+    settings: state.settings,
+    stats: {
+      documents: documentCount,
+      nodes: nodes.length,
+      edges: edges.length,
+      certain: confidenceCount("certain"),
+      probable: confidenceCount("probable"),
+      possible: confidenceCount("possible"),
+      unknown: confidenceCount("unknown"),
+      external: nodes.filter((node) => node.kind === "external").length,
+      truncatedNodes: state.truncatedNodes,
+      truncatedEdges: state.truncatedEdges,
+    },
+    truncated: state.truncatedNodes > 0 || state.truncatedEdges > 0,
+  };
+}
+
+function mergeNavigationParameters(
+  left: AspNavigationParameterFlow[],
+  right: AspNavigationParameterFlow[],
+): AspNavigationParameterFlow[] {
+  const parameters = new Map<string, AspNavigationParameterFlow>();
+  for (const parameter of [...left, ...right]) {
+    parameters.set(`${parameter.source}:${parameter.name}:${parameter.value ?? ""}`, parameter);
+  }
+  return [...parameters.values()];
+}
+
+function navigationParametersFromLiteralTarget(
+  target: AspNavigationUrlValue,
+): AspNavigationParameterFlow[] {
+  if (target.kind !== "literal") {
+    return parametersFromNavigationParts(target.parts);
+  }
+  const query = target.text?.split("#", 1)[0].split("?")[1];
+  if (!query) {
+    return [];
+  }
+  return query
+    .split("&")
+    .filter((part) => part.length > 0)
+    .map((part) => {
+      const [name, value] = part.split("=");
+      return {
+        name: decodeURIComponentSafe(name),
+        source: "queryString" as const,
+        value: value === undefined ? undefined : decodeURIComponentSafe(value),
+        confidence: "certain" as const,
+      };
+    });
+}
+
+function parametersFromNavigationParts(
+  parts: AspNavigationUrlPart[] | undefined,
+): AspNavigationParameterFlow[] {
+  return (parts ?? [])
+    .filter((part) => part.kind === "request")
+    .map((part) => ({
+      name: part.name ?? "value",
+      source: part.source ?? "request",
+      targetUsage: part.text,
+      confidence: "possible" as const,
+    }));
+}
+
+function decodeURIComponentSafe(value: string): string {
+  try {
+    return decodeURIComponent(value.replace(/\+/g, " "));
+  } catch {
+    return value;
+  }
+}
+
+function lowerNavigationConfidence(
+  left: AspNavigationConfidence,
+  right: AspNavigationConfidence,
+): AspNavigationConfidence {
+  const order: AspNavigationConfidence[] = ["certain", "probable", "possible", "unknown"];
+  return order[Math.max(order.indexOf(left), order.indexOf(right))] ?? "unknown";
+}
+
+function isExternalNavigationUrl(value: string): boolean {
+  return /^[a-z][a-z0-9+.-]*:/i.test(value) || value.startsWith("//");
+}
+
+function isClassicAspFragmentFile(fileName: string): boolean {
+  return path.extname(fileName).toLowerCase() === ".inc";
+}
+
+function stableNavigationId(value: string): string {
+  return (
+    value
+      .toLowerCase()
+      .replace(/[^a-z0-9._-]+/g, "-")
+      .replace(/^-+|-+$/g, "")
+      .slice(0, 96) || "unknown"
+  );
+}
+
+function extractJavascriptNavigationCandidates(
+  parsed: AspParsedDocument,
+): AspNavigationCandidate[] {
+  const candidates: AspNavigationCandidate[] = [];
+  for (const region of parsed.regions) {
+    if (region.language !== "javascript") {
+      continue;
+    }
+    const source = parsed.text.slice(region.contentStart, region.contentEnd);
+    const sourceFile = ts.createSourceFile(
+      `${parsed.uri}.js`,
+      source,
+      ts.ScriptTarget.Latest,
+      true,
+      ts.ScriptKind.JS,
+    );
+    const state: {
+      variables: Map<string, AspNavigationUrlValue>;
+      formActions: Map<string, AspNavigationUrlValue>;
+      formMethods: Map<string, string>;
+    } = {
+      variables: new Map(),
+      formActions: new Map(),
+      formMethods: new Map(),
+    };
+    const visit = (node: ts.Node): void => {
+      collectJavascriptNavigationFromNode(parsed, region, sourceFile, node, state, candidates);
+      ts.forEachChild(node, visit);
+    };
+    ts.forEachChild(sourceFile, visit);
+  }
+  return candidates;
+}
+
+function collectJavascriptNavigationFromNode(
+  parsed: AspParsedDocument,
+  region: AspRegion,
+  sourceFile: ts.SourceFile,
+  node: ts.Node,
+  state: {
+    variables: Map<string, AspNavigationUrlValue>;
+    formActions: Map<string, AspNavigationUrlValue>;
+    formMethods: Map<string, string>;
+  },
+  candidates: AspNavigationCandidate[],
+): void {
+  if (ts.isVariableDeclaration(node) && ts.isIdentifier(node.name) && node.initializer) {
+    state.variables.set(
+      node.name.text,
+      evaluateJavascriptUrlValue(node.initializer, sourceFile, state.variables),
+    );
+    return;
+  }
+  if (ts.isBinaryExpression(node) && node.operatorToken.kind === ts.SyntaxKind.EqualsToken) {
+    const left = node.left;
+    const rightValue = evaluateJavascriptUrlValue(node.right, sourceFile, state.variables);
+    if (isJavascriptLocationTarget(left)) {
+      candidates.push(
+        javascriptNavigationCandidate(
+          parsed,
+          region,
+          sourceFile,
+          node,
+          node.right,
+          "javascriptLocation",
+          rightValue,
+          "location assignment",
+        ),
+      );
+      return;
+    }
+    if (ts.isPropertyAccessExpression(left) && left.name.text === "action") {
+      state.formActions.set(normalizeJavascriptObjectKey(left.expression, sourceFile), rightValue);
+      return;
+    }
+    if (ts.isPropertyAccessExpression(left) && left.name.text === "method") {
+      const method = rightValue.kind === "literal" ? rightValue.text?.toUpperCase() : undefined;
+      if (method) {
+        state.formMethods.set(normalizeJavascriptObjectKey(left.expression, sourceFile), method);
+      }
+    }
+    return;
+  }
+  if (!ts.isCallExpression(node)) {
+    return;
+  }
+  const expression = node.expression;
+  if (ts.isPropertyAccessExpression(expression)) {
+    const memberName = expression.name.text;
+    if (
+      (memberName === "assign" || memberName === "replace" || memberName === "open") &&
+      isJavascriptLocationReceiver(expression.expression, memberName)
+    ) {
+      const targetExpression = node.arguments[0];
+      candidates.push(
+        javascriptNavigationCandidate(
+          parsed,
+          region,
+          sourceFile,
+          node,
+          targetExpression,
+          "javascriptLocation",
+          targetExpression
+            ? evaluateJavascriptUrlValue(targetExpression, sourceFile, state.variables)
+            : { kind: "unknown", text: "{unknown}" },
+          memberName === "open" ? "window.open" : `location.${memberName}`,
+        ),
+      );
+      return;
+    }
+    if (
+      (memberName === "pushState" || memberName === "replaceState") &&
+      isHistoryReceiver(expression.expression)
+    ) {
+      const targetExpression = node.arguments[2];
+      candidates.push(
+        javascriptNavigationCandidate(
+          parsed,
+          region,
+          sourceFile,
+          node,
+          targetExpression,
+          "javascriptHistory",
+          targetExpression
+            ? evaluateJavascriptUrlValue(targetExpression, sourceFile, state.variables)
+            : { kind: "unknown", text: "{unknown}" },
+          `history.${memberName}`,
+        ),
+      );
+      return;
+    }
+    if (memberName === "submit") {
+      const formKey = normalizeJavascriptObjectKey(expression.expression, sourceFile);
+      candidates.push(
+        javascriptNavigationCandidate(
+          parsed,
+          region,
+          sourceFile,
+          node,
+          expression.expression,
+          "javascriptFormSubmit",
+          state.formActions.get(formKey) ?? { kind: "unknown", text: formKey },
+          "form.submit",
+          state.formMethods.get(formKey),
+        ),
+      );
+    }
+  }
+}
+
+function javascriptNavigationCandidate(
+  parsed: AspParsedDocument,
+  region: AspRegion,
+  sourceFile: ts.SourceFile,
+  node: ts.Node,
+  valueNode: ts.Node | undefined,
+  kind: AspNavigationEdgeKind,
+  target: AspNavigationUrlValue,
+  label: string,
+  method?: string,
+): AspNavigationCandidate {
+  const start = region.contentStart + node.getStart(sourceFile);
+  const end = region.contentStart + node.getEnd();
+  const valueStart = valueNode ? region.contentStart + valueNode.getStart(sourceFile) : start;
+  const valueEnd = valueNode ? region.contentStart + valueNode.getEnd() : end;
+  const range = rangeFromOffsets(parsed.text, start, end);
+  const valueRange = rangeFromOffsets(parsed.text, valueStart, valueEnd);
+  const confidence =
+    target.kind === "literal" ? "probable" : target.kind === "template" ? "possible" : "unknown";
+  return {
+    kind,
+    target,
+    range,
+    valueRange,
+    method,
+    parameters: parametersFromNavigationParts(target.parts),
+    declaredInUri: parsed.uri,
+    evidence: [
+      {
+        uri: parsed.uri,
+        range,
+        valueRange,
+        label,
+        snippet: parsed.text.slice(start, end).replace(/\s+/g, " ").trim().slice(0, 240),
+        extractor: "javascript",
+      },
+    ],
+    confidence,
+    source: "javascript",
+  };
+}
+
+function evaluateJavascriptUrlValue(
+  node: ts.Expression,
+  sourceFile: ts.SourceFile,
+  variables: Map<string, AspNavigationUrlValue>,
+): AspNavigationUrlValue {
+  if (ts.isStringLiteral(node) || ts.isNoSubstitutionTemplateLiteral(node)) {
+    return navigationUrlValueFromJavaScriptLiteral(node.text);
+  }
+  if (ts.isNumericLiteral(node)) {
+    return { kind: "literal", text: node.text };
+  }
+  if (node.kind === ts.SyntaxKind.TrueKeyword || node.kind === ts.SyntaxKind.FalseKeyword) {
+    return { kind: "literal", text: node.kind === ts.SyntaxKind.TrueKeyword ? "true" : "false" };
+  }
+  if (ts.isIdentifier(node)) {
+    return variables.get(node.text) ?? { kind: "unknown", text: node.text };
+  }
+  if (ts.isBinaryExpression(node) && node.operatorToken.kind === ts.SyntaxKind.PlusToken) {
+    return combineJavascriptUrlValues([
+      evaluateJavascriptUrlValue(node.left, sourceFile, variables),
+      evaluateJavascriptUrlValue(node.right, sourceFile, variables),
+    ]);
+  }
+  if (ts.isTemplateExpression(node)) {
+    const parts: AspNavigationUrlPart[] = [{ kind: "text", text: node.head.text }];
+    for (const span of node.templateSpans) {
+      parts.push({ kind: "unknown", text: span.expression.getText(sourceFile) });
+      parts.push({ kind: "text", text: span.literal.text });
+    }
+    return navigationTemplateValue(parts);
+  }
+  if (ts.isCallExpression(node) && ts.isIdentifier(node.expression)) {
+    const name = node.expression.text;
+    if (
+      (name === "String" || name === "encodeURIComponent" || name === "encodeURI") &&
+      node.arguments[0]
+    ) {
+      return evaluateJavascriptUrlValue(node.arguments[0], sourceFile, variables);
+    }
+  }
+  return { kind: "unknown", text: node.getText(sourceFile) };
+}
+
+function navigationUrlValueFromJavaScriptLiteral(value: string): AspNavigationUrlValue {
+  if (!value.includes("<%")) {
+    return { kind: "literal", text: value };
+  }
+  const parts: AspNavigationUrlPart[] = [];
+  for (const part of value.split(/(<%[\s\S]*?%>)/g).filter((item) => item.length > 0)) {
+    if (!part.startsWith("<%")) {
+      parts.push({ kind: "text", text: part });
+      continue;
+    }
+    const request = part.match(/Request(?:\.(QueryString|Form))?\s*\(\s*["']([^"']+)["']\s*\)/i);
+    if (request) {
+      parts.push({
+        kind: "request",
+        source:
+          request[1]?.toLowerCase() === "querystring"
+            ? "queryString"
+            : request[1]?.toLowerCase() === "form"
+              ? "form"
+              : "request",
+        name: request[2],
+      });
+    } else {
+      parts.push({ kind: "unknown", text: part });
+    }
+  }
+  return navigationTemplateValue(parts);
+}
+
+function combineJavascriptUrlValues(values: AspNavigationUrlValue[]): AspNavigationUrlValue {
+  const parts: AspNavigationUrlPart[] = [];
+  for (const value of values) {
+    if (value.kind === "literal") {
+      parts.push({ kind: "text", text: value.text ?? "" });
+    } else if (value.kind === "template") {
+      parts.push(...(value.parts ?? []));
+    } else {
+      parts.push({ kind: "unknown", text: value.text });
+    }
+  }
+  if (parts.every((part) => part.kind === "text")) {
+    return { kind: "literal", text: parts.map((part) => part.text ?? "").join("") };
+  }
+  return navigationTemplateValue(parts);
+}
+
+function navigationTemplateValue(parts: AspNavigationUrlPart[]): AspNavigationUrlValue {
+  return {
+    kind: "template",
+    text: parts
+      .map((part) => {
+        if (part.kind === "text") {
+          return part.text ?? "";
+        }
+        if (part.kind === "request") {
+          return `{${part.source ?? "request"}:${part.name ?? "value"}}`;
+        }
+        return "{unknown}";
+      })
+      .join(""),
+    parts,
+  };
+}
+
+function isJavascriptLocationTarget(node: ts.Expression): boolean {
+  if (ts.isIdentifier(node) && node.text === "location") {
+    return true;
+  }
+  if (!ts.isPropertyAccessExpression(node)) {
+    return false;
+  }
+  const text = node.getText();
+  return (
+    text === "location.href" ||
+    text === "window.location" ||
+    text === "window.location.href" ||
+    text === "document.location" ||
+    text === "document.location.href"
+  );
+}
+
+function isJavascriptLocationReceiver(node: ts.Expression, memberName: string): boolean {
+  const text = node.getText();
+  if (memberName === "open") {
+    return text === "window";
+  }
+  return text === "location" || text === "window.location" || text === "document.location";
+}
+
+function isHistoryReceiver(node: ts.Expression): boolean {
+  const text = node.getText();
+  return text === "history" || text === "window.history";
+}
+
+function normalizeJavascriptObjectKey(node: ts.Expression, sourceFile: ts.SourceFile): string {
+  return node.getText(sourceFile).replace(/\s+/g, "");
 }
 
 function buildAspGraphForCommand(

@@ -14,6 +14,11 @@ import {
   imeSafeShouldWriteExternalValue,
 } from "../src/webview/ime-safe-input";
 import { getServerModulePath } from "../src/server-path";
+import type { AspNavigationGraphPayload } from "@asp-lsp/core";
+import {
+  navigationFlowElementsFromElk,
+  navigationGraphToElkGraph,
+} from "../src/webview/navigation-graph-layout";
 
 interface JsonRpcMessage {
   id?: number;
@@ -48,12 +53,126 @@ function readFlowchartWebviewSource(): string {
   );
 }
 
+function readNavigationGraphWebviewSource(): string {
+  return readWebviewSources(
+    "src/navigation-graph-webview.ts",
+    "src/webview/navigation-graph.tsx",
+    "src/webview/navigation-graph-layout.ts",
+    "src/webview/navigation-graph.css",
+  );
+}
+
 function readWorkspaceFilesWebviewSource(): string {
   return readWebviewSources(
     "src/workspace-files-webview.ts",
     "src/webview/workspace-files.tsx",
     "src/webview/workspace-files.css",
   );
+}
+
+function sampleNavigationPayload(): AspNavigationGraphPayload {
+  const range = {
+    start: { line: 1, character: 2 },
+    end: { line: 1, character: 24 },
+  };
+  return {
+    scope: "workspace",
+    rootUri: "file:///workspace/index.asp",
+    nodes: [
+      {
+        id: "file:///workspace/index.asp",
+        kind: "page",
+        label: "index.asp",
+        uri: "file:///workspace/index.asp",
+        isRoot: true,
+      },
+      {
+        id: "file:///workspace/search.asp",
+        kind: "page",
+        label: "search.asp",
+        uri: "file:///workspace/search.asp",
+      },
+      {
+        id: "https://example.com/help",
+        kind: "external",
+        label: "https://example.com/help",
+        externalUrl: "https://example.com/help",
+      },
+      {
+        id: "unknown:navigation-target",
+        kind: "unknown",
+        label: "unknown target",
+      },
+    ],
+    edges: [
+      {
+        id: "edge-search",
+        source: "file:///workspace/index.asp",
+        target: "file:///workspace/search.asp",
+        kind: "htmlForm",
+        confidence: "certain",
+        method: "GET",
+        targetFrame: "_self",
+        declaredInUri: "file:///workspace/includes/nav.inc",
+        ranges: [range],
+        parameters: [{ name: "q", source: "formControl", value: "term", confidence: "certain" }],
+        evidence: [
+          {
+            uri: "file:///workspace/includes/nav.inc",
+            range,
+            label: "form action",
+            snippet: '<form action="search.asp" method="get">',
+            extractor: "html",
+          },
+        ],
+      },
+      {
+        id: "edge-external",
+        source: "file:///workspace/search.asp",
+        target: "https://example.com/help",
+        kind: "javascriptLocation",
+        confidence: "possible",
+        ranges: [range],
+        evidence: [
+          {
+            uri: "file:///workspace/search.asp",
+            range,
+            label: "location assign",
+            snippet: 'location.href = "https://example.com/help"',
+            extractor: "javascript",
+          },
+        ],
+      },
+      {
+        id: "edge-unknown",
+        source: "file:///workspace/search.asp",
+        target: "unknown:navigation-target",
+        kind: "serverRedirect",
+        confidence: "unknown",
+        ranges: [range],
+        parameters: [{ name: "next", source: "queryString", confidence: "unknown" }],
+        evidence: [
+          {
+            uri: "file:///workspace/search.asp",
+            range,
+            label: "Response.Redirect",
+            snippet: 'Response.Redirect Request("next")',
+            extractor: "vbscript",
+          },
+        ],
+      },
+    ],
+    stats: {
+      documents: 2,
+      nodes: 4,
+      edges: 3,
+      certain: 1,
+      probable: 0,
+      possible: 1,
+      unknown: 1,
+      external: 1,
+    },
+  };
 }
 
 describe("VS Code extension package", () => {
@@ -673,6 +792,168 @@ describe("VS Code extension package", () => {
     );
   });
 
+  it("declares a dedicated 2D navigation graph webview without force graph imports", () => {
+    const manifest = JSON.parse(fs.readFileSync("package.json", "utf8")) as {
+      contributes?: {
+        commands?: Array<{ command?: string; title?: string }>;
+        menus?: {
+          "editor/title"?: Array<{ command?: string; when?: string; group?: string }>;
+          "explorer/context"?: Array<{ command?: string; when?: string; group?: string }>;
+        };
+        configuration?: { properties?: Record<string, unknown> };
+      };
+    };
+    const extensionSource = fs.readFileSync("src/extension.ts", "utf8");
+    const buildScript = fs.readFileSync("scripts/build-webview.mjs", "utf8");
+    const webviewSource = readNavigationGraphWebviewSource();
+    const nls = JSON.parse(fs.readFileSync("package.nls.json", "utf8")) as Record<string, string>;
+    const nlsJa = JSON.parse(fs.readFileSync("package.nls.ja.json", "utf8")) as Record<
+      string,
+      string
+    >;
+    const commands = manifest.contributes?.commands?.map((command) => command.command) ?? [];
+
+    expect(commands).toEqual(
+      expect.arrayContaining([
+        "aspLsp.showCurrentFileNavigationGraph",
+        "aspLsp.showFolderNavigationGraph",
+        "aspLsp.showWorkspaceNavigationGraph",
+      ]),
+    );
+    expect(extensionSource).toContain("buildNavigationGraphServerCommand");
+    expect(extensionSource).toContain("navigationGraphUpdatedNotificationMethod");
+    expect(extensionSource).toContain("showAspNavigationGraphWebview");
+    expect(buildScript).toContain("navigation-graph.tsx");
+    expect(buildScript).toContain("navigation-graph.js");
+    expect(webviewSource).toContain("__ASP_LSP_NAVIGATION_GRAPH__");
+    expect(webviewSource).toContain("React");
+    expect(webviewSource).toContain("@xyflow/react");
+    expect(webviewSource).toContain("elkjs/lib/elk.bundled.js");
+    expect(webviewSource).toContain("ReactFlow");
+    expect(webviewSource).toContain("layoutNavigationGraphWithElk");
+    expect(webviewSource).toContain("navigationGraphToElkGraph");
+    expect(webviewSource).toContain("navigationFlowElementsFromElk");
+    expect(webviewSource).toContain("MiniMap");
+    expect(webviewSource).toContain("Controls");
+    expect(webviewSource).toContain("Background");
+    expect(webviewSource).toContain("fitView");
+    expect(webviewSource).toContain("Inspector");
+    expect(webviewSource).toContain('type: "openRange"');
+    expect(webviewSource).not.toContain("react-force-graph-2d");
+    expect(webviewSource).not.toContain("react-force-graph-3d");
+    expect(webviewSource).not.toContain("include-graph-model");
+    expect(webviewSource).not.toContain("include-graph-theme");
+    expect(webviewSource).toContain("nav-node-reveal");
+    expect(webviewSource).toContain("nav-edge-draw");
+    expect(webviewSource).toContain("nav-dash-flow");
+    expect(webviewSource).toContain("nav-selected-pulse");
+    expect(webviewSource).toContain("nav-search-pulse");
+    expect(webviewSource).toContain("prefers-reduced-motion");
+    expect(manifest.contributes?.menus?.["editor/title"]).toContainEqual(
+      expect.objectContaining({
+        command: "aspLsp.showCurrentFileNavigationGraph",
+        when: "editorLangId == classic-asp",
+        group: "navigation",
+      }),
+    );
+    expect(manifest.contributes?.menus?.["explorer/context"]).toContainEqual(
+      expect.objectContaining({
+        command: "aspLsp.showFolderNavigationGraph",
+        when: "explorerResourceIsFolder",
+        group: "navigation",
+      }),
+    );
+    expect(
+      manifest.contributes?.configuration?.properties?.["aspLsp.navigationGraph.maxNodes"],
+    ).toEqual(expect.objectContaining({ type: "number", minimum: 1, default: 500 }));
+    expect(
+      manifest.contributes?.configuration?.properties?.["aspLsp.navigationGraph.maxEdges"],
+    ).toEqual(expect.objectContaining({ type: "number", minimum: 1, default: 1200 }));
+    expect(nls["command.showCurrentFileNavigationGraph.title"]).toBeTruthy();
+    expect(nls["command.showFolderNavigationGraph.title"]).toBeTruthy();
+    expect(nls["command.showWorkspaceNavigationGraph.title"]).toBeTruthy();
+    expect(nlsJa["command.showCurrentFileNavigationGraph.title"]).toBeTruthy();
+    expect(nls["configuration.navigationGraph.maxNodes.description"]).toBeTruthy();
+    expect(nlsJa["configuration.navigationGraph.maxEdges.description"]).toBeTruthy();
+  });
+
+  it("converts navigation graph payloads into ELK and React Flow layout elements", () => {
+    const payload = sampleNavigationPayload();
+    const elkInput = navigationGraphToElkGraph(payload);
+    expect(elkInput.layoutOptions?.["elk.algorithm"]).toBe("org.eclipse.elk.layered");
+    expect(elkInput.layoutOptions?.["elk.direction"]).toBe("RIGHT");
+    expect(elkInput.layoutOptions?.["elk.edgeRouting"]).toBe("ORTHOGONAL");
+    const rootNode = elkInput.children?.find((node) => node.id === "file:///workspace/index.asp");
+    const externalNode = elkInput.children?.find((node) => node.id === "https://example.com/help");
+    const unknownNode = elkInput.children?.find((node) => node.id === "unknown:navigation-target");
+    expect(rootNode?.layoutOptions?.["org.eclipse.elk.layered.layering.layerConstraint"]).toBe(
+      "FIRST",
+    );
+    expect(externalNode?.layoutOptions?.["org.eclipse.elk.layered.layering.layerConstraint"]).toBe(
+      "LAST",
+    );
+    expect(unknownNode?.layoutOptions?.["org.eclipse.elk.layered.layering.layerConstraint"]).toBe(
+      "LAST",
+    );
+    expect(rootNode?.layoutOptions?.["elk.portConstraints"]).toBe("FIXED_SIDE");
+    expect(rootNode?.ports?.map((port) => port.id)).toEqual([
+      "file:///workspace/index.asp:target",
+      "file:///workspace/index.asp:source",
+    ]);
+    expect(rootNode?.ports?.map((port) => port.layoutOptions?.["elk.port.side"])).toEqual([
+      "WEST",
+      "EAST",
+    ]);
+    expect(elkInput.edges?.find((edge) => edge.id === "edge-search")).toEqual(
+      expect.objectContaining({
+        sources: ["file:///workspace/index.asp:source"],
+        targets: ["file:///workspace/search.asp:target"],
+      }),
+    );
+
+    const laidOutGraph = {
+      ...elkInput,
+      width: 820,
+      height: 460,
+      children: elkInput.children?.map((node, index) => ({
+        ...node,
+        x: 48 + index * 220,
+        y: 40 + index * 72,
+      })),
+      edges: elkInput.edges?.map((edge, index) => ({
+        ...edge,
+        sections: [
+          {
+            id: `${edge.id}:section`,
+            startPoint: { x: 286, y: 84 + index * 12 },
+            bendPoints: [{ x: 396, y: 84 + index * 12 }],
+            endPoint: { x: 488, y: 104 + index * 12 },
+          },
+        ],
+      })),
+    };
+    const flowLayout = navigationFlowElementsFromElk(payload, laidOutGraph);
+    expect(flowLayout.width).toBe(892);
+    expect(flowLayout.height).toBe(532);
+    expect(
+      flowLayout.nodes.find((node) => node.id === "https://example.com/help")?.data.node.kind,
+    ).toBe("external");
+    expect(
+      flowLayout.nodes.find((node) => node.id === "unknown:navigation-target")?.data.node.kind,
+    ).toBe("unknown");
+    const formEdge = flowLayout.edges.find((edge) => edge.id === "edge-search");
+    expect(formEdge?.type).toBe("navigationTransition");
+    expect(formEdge?.sourceHandle).toBe("source");
+    expect(formEdge?.targetHandle).toBe("target");
+    expect(formEdge?.data?.confidence).toBe("certain");
+    expect(formEdge?.data?.edgeKind).toBe("htmlForm");
+    expect(formEdge?.data?.method).toBe("GET");
+    expect(formEdge?.data?.parameters).toEqual([
+      { name: "q", source: "formControl", value: "term", confidence: "certain" },
+    ]);
+    expect(formEdge?.data?.path).toContain("L 396");
+  });
+
   it("does not contribute the removed Classic ASP settings webview", () => {
     const manifest = JSON.parse(fs.readFileSync("package.json", "utf8")) as {
       activationEvents?: string[];
@@ -825,6 +1106,8 @@ describe("VS Code extension package", () => {
     const configuration = manifest.contributes?.configuration?.properties ?? {};
     expect(rootManifest.license).toBe("MIT OR Apache-2.0");
     expect(manifest.license).toBe("MIT OR Apache-2.0");
+    expect(manifest.dependencies?.["@xyflow/react"]).toBe("^12.11.0");
+    expect(manifest.dependencies?.["elkjs"]).toBe("^0.11.1");
     expect(manifest.dependencies?.["react-force-graph-2d"]).toBe("1.29.1");
     expect(manifest.dependencies?.["react-force-graph-3d"]).toBe("1.29.1");
     expect(manifest.dependencies?.["three-spritetext"]).toBe("1.10.0");
@@ -909,6 +1192,8 @@ describe("VS Code extension package", () => {
       "aspLsp.flowchart.maxEdges",
       "aspLsp.flowchart.minZoom",
       "aspLsp.flowchart.maxZoom",
+      "aspLsp.navigationGraph.maxNodes",
+      "aspLsp.navigationGraph.maxEdges",
       "aspLsp.graph.showIncomingDocumentIncludes",
       "aspLsp.graph.showIncomingFolderIncludes",
       "aspLsp.graph.useReverseIncludeIndex",
@@ -1208,6 +1493,28 @@ describe("VS Code extension package", () => {
     expect(nlsJa["configuration.flowchart.minZoom.description"]).toBeTruthy();
     expect(nls["configuration.flowchart.maxZoom.description"]).toBeTruthy();
     expect(nlsJa["configuration.flowchart.maxZoom.description"]).toBeTruthy();
+    expect(
+      manifest.contributes?.configuration?.properties?.["aspLsp.navigationGraph.maxNodes"],
+    ).toEqual(
+      expect.objectContaining({
+        type: "number",
+        minimum: 1,
+        default: 500,
+      }),
+    );
+    expect(
+      manifest.contributes?.configuration?.properties?.["aspLsp.navigationGraph.maxEdges"],
+    ).toEqual(
+      expect.objectContaining({
+        type: "number",
+        minimum: 1,
+        default: 1200,
+      }),
+    );
+    expect(nls["configuration.navigationGraph.maxNodes.description"]).toBeTruthy();
+    expect(nlsJa["configuration.navigationGraph.maxNodes.description"]).toBeTruthy();
+    expect(nls["configuration.navigationGraph.maxEdges.description"]).toBeTruthy();
+    expect(nlsJa["configuration.navigationGraph.maxEdges.description"]).toBeTruthy();
     for (const key of [
       "referenceProcedures",
       "referenceGlobals",
@@ -1613,6 +1920,9 @@ describe("VS Code extension package", () => {
     expect(commands).toContain("aspLsp.showCurrentFileGraph");
     expect(commands).toContain("aspLsp.showFolderGraph");
     expect(commands).toContain("aspLsp.showWorkspaceGraph");
+    expect(commands).toContain("aspLsp.showCurrentFileNavigationGraph");
+    expect(commands).toContain("aspLsp.showFolderNavigationGraph");
+    expect(commands).toContain("aspLsp.showWorkspaceNavigationGraph");
     expect(commands).toContain("aspLsp.showWorkspaceGlobFiles");
     expect(commands).not.toContain("aspLsp.openSettings");
     expect(commands).not.toContain("aspLsp.openAnalysisExcelExport");
@@ -1626,9 +1936,21 @@ describe("VS Code extension package", () => {
         (command) => command.command === "aspLsp.showCurrentFileGraph",
       ),
     ).toEqual(expect.objectContaining({ icon: "$(graph)" }));
+    expect(
+      manifest.contributes?.commands?.find(
+        (command) => command.command === "aspLsp.showCurrentFileNavigationGraph",
+      ),
+    ).toEqual(expect.objectContaining({ icon: "$(graph)" }));
     expect(manifest.contributes?.menus?.["editor/title"]).toContainEqual(
       expect.objectContaining({
         command: "aspLsp.showCurrentFileGraph",
+        when: "editorLangId == classic-asp",
+        group: "navigation",
+      }),
+    );
+    expect(manifest.contributes?.menus?.["editor/title"]).toContainEqual(
+      expect.objectContaining({
+        command: "aspLsp.showCurrentFileNavigationGraph",
         when: "editorLangId == classic-asp",
         group: "navigation",
       }),
@@ -1656,7 +1978,21 @@ describe("VS Code extension package", () => {
     );
     expect(manifest.contributes?.menus?.["explorer/context"]).toContainEqual(
       expect.objectContaining({
+        command: "aspLsp.showFolderNavigationGraph",
+        when: "explorerResourceIsFolder",
+        group: "navigation",
+      }),
+    );
+    expect(manifest.contributes?.menus?.["explorer/context"]).toContainEqual(
+      expect.objectContaining({
         command: "aspLsp.showCurrentFileGraph",
+        when: "resourceExtname =~ /\\.(asp|asa|inc)$/i",
+        group: "navigation",
+      }),
+    );
+    expect(manifest.contributes?.menus?.["explorer/context"]).toContainEqual(
+      expect.objectContaining({
+        command: "aspLsp.showCurrentFileNavigationGraph",
         when: "resourceExtname =~ /\\.(asp|asa|inc)$/i",
         group: "navigation",
       }),
@@ -1683,6 +2019,9 @@ describe("VS Code extension package", () => {
     expect(nls["command.showCurrentFileGraph.title"]).toBeTruthy();
     expect(nls["command.showFolderGraph.title"]).toBeTruthy();
     expect(nls["command.showWorkspaceGraph.title"]).toBeTruthy();
+    expect(nls["command.showCurrentFileNavigationGraph.title"]).toBeTruthy();
+    expect(nls["command.showFolderNavigationGraph.title"]).toBeTruthy();
+    expect(nls["command.showWorkspaceNavigationGraph.title"]).toBeTruthy();
     expect(nls["command.showWorkspaceGlobFiles.title"]).toBeTruthy();
     expect(nls["command.openAnalysisExcelExport.title"]).toBeUndefined();
     expect(nls["command.exportCurrentFileAnalysisExcel.title"]).toBeTruthy();
@@ -2610,6 +2949,7 @@ new Intl.DateTimeFormat("en");
       const listing = execFileSync("unzip", ["-l", vsixPath], { encoding: "utf8" });
       expect(listing).toContain("extension/dist/extension.js");
       expect(listing).toContain("extension/dist/webview/include-graph.js");
+      expect(listing).toContain("extension/dist/webview/navigation-graph.js");
       expect(listing).not.toContain("extension/dist/webview/settings.js");
       expect(listing).toContain("extension/syntaxes/classic-asp-tag-injection.tmLanguage.json");
       expect(listing).toContain("extension/syntaxes/classic-asp.tmLanguage.json");

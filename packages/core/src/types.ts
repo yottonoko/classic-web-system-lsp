@@ -38,6 +38,7 @@ export interface AspSettings {
   rename?: AspRenameSettings;
   styleExtraction?: AspStyleExtractionSettings;
   flowchart?: AspFlowchartSettings;
+  navigationGraph?: AspNavigationGraphSettings;
   graph?: AspGraphSettings;
   excel?: AspExcelSettings;
   cache?: AspCacheSettings;
@@ -505,6 +506,132 @@ export interface AspFlowchartInclude {
   resolvedUri?: string;
   actualPath?: string;
   pathCaseMatches?: boolean;
+}
+
+export type AspNavigationGraphScope = "document" | "folder" | "workspace";
+
+export type AspNavigationNodeKind = "page" | "fragment" | "external" | "unknown";
+
+export type AspNavigationEdgeKind =
+  | "serverRedirect"
+  | "htmlAnchor"
+  | "htmlFrame"
+  | "htmlForm"
+  | "metaRefresh"
+  | "javascriptLocation"
+  | "javascriptHistory"
+  | "javascriptFormSubmit";
+
+export type AspNavigationConfidence = "certain" | "probable" | "possible" | "unknown";
+
+export type AspNavigationParameterSource =
+  | "queryString"
+  | "form"
+  | "request"
+  | "hiddenInput"
+  | "formControl"
+  | "literal"
+  | "unknown";
+
+export interface AspNavigationGraphSettings {
+  maxNodes?: number;
+  maxEdges?: number;
+}
+
+export interface AspNavigationGraphPayload {
+  scope: AspNavigationGraphScope;
+  rootUri?: string;
+  correlationId?: string;
+  pending?: boolean;
+  backgroundTaskId?: string;
+  nodes: AspNavigationNode[];
+  edges: AspNavigationEdge[];
+  settings?: AspNavigationGraphSettings;
+  stats: {
+    documents: number;
+    nodes: number;
+    edges: number;
+    certain: number;
+    probable: number;
+    possible: number;
+    unknown: number;
+    external: number;
+    truncatedNodes?: number;
+    truncatedEdges?: number;
+  };
+  truncated?: boolean;
+}
+
+export interface AspNavigationNode {
+  id: string;
+  kind: AspNavigationNodeKind;
+  label: string;
+  uri?: string;
+  fileName?: string;
+  exists?: boolean;
+  externalUrl?: string;
+  isRoot?: boolean;
+}
+
+export interface AspNavigationEdge {
+  id: string;
+  source: string;
+  target: string;
+  kind: AspNavigationEdgeKind;
+  label?: string;
+  confidence: AspNavigationConfidence;
+  method?: string;
+  targetFrame?: string;
+  ranges: Range[];
+  parameters?: AspNavigationParameterFlow[];
+  declaredInUri?: string;
+  evidence: AspNavigationEvidence[];
+  count?: number;
+}
+
+export interface AspNavigationEvidence {
+  uri: string;
+  range: Range;
+  valueRange?: Range;
+  label: string;
+  snippet?: string;
+  extractor: "html" | "vbscript" | "javascript";
+}
+
+export interface AspNavigationParameterFlow {
+  name: string;
+  source: AspNavigationParameterSource;
+  value?: string;
+  targetUsage?: string;
+  confidence?: AspNavigationConfidence;
+  range?: Range;
+}
+
+export interface AspNavigationUrlPart {
+  kind: "text" | "request" | "unknown";
+  text?: string;
+  source?: AspNavigationParameterSource;
+  name?: string;
+}
+
+export interface AspNavigationUrlValue {
+  kind: "literal" | "template" | "unknown";
+  text?: string;
+  parts?: AspNavigationUrlPart[];
+}
+
+export interface AspNavigationCandidate {
+  kind: AspNavigationEdgeKind;
+  target: AspNavigationUrlValue;
+  range: Range;
+  valueRange?: Range;
+  method?: string;
+  targetFrame?: string;
+  parameters?: AspNavigationParameterFlow[];
+  declaredInUri?: string;
+  evidence: AspNavigationEvidence[];
+  confidence?: AspNavigationConfidence;
+  source: "html" | "vbscript" | "javascript";
 }
 
 export interface AspCacheSettings {

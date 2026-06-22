@@ -21,6 +21,12 @@ const tailwindcss = await loadTailwindPlugin();
 await buildWebview("include-graph.tsx", "AspLspGraphWebview", "include-graph.js", true);
 await buildWebview("flowchart.tsx", "AspLspFlowchartWebview", "flowchart.js", false);
 await buildWebview(
+  "navigation-graph.tsx",
+  "AspLspNavigationGraphWebview",
+  "navigation-graph.js",
+  false,
+);
+await buildWebview(
   "workspace-files.tsx",
   "AspLspWorkspaceFilesWebview",
   "workspace-files.js",
