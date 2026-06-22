@@ -1,5 +1,22 @@
-import React, { useMemo, useRef, useState } from "react";
+import React, { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
+import {
+  Background,
+  Controls,
+  EdgeLabelRenderer,
+  Handle,
+  MiniMap,
+  Position,
+  ReactFlow,
+  ReactFlowProvider,
+  getSmoothStepPath,
+  useReactFlow,
+  type EdgeProps,
+  type EdgeTypes,
+  type NodeProps,
+  type NodeTypes,
+} from "@xyflow/react";
+import reactFlowStyles from "@xyflow/react/dist/style.css?inline";
 import type {
   AspNavigationEdge,
   AspNavigationEdgeKind,
@@ -8,9 +25,10 @@ import type {
 } from "@asp-lsp/core";
 import styles from "./navigation-graph.css?inline";
 import {
-  layoutNavigationGraph,
-  type NavigationLayoutEdge,
-  type NavigationLayoutNode,
+  layoutNavigationGraphWithElk,
+  type NavigationFlowEdge,
+  type NavigationFlowLayout,
+  type NavigationFlowNode,
 } from "./navigation-graph-layout";
 
 declare const acquireVsCodeApi: () => {
@@ -31,6 +49,7 @@ interface NavigationGraphWebviewPayload extends AspNavigationGraphPayload {
 }
 
 type Selection = { kind: "node"; id: string } | { kind: "edge"; id: string } | undefined;
+type HoverTarget = Selection;
 
 const vscode = acquireVsCodeApi();
 const edgeKinds: AspNavigationEdgeKind[] = [
@@ -43,44 +62,171 @@ const edgeKinds: AspNavigationEdgeKind[] = [
   "javascriptHistory",
   "javascriptFormSubmit",
 ];
+const emptyLayout: NavigationFlowLayout = { width: 720, height: 520, nodes: [], edges: [] };
+const nodeTypes = { navigationPage: NavigationPageNode } satisfies NodeTypes;
+const edgeTypes = { navigationTransition: NavigationTransitionEdge } satisfies EdgeTypes;
 
 function NavigationGraphApp(): React.ReactElement {
   const [payload, setPayload] = useState<NavigationGraphWebviewPayload>(
     window.__ASP_LSP_NAVIGATION_GRAPH__ ?? emptyPayload(),
   );
-  const [search, setSearch] = useState("");
-  const [confidence, setConfidence] = useState("all");
-  const [edgeKind, setEdgeKind] = useState("all");
-  const [method, setMethod] = useState("all");
-  const [selection, setSelection] = useState<Selection>();
-  const [view, setView] = useState({ x: 24, y: 24, scale: 1 });
-  const drag = useRef<{ x: number; y: number; viewX: number; viewY: number } | undefined>(
-    undefined,
-  );
-  React.useEffect(() => {
+
+  useEffect(() => {
     const listener = (event: MessageEvent) => {
       const message = event.data as { type?: string; payload?: NavigationGraphWebviewPayload };
       if (message.type === "navigationGraphPayload" && message.payload) {
         setPayload(message.payload);
-        setSelection(undefined);
       }
     };
     window.addEventListener("message", listener);
     return () => window.removeEventListener("message", listener);
   }, []);
+
+  return (
+    <div className="navigation-shell">
+      <style>{reactFlowStyles}</style>
+      <style>{styles}</style>
+      <ReactFlowProvider>
+        <NavigationGraphSurface payload={payload} />
+      </ReactFlowProvider>
+    </div>
+  );
+}
+
+function NavigationGraphSurface({
+  payload,
+}: {
+  payload: NavigationGraphWebviewPayload;
+}): React.ReactElement {
+  const reactFlow = useReactFlow<NavigationFlowNode, NavigationFlowEdge>();
+  const reducedMotion = useReducedMotion();
+  const [search, setSearch] = useState("");
+  const [confidence, setConfidence] = useState("all");
+  const [edgeKind, setEdgeKind] = useState("all");
+  const [method, setMethod] = useState("all");
+  const [selection, setSelection] = useState<Selection>();
+  const [hovered, setHovered] = useState<HoverTarget>();
+  const [layout, setLayout] = useState<NavigationFlowLayout>(emptyLayout);
+  const [isLayouting, setIsLayouting] = useState(false);
+  const layoutRequest = useRef(0);
   const filteredPayload = useMemo(
     () => filterPayload(payload, { search, confidence, edgeKind, method }),
     [payload, search, confidence, edgeKind, method],
   );
-  const layout = useMemo(() => layoutNavigationGraph(filteredPayload), [filteredPayload]);
-  const nodeById = useMemo(() => new Map(layout.nodes.map((node) => [node.id, node])), [layout]);
-  const edgeById = useMemo(() => new Map(layout.edges.map((edge) => [edge.id, edge])), [layout]);
+  const methods = useMemo(() => distinctMethods(payload.edges), [payload.edges]);
+
+  useEffect(() => {
+    const requestId = layoutRequest.current + 1;
+    layoutRequest.current = requestId;
+    setIsLayouting(true);
+    void layoutNavigationGraphWithElk(filteredPayload)
+      .then((nextLayout) => {
+        if (layoutRequest.current === requestId) {
+          setLayout(nextLayout);
+        }
+      })
+      .finally(() => {
+        if (layoutRequest.current === requestId) {
+          setIsLayouting(false);
+        }
+      });
+  }, [filteredPayload]);
+
+  const fitToView = useCallback(() => {
+    window.requestAnimationFrame(() => {
+      reactFlow.fitView({
+        padding: 0.18,
+        duration: reducedMotion ? 80 : 720,
+        includeHiddenNodes: false,
+      });
+    });
+  }, [reactFlow, reducedMotion]);
+
+  useEffect(() => {
+    fitToView();
+  }, [fitToView, layout.width, layout.height]);
+
+  useEffect(() => {
+    setSelection(undefined);
+  }, [payload]);
+
+  const searchHits = useMemo(
+    () => searchHitSets(filteredPayload, search),
+    [filteredPayload, search],
+  );
+  const related = useMemo(() => relatedElementSets(layout.edges, hovered), [hovered, layout.edges]);
+  const flowNodes = useMemo(
+    () =>
+      layout.nodes.map((node) => {
+        const selected = selection?.kind === "node" && selection.id === node.id;
+        const searchHit = searchHits.nodes.has(node.id);
+        const dimmed = !!hovered && !related.nodes.has(node.id);
+        return {
+          ...node,
+          selected,
+          className: classNames(
+            "navigation-flow-node",
+            `navigation-node--${node.data.node.kind}`,
+            selected && "navigation-node--selected",
+            searchHit && "navigation-node--search-hit",
+            dimmed && "navigation-node--dimmed",
+          ),
+          data: {
+            ...node.data,
+            selected,
+            searchHit,
+            dimmed,
+            revealDelayMs: revealDelay(node.data.layer, node.data.revealIndex, reducedMotion),
+          },
+        };
+      }),
+    [hovered, layout.nodes, reducedMotion, related.nodes, searchHits.nodes, selection],
+  );
+  const flowEdges = useMemo(
+    () =>
+      layout.edges.map((edge) => {
+        const edgeData = edge.data as NonNullable<NavigationFlowEdge["data"]>;
+        const selected = selection?.kind === "edge" && selection.id === edge.id;
+        const searchHit = searchHits.edges.has(edge.id);
+        const dimmed = !!hovered && !related.edges.has(edge.id);
+        const uncertain = edgeData.confidence !== "certain";
+        return {
+          ...edge,
+          selected,
+          className: classNames(
+            "navigation-flow-edge",
+            `navigation-edge--${edgeData.confidence}`,
+            uncertain && "navigation-edge--uncertain",
+            selected && "navigation-edge--selected",
+            searchHit && "navigation-edge--search-hit",
+            dimmed && "navigation-edge--dimmed",
+          ),
+          data: {
+            ...edgeData,
+            selected,
+            searchHit,
+            dimmed,
+            uncertain,
+            revealDelayMs: revealDelay(0, edgeData.revealIndex, reducedMotion),
+            onSelect: () => setSelection({ kind: "edge", id: edge.id }),
+          },
+        };
+      }),
+    [hovered, layout.edges, reducedMotion, related.edges, searchHits.edges, selection],
+  );
+  const nodeById = useMemo(
+    () => new Map(filteredPayload.nodes.map((node) => [node.id, node])),
+    [filteredPayload.nodes],
+  );
+  const edgeById = useMemo(
+    () => new Map(filteredPayload.edges.map((edge) => [edge.id, edge])),
+    [filteredPayload.edges],
+  );
   const selectedNode = selection?.kind === "node" ? nodeById.get(selection.id) : undefined;
   const selectedEdge = selection?.kind === "edge" ? edgeById.get(selection.id) : undefined;
-  const methods = useMemo(() => distinctMethods(payload.edges), [payload.edges]);
+
   return (
-    <div className="navigation-shell">
-      <style>{styles}</style>
+    <>
       <div className="navigation-toolbar">
         <input
           aria-label="Search"
@@ -111,24 +257,8 @@ function NavigationGraphApp(): React.ReactElement {
             </option>
           ))}
         </select>
-        <button type="button" onClick={() => setView({ x: 24, y: 24, scale: 1 })}>
+        <button type="button" onClick={fitToView}>
           Fit
-        </button>
-        <button
-          type="button"
-          onClick={() =>
-            setView((value) => ({ ...value, scale: Math.min(2.5, value.scale + 0.1) }))
-          }
-        >
-          +
-        </button>
-        <button
-          type="button"
-          onClick={() =>
-            setView((value) => ({ ...value, scale: Math.max(0.25, value.scale - 0.1) }))
-          }
-        >
-          -
         </button>
         <span>
           {filteredPayload.nodes.length} pages / {filteredPayload.edges.length} transitions
@@ -136,180 +266,165 @@ function NavigationGraphApp(): React.ReactElement {
       </div>
       <div className="navigation-main">
         <div className="navigation-canvas">
-          <svg
-            className={drag.current ? "dragging" : ""}
-            viewBox={`0 0 ${Math.max(800, layout.width + 120)} ${Math.max(600, layout.height + 120)}`}
-            onPointerDown={(event) => {
-              if (event.target !== event.currentTarget) {
-                return;
-              }
-              drag.current = { x: event.clientX, y: event.clientY, viewX: view.x, viewY: view.y };
-              event.currentTarget.setPointerCapture(event.pointerId);
-            }}
-            onPointerMove={(event) => {
-              if (!drag.current) {
-                return;
-              }
-              setView({
-                ...view,
-                x: drag.current.viewX + event.clientX - drag.current.x,
-                y: drag.current.viewY + event.clientY - drag.current.y,
-              });
-            }}
-            onPointerUp={() => {
-              drag.current = undefined;
-            }}
-            onWheel={(event) => {
-              const direction = event.deltaY > 0 ? -1 : 1;
-              setView((value) => ({
-                ...value,
-                scale: Math.max(0.25, Math.min(2.5, value.scale + direction * 0.08)),
-              }));
-            }}
+          <ReactFlow<NavigationFlowNode, NavigationFlowEdge>
+            nodes={flowNodes}
+            edges={flowEdges}
+            nodeTypes={nodeTypes}
+            edgeTypes={edgeTypes}
+            minZoom={0.12}
+            maxZoom={2.2}
+            defaultViewport={{ x: 0, y: 0, zoom: 1 }}
+            nodesDraggable={false}
+            nodesConnectable={false}
+            elementsSelectable
+            panOnScroll
+            fitView
+            fitViewOptions={{ padding: 0.18 }}
+            proOptions={{ hideAttribution: true }}
+            onNodeClick={(_, node) => setSelection({ kind: "node", id: node.id })}
+            onEdgeClick={(_, edge) => setSelection({ kind: "edge", id: edge.id })}
+            onPaneClick={() => setSelection(undefined)}
+            onNodeMouseEnter={(_, node) => setHovered({ kind: "node", id: node.id })}
+            onNodeMouseLeave={() => setHovered(undefined)}
+            onEdgeMouseEnter={(_, edge) => setHovered({ kind: "edge", id: edge.id })}
+            onEdgeMouseLeave={() => setHovered(undefined)}
           >
-            <defs>
-              <marker
-                id="navigation-arrow"
-                viewBox="0 0 10 10"
-                refX="9"
-                refY="5"
-                markerWidth="7"
-                markerHeight="7"
-                orient="auto-start-reverse"
-              >
-                <path d="M 0 0 L 10 5 L 0 10 z" fill="currentColor" />
-              </marker>
-            </defs>
-            <g transform={`translate(${view.x} ${view.y}) scale(${view.scale})`}>
-              <g>
-                {layout.edges.map((edge) => (
-                  <NavigationEdgeShape
-                    key={edge.id}
-                    edge={edge}
-                    selected={selection?.kind === "edge" && selection.id === edge.id}
-                    onSelect={() => setSelection({ kind: "edge", id: edge.id })}
-                  />
-                ))}
-              </g>
-              <g>
-                {layout.nodes.map((node) => (
-                  <NavigationNodeShape
-                    key={node.id}
-                    node={node}
-                    selected={selection?.kind === "node" && selection.id === node.id}
-                    onSelect={() => setSelection({ kind: "node", id: node.id })}
-                  />
-                ))}
-              </g>
-            </g>
-          </svg>
-          <MiniMap layout={layout} />
+            <Background gap={24} size={1.2} color="var(--navigation-grid-dot)" />
+            <MiniMap
+              pannable
+              zoomable
+              nodeStrokeWidth={3}
+              maskColor="var(--navigation-minimap-mask)"
+              nodeColor={(node) =>
+                miniMapNodeColor((node.data as NonNullable<NavigationFlowNode["data"]>).node.kind)
+              }
+            />
+            <Controls showInteractive={false} />
+          </ReactFlow>
+          {isLayouting ? <div className="navigation-layout-status">Layout...</div> : null}
         </div>
         <Inspector payload={filteredPayload} node={selectedNode} edge={selectedEdge} />
       </div>
+    </>
+  );
+}
+
+function NavigationPageNode({ data, selected }: NodeProps<NavigationFlowNode>): React.ReactElement {
+  const node = data.node;
+  const style = {
+    "--nav-reveal-delay": `${data.revealDelayMs ?? 0}ms`,
+  } as React.CSSProperties;
+  return (
+    <div
+      className={classNames(
+        "navigation-node-card",
+        `navigation-node-card--${node.kind}`,
+        selected && "is-selected",
+        data.searchHit && "is-search-hit",
+        data.dimmed && "is-dimmed",
+      )}
+      style={style}
+    >
+      <Handle
+        className="navigation-handle navigation-handle--target"
+        type="target"
+        id="target"
+        position={Position.Left}
+      />
+      <div className="navigation-node-card__shine" />
+      <div className="navigation-node-card__header">
+        <span>{node.kind}</span>
+        {node.isRoot ? <span>entry</span> : null}
+        {node.exists === false ? <span>missing</span> : null}
+      </div>
+      <div className="navigation-node-card__title" title={node.label}>
+        {node.label}
+      </div>
+      <div className="navigation-node-card__meta" title={node.uri ?? node.externalUrl ?? ""}>
+        {middleEllipsis(node.uri ?? node.externalUrl ?? "-", 42)}
+      </div>
+      <Handle
+        className="navigation-handle navigation-handle--source"
+        type="source"
+        id="source"
+        position={Position.Right}
+      />
     </div>
   );
 }
 
-function NavigationNodeShape({
-  node,
+function NavigationTransitionEdge({
+  id,
+  data,
+  markerEnd,
   selected,
-  onSelect,
-}: {
-  node: NavigationLayoutNode;
-  selected: boolean;
-  onSelect(): void;
-}): React.ReactElement {
+  sourceX,
+  sourceY,
+  sourcePosition,
+  targetX,
+  targetY,
+  targetPosition,
+}: EdgeProps<NavigationFlowEdge>): React.ReactElement {
+  const [fallbackPath, fallbackLabelX, fallbackLabelY] = getSmoothStepPath({
+    sourceX,
+    sourceY,
+    sourcePosition,
+    targetX,
+    targetY,
+    targetPosition,
+    borderRadius: 18,
+  });
+  const path = data?.path ?? fallbackPath;
+  const labelX = data?.labelX ?? fallbackLabelX;
+  const labelY = data?.labelY ?? fallbackLabelY;
+  const pathRef = useRef<SVGPathElement | null>(null);
+  const [pathLength, setPathLength] = useState(1);
+  useLayoutEffect(() => {
+    const nextLength = pathRef.current?.getTotalLength();
+    if (nextLength && Number.isFinite(nextLength)) {
+      setPathLength(nextLength);
+    }
+  }, [path]);
+  const style = {
+    "--nav-edge-length": `${pathLength}`,
+    "--nav-edge-delay": `${data?.revealDelayMs ?? 0}ms`,
+  } as React.CSSProperties;
+  const labelStyle = {
+    transform: `translate(-50%, -50%) translate(${labelX}px, ${labelY}px)`,
+    "--nav-edge-delay": `${data?.revealDelayMs ?? 0}ms`,
+  } as React.CSSProperties;
   return (
-    <g
-      className={`navigation-node ${node.kind} ${selected ? "selected" : ""}`}
-      transform={`translate(${node.x} ${node.y})`}
-      onClick={(event) => {
-        event.stopPropagation();
-        onSelect();
-      }}
-    >
-      <rect width={node.width} height={node.height} />
-      <text x="14" y="25" fontSize="13" fontWeight="600">
-        {middleEllipsis(node.label, 30)}
-      </text>
-      <text className="kind" x="14" y="47">
-        {node.kind}
-        {node.exists === false ? " / missing" : ""}
-      </text>
-    </g>
-  );
-}
-
-function NavigationEdgeShape({
-  edge,
-  selected,
-  onSelect,
-}: {
-  edge: NavigationLayoutEdge;
-  selected: boolean;
-  onSelect(): void;
-}): React.ReactElement {
-  const label = `${edgeKindLabel(edge.kind)}${edge.count && edge.count > 1 ? ` x${edge.count}` : ""}`;
-  const labelWidth = Math.max(72, label.length * 6.8 + 18);
-  return (
-    <g
-      onClick={(event) => {
-        event.stopPropagation();
-        onSelect();
-      }}
-    >
+    <>
       <path
-        className={`navigation-edge ${edge.confidence} ${selected ? "selected" : ""}`}
-        d={edge.path}
-        markerEnd="url(#navigation-arrow)"
+        id={id}
+        ref={pathRef}
+        className="react-flow__edge-path navigation-flow-edge-path"
+        d={path}
+        markerEnd={markerEnd}
+        style={style}
       />
-      <g
-        className="navigation-edge-label"
-        transform={`translate(${edge.labelX - labelWidth / 2} ${edge.labelY - 11})`}
-      >
-        <rect width={labelWidth} height="22" />
-        <text x={labelWidth / 2} y="15" textAnchor="middle">
-          {label}
-        </text>
-      </g>
-    </g>
-  );
-}
-
-function MiniMap({
-  layout,
-}: {
-  layout: ReturnType<typeof layoutNavigationGraph>;
-}): React.ReactElement {
-  const scale = Math.min(150 / Math.max(1, layout.width), 92 / Math.max(1, layout.height));
-  return (
-    <svg className="navigation-minimap" viewBox="0 0 164 108">
-      <g transform={`translate(7 8) scale(${scale})`}>
-        {layout.edges.map((edge) => (
-          <path
-            key={edge.id}
-            d={edge.path}
-            fill="none"
-            stroke="var(--vscode-descriptionForeground)"
-            strokeWidth={1 / scale}
-            opacity="0.45"
-          />
-        ))}
-        {layout.nodes.map((node) => (
-          <rect
-            key={node.id}
-            x={node.x}
-            y={node.y}
-            width={node.width}
-            height={node.height}
-            rx="5"
-            fill="var(--vscode-button-background)"
-            opacity="0.8"
-          />
-        ))}
-      </g>
-    </svg>
+      <EdgeLabelRenderer>
+        <button
+          type="button"
+          className={classNames(
+            "navigation-edge-badge",
+            "nodrag",
+            "nopan",
+            selected && "is-selected",
+            data?.searchHit && "is-search-hit",
+          )}
+          style={labelStyle}
+          onClick={(event) => {
+            event.stopPropagation();
+            const onSelect = data?.onSelect as (() => void) | undefined;
+            onSelect?.();
+          }}
+        >
+          <span>{data?.label ?? "transition"}</span>
+          <strong>{data?.confidence ?? "unknown"}</strong>
+        </button>
+      </EdgeLabelRenderer>
+    </>
   );
 }
 
@@ -325,6 +440,10 @@ function Inspector({
   if (edge) {
     const source = payload.nodes.find((item) => item.id === edge.source);
     const target = payload.nodes.find((item) => item.id === edge.target);
+    const includeDerived =
+      !!edge.declaredInUri &&
+      !!source?.uri &&
+      normalizeUri(edge.declaredInUri) !== normalizeUri(source.uri);
     return (
       <aside className="navigation-inspector">
         <h2>{edgeKindLabel(edge.kind)}</h2>
@@ -341,6 +460,8 @@ function Inspector({
           <dd>{edge.targetFrame ?? "-"}</dd>
           <dt>Declared in</dt>
           <dd>{edge.declaredInUri ?? "-"}</dd>
+          <dt>Include</dt>
+          <dd>{includeDerived ? "declared in included fragment" : "-"}</dd>
           <dt>Count</dt>
           <dd>{edge.count ?? 1}</dd>
         </dl>
@@ -428,10 +549,12 @@ function filterPayload(
         (node) =>
           !query ||
           node.label.toLowerCase().includes(query) ||
-          node.uri?.toLowerCase().includes(query),
+          node.uri?.toLowerCase().includes(query) ||
+          node.externalUrl?.toLowerCase().includes(query),
       )
       .map((node) => node.id),
   );
+  const nodeById = new Map(payload.nodes.map((node) => [node.id, node]));
   const edges = payload.edges.filter((edge) => {
     if (filters.confidence !== "all" && edge.confidence !== filters.confidence) {
       return false;
@@ -445,9 +568,15 @@ function filterPayload(
     if (!query) {
       return true;
     }
+    const source = nodeById.get(edge.source);
+    const target = nodeById.get(edge.target);
     return (
       nodeMatches.has(edge.source) ||
       nodeMatches.has(edge.target) ||
+      source?.label.toLowerCase().includes(query) ||
+      target?.label.toLowerCase().includes(query) ||
+      edge.kind.toLowerCase().includes(query) ||
+      edge.method?.toLowerCase().includes(query) ||
       edge.evidence.some((item) => item.snippet?.toLowerCase().includes(query))
     );
   });
@@ -460,6 +589,94 @@ function filterPayload(
     nodes: payload.nodes.filter((node) => visibleNodeIds.has(node.id)),
     edges,
   };
+}
+
+function searchHitSets(
+  payload: AspNavigationGraphPayload,
+  search: string,
+): { nodes: Set<string>; edges: Set<string> } {
+  const query = search.trim().toLowerCase();
+  if (!query) {
+    return { nodes: new Set(), edges: new Set() };
+  }
+  const nodeById = new Map(payload.nodes.map((node) => [node.id, node]));
+  const nodes = new Set<string>();
+  const edges = new Set<string>();
+  for (const node of payload.nodes) {
+    if (
+      node.label.toLowerCase().includes(query) ||
+      node.uri?.toLowerCase().includes(query) ||
+      node.externalUrl?.toLowerCase().includes(query)
+    ) {
+      nodes.add(node.id);
+    }
+  }
+  for (const edge of payload.edges) {
+    const source = nodeById.get(edge.source);
+    const target = nodeById.get(edge.target);
+    if (
+      nodes.has(edge.source) ||
+      nodes.has(edge.target) ||
+      source?.label.toLowerCase().includes(query) ||
+      target?.label.toLowerCase().includes(query) ||
+      edge.kind.toLowerCase().includes(query) ||
+      edge.method?.toLowerCase().includes(query) ||
+      edge.confidence.toLowerCase().includes(query) ||
+      edge.evidence.some((item) => item.snippet?.toLowerCase().includes(query))
+    ) {
+      edges.add(edge.id);
+    }
+  }
+  return { nodes, edges };
+}
+
+function relatedElementSets(
+  edges: NavigationFlowEdge[],
+  hovered: HoverTarget,
+): { nodes: Set<string>; edges: Set<string> } {
+  if (!hovered) {
+    return { nodes: new Set(), edges: new Set() };
+  }
+  const nodes = new Set<string>();
+  const edgeIds = new Set<string>();
+  if (hovered.kind === "node") {
+    nodes.add(hovered.id);
+    for (const edge of edges) {
+      if (edge.source === hovered.id || edge.target === hovered.id) {
+        edgeIds.add(edge.id);
+        nodes.add(edge.source);
+        nodes.add(edge.target);
+      }
+    }
+  } else {
+    edgeIds.add(hovered.id);
+    const edge = edges.find((item) => item.id === hovered.id);
+    if (edge) {
+      nodes.add(edge.source);
+      nodes.add(edge.target);
+    }
+  }
+  return { nodes, edges: edgeIds };
+}
+
+function useReducedMotion(): boolean {
+  const [reducedMotion, setReducedMotion] = useState(
+    () => window.matchMedia("(prefers-reduced-motion: reduce)").matches,
+  );
+  useEffect(() => {
+    const query = window.matchMedia("(prefers-reduced-motion: reduce)");
+    const update = () => setReducedMotion(query.matches);
+    query.addEventListener("change", update);
+    return () => query.removeEventListener("change", update);
+  }, []);
+  return reducedMotion;
+}
+
+function revealDelay(layer: number, index: number, reducedMotion: boolean): number {
+  if (reducedMotion) {
+    return 0;
+  }
+  return Math.min(620, layer * 90 + index * 18);
 }
 
 function distinctMethods(edges: AspNavigationEdge[]): string[] {
@@ -482,6 +699,27 @@ function middleEllipsis(value: string, maxLength: number): string {
   }
   const keep = Math.max(4, Math.floor((maxLength - 1) / 2));
   return `${value.slice(0, keep)}...${value.slice(-keep)}`;
+}
+
+function miniMapNodeColor(kind: AspNavigationNode["kind"]): string {
+  switch (kind) {
+    case "external":
+      return "var(--navigation-external)";
+    case "unknown":
+      return "var(--navigation-unknown)";
+    case "fragment":
+      return "var(--navigation-fragment)";
+    case "page":
+      return "var(--navigation-page)";
+  }
+}
+
+function normalizeUri(uri: string): string {
+  return uri.toLowerCase();
+}
+
+function classNames(...values: Array<string | false | undefined>): string {
+  return values.filter(Boolean).join(" ");
 }
 
 function emptyPayload(): NavigationGraphWebviewPayload {

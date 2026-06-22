@@ -1,104 +1,222 @@
+import ELK, { type ElkExtendedEdge, type ElkNode } from "elkjs/lib/elk.bundled.js";
+import { MarkerType, Position, type Edge, type Node } from "@xyflow/react";
 import type {
   AspNavigationEdge,
   AspNavigationGraphPayload,
   AspNavigationNode,
 } from "@asp-lsp/core";
 
-export interface NavigationLayoutNode extends AspNavigationNode {
-  x: number;
-  y: number;
-  width: number;
-  height: number;
+export interface NavigationFlowNodeData extends Record<string, unknown> {
+  node: AspNavigationNode;
   layer: number;
+  revealIndex: number;
+  selected?: boolean;
+  searchHit?: boolean;
+  dimmed?: boolean;
+  revealDelayMs?: number;
 }
 
-export interface NavigationLayoutEdge extends AspNavigationEdge {
-  path: string;
-  labelX: number;
-  labelY: number;
+export interface NavigationFlowEdgeData extends Record<string, unknown> {
+  edge: AspNavigationEdge;
+  label: string;
+  path?: string;
+  labelX?: number;
+  labelY?: number;
+  confidence: AspNavigationEdge["confidence"];
+  edgeKind: AspNavigationEdge["kind"];
+  method?: string;
+  parameters: AspNavigationEdge["parameters"];
+  revealIndex: number;
+  selected?: boolean;
+  searchHit?: boolean;
+  dimmed?: boolean;
+  uncertain?: boolean;
+  revealDelayMs?: number;
+  onSelect?: () => void;
 }
 
-export interface NavigationGraphLayout {
+export type NavigationFlowNode = Node<NavigationFlowNodeData, "navigationPage">;
+export type NavigationFlowEdge = Edge<NavigationFlowEdgeData, "navigationTransition">;
+
+export interface NavigationFlowLayout {
   width: number;
   height: number;
-  nodes: NavigationLayoutNode[];
-  edges: NavigationLayoutEdge[];
+  nodes: NavigationFlowNode[];
+  edges: NavigationFlowEdge[];
 }
 
-const nodeWidth = 190;
-const nodeHeight = 64;
-const horizontalGap = 128;
-const verticalGap = 34;
-const margin = 56;
+const elk = new ELK();
+const nodeWidth = 238;
+const nodeHeight = 88;
+const sourceHandleId = "source";
+const targetHandleId = "target";
 
-export function layoutNavigationGraph(payload: AspNavigationGraphPayload): NavigationGraphLayout {
-  const nodes = [...payload.nodes].sort((left, right) => {
+export function navigationGraphToElkGraph(payload: AspNavigationGraphPayload): ElkNode {
+  const sortedNodes = sortedNavigationNodes(payload.nodes);
+  const nodeIds = new Set(sortedNodes.map((node) => node.id));
+  const children = sortedNodes.map((node) => navigationNodeToElkNode(node));
+  const edges = [...payload.edges]
+    .filter((edge) => nodeIds.has(edge.source) && nodeIds.has(edge.target))
+    .sort((left, right) => left.id.localeCompare(right.id))
+    .map(
+      (edge): ElkExtendedEdge => ({
+        id: edge.id,
+        sources: [elkPortId(edge.source, sourceHandleId)],
+        targets: [elkPortId(edge.target, targetHandleId)],
+        labels: [{ text: edgeLabel(edge), width: edgeLabel(edge).length * 7 + 24, height: 24 }],
+      }),
+    );
+
+  return {
+    id: "navigation-graph-root",
+    layoutOptions: {
+      "elk.algorithm": "org.eclipse.elk.layered",
+      "elk.direction": "RIGHT",
+      "elk.edgeRouting": "ORTHOGONAL",
+      "elk.layered.considerModelOrder.strategy": "NODES_AND_EDGES",
+      "elk.layered.crossingMinimization.strategy": "LAYER_SWEEP",
+      "elk.layered.spacing.edgeNodeBetweenLayers": "42",
+      "elk.layered.spacing.nodeNodeBetweenLayers": "116",
+      "elk.spacing.nodeNode": "44",
+      "elk.padding": "[top=44,left=44,bottom=44,right=44]",
+    },
+    children,
+    edges,
+  };
+}
+
+export async function layoutNavigationGraphWithElk(
+  payload: AspNavigationGraphPayload,
+): Promise<NavigationFlowLayout> {
+  if (payload.nodes.length === 0) {
+    return { width: 720, height: 520, nodes: [], edges: [] };
+  }
+  const graph = navigationGraphToElkGraph(payload);
+  const layout = await elk.layout(graph);
+  return navigationFlowElementsFromElk(payload, layout);
+}
+
+export function navigationFlowElementsFromElk(
+  payload: AspNavigationGraphPayload,
+  layout: ElkNode,
+): NavigationFlowLayout {
+  const originalNodeById = new Map(payload.nodes.map((node) => [node.id, node]));
+  const originalEdgeById = new Map(payload.edges.map((edge) => [edge.id, edge]));
+  const layers = navigationLayers(payload.nodes, payload.edges);
+  const layoutNodeById = new Map((layout.children ?? []).map((node) => [node.id, node]));
+  const layoutEdgeById = new Map((layout.edges ?? []).map((edge) => [edge.id, edge]));
+  const nodes = sortedNavigationNodes(payload.nodes).flatMap(
+    (node, index): NavigationFlowNode[] => {
+      const elkNode = layoutNodeById.get(node.id);
+      if (!elkNode) {
+        return [];
+      }
+      return [
+        {
+          id: node.id,
+          type: "navigationPage",
+          position: { x: elkNode.x ?? 0, y: elkNode.y ?? 0 },
+          sourcePosition: Position.Right,
+          targetPosition: Position.Left,
+          draggable: false,
+          selectable: true,
+          data: {
+            node: originalNodeById.get(node.id) ?? node,
+            layer: layers.get(node.id) ?? 0,
+            revealIndex: index,
+          },
+        },
+      ];
+    },
+  );
+  const edges = [...payload.edges]
+    .filter((edge) => layoutNodeById.has(edge.source) && layoutNodeById.has(edge.target))
+    .sort((left, right) => left.id.localeCompare(right.id))
+    .map((edge, index): NavigationFlowEdge => {
+      const elkEdge = layoutEdgeById.get(edge.id);
+      const path = elkEdge ? elkEdgePath(elkEdge) : undefined;
+      const labelPoint = elkEdge ? elkEdgeLabelPoint(elkEdge) : undefined;
+      return {
+        id: edge.id,
+        source: edge.source,
+        target: edge.target,
+        sourceHandle: sourceHandleId,
+        targetHandle: targetHandleId,
+        type: "navigationTransition",
+        markerEnd: { type: MarkerType.ArrowClosed },
+        selectable: true,
+        data: {
+          edge: originalEdgeById.get(edge.id) ?? edge,
+          label: edgeLabel(edge),
+          path,
+          labelX: labelPoint?.x,
+          labelY: labelPoint?.y,
+          confidence: edge.confidence,
+          edgeKind: edge.kind,
+          method: edge.method,
+          parameters: edge.parameters,
+          revealIndex: index,
+        },
+      };
+    });
+
+  return {
+    width: Math.max(720, (layout.width ?? 720) + 72),
+    height: Math.max(520, (layout.height ?? 520) + 72),
+    nodes,
+    edges,
+  };
+}
+
+function navigationNodeToElkNode(node: AspNavigationNode): ElkNode {
+  const laneConstraint = node.isRoot
+    ? "FIRST"
+    : node.kind === "external" || node.kind === "unknown"
+      ? "LAST"
+      : undefined;
+  return {
+    id: node.id,
+    width: nodeWidth,
+    height: nodeHeight,
+    labels: [{ text: node.label, width: nodeWidth, height: 18 }],
+    layoutOptions: {
+      "elk.portConstraints": "FIXED_SIDE",
+      ...(laneConstraint
+        ? { "org.eclipse.elk.layered.layering.layerConstraint": laneConstraint }
+        : {}),
+    },
+    ports: [
+      {
+        id: elkPortId(node.id, targetHandleId),
+        x: 0,
+        y: nodeHeight / 2,
+        width: 1,
+        height: 1,
+        layoutOptions: { "elk.port.side": "WEST" },
+      },
+      {
+        id: elkPortId(node.id, sourceHandleId),
+        x: nodeWidth,
+        y: nodeHeight / 2,
+        width: 1,
+        height: 1,
+        layoutOptions: { "elk.port.side": "EAST" },
+      },
+    ],
+  };
+}
+
+function sortedNavigationNodes(nodes: AspNavigationNode[]): AspNavigationNode[] {
+  return [...nodes].sort((left, right) => {
     if (left.isRoot !== right.isRoot) {
       return left.isRoot ? -1 : 1;
     }
-    if (left.kind !== right.kind) {
-      return nodeKindOrder(left.kind) - nodeKindOrder(right.kind);
+    const kindOrder = nodeKindOrder(left.kind) - nodeKindOrder(right.kind);
+    if (kindOrder !== 0) {
+      return kindOrder;
     }
     return left.label.localeCompare(right.label);
   });
-  const layers = navigationLayers(nodes, payload.edges);
-  const maxLayer = Math.max(0, ...layers.values());
-  for (const node of nodes) {
-    if (node.kind === "external" || node.kind === "unknown") {
-      layers.set(node.id, maxLayer + 1);
-    }
-  }
-  const byLayer = new Map<number, AspNavigationNode[]>();
-  for (const node of nodes) {
-    const layer = layers.get(node.id) ?? 0;
-    const items = byLayer.get(layer) ?? [];
-    items.push(node);
-    byLayer.set(layer, items);
-  }
-  const layoutNodes: NavigationLayoutNode[] = [];
-  for (const [layer, items] of [...byLayer.entries()].sort((left, right) => left[0] - right[0])) {
-    items.sort((left, right) => left.label.localeCompare(right.label));
-    items.forEach((node, index) => {
-      layoutNodes.push({
-        ...node,
-        x: margin + layer * (nodeWidth + horizontalGap),
-        y: margin + index * (nodeHeight + verticalGap),
-        width: nodeWidth,
-        height: nodeHeight,
-        layer,
-      });
-    });
-  }
-  const layoutNodeById = new Map(layoutNodes.map((node) => [node.id, node]));
-  const groupedEdgeOffsets = edgeOffsets(payload.edges);
-  const layoutEdges = payload.edges.flatMap((edge): NavigationLayoutEdge[] => {
-    const source = layoutNodeById.get(edge.source);
-    const target = layoutNodeById.get(edge.target);
-    if (!source || !target) {
-      return [];
-    }
-    const offset = groupedEdgeOffsets.get(edge.id) ?? 0;
-    const path = edgePath(source, target, offset);
-    const labelX = (source.x + source.width + target.x) / 2 + offset;
-    const labelY = (source.y + source.height / 2 + target.y + target.height / 2) / 2 - 10;
-    return [{ ...edge, path, labelX, labelY }];
-  });
-  const width =
-    margin * 2 +
-    (Math.max(0, ...layoutNodes.map((node) => node.layer)) + 1) * nodeWidth +
-    Math.max(0, ...layoutNodes.map((node) => node.layer)) * horizontalGap;
-  const maxLayerHeight = Math.max(
-    nodeHeight,
-    ...[...byLayer.values()].map(
-      (items) => items.length * nodeHeight + Math.max(0, items.length - 1) * verticalGap,
-    ),
-  );
-  return {
-    width: Math.max(720, width),
-    height: Math.max(520, margin * 2 + maxLayerHeight),
-    nodes: layoutNodes,
-    edges: layoutEdges,
-  };
 }
 
 function navigationLayers(
@@ -135,46 +253,54 @@ function navigationLayers(
       }
     }
   }
+  const maxLayer = Math.max(0, ...layers.values());
   for (const node of nodes) {
-    if (!layers.has(node.id)) {
-      layers.set(node.id, node.kind === "external" || node.kind === "unknown" ? 12 : 0);
+    if (node.kind === "external" || node.kind === "unknown") {
+      layers.set(node.id, maxLayer + 1);
+    } else if (!layers.has(node.id)) {
+      layers.set(node.id, 0);
     }
   }
   return layers;
 }
 
-function edgeOffsets(edges: AspNavigationEdge[]): Map<string, number> {
-  const groups = new Map<string, AspNavigationEdge[]>();
-  for (const edge of edges) {
-    const key = `${edge.source}|${edge.target}`;
-    const items = groups.get(key) ?? [];
-    items.push(edge);
-    groups.set(key, items);
-  }
-  const offsets = new Map<string, number>();
-  for (const items of groups.values()) {
-    items.sort((left, right) => left.kind.localeCompare(right.kind));
-    const center = (items.length - 1) / 2;
-    items.forEach((edge, index) => offsets.set(edge.id, (index - center) * 18));
-  }
-  return offsets;
+function elkPortId(nodeId: string, handleId: string): string {
+  return `${nodeId}:${handleId}`;
 }
 
-function edgePath(
-  source: NavigationLayoutNode,
-  target: NavigationLayoutNode,
-  offset: number,
-): string {
-  const sourceX = source.x + source.width;
-  const sourceY = source.y + source.height / 2 + offset;
-  const targetX = target.x;
-  const targetY = target.y + target.height / 2 + offset;
-  if (target.x <= source.x) {
-    const loopX = Math.max(source.x, target.x) + source.width + 42 + Math.abs(offset);
-    return `M ${sourceX} ${sourceY} C ${loopX} ${sourceY - 70} ${loopX} ${targetY + 70} ${targetX} ${targetY}`;
+function elkEdgePath(edge: ElkExtendedEdge): string | undefined {
+  const section = edge.sections?.[0];
+  if (!section) {
+    return undefined;
   }
-  const midX = (sourceX + targetX) / 2 + offset;
-  return `M ${sourceX} ${sourceY} C ${midX} ${sourceY} ${midX} ${targetY} ${targetX} ${targetY}`;
+  const points = [section.startPoint, ...(section.bendPoints ?? []), section.endPoint];
+  return points.map((point, index) => `${index === 0 ? "M" : "L"} ${point.x} ${point.y}`).join(" ");
+}
+
+function elkEdgeLabelPoint(edge: ElkExtendedEdge): { x: number; y: number } | undefined {
+  const section = edge.sections?.[0];
+  if (!section) {
+    return undefined;
+  }
+  const points = [section.startPoint, ...(section.bendPoints ?? []), section.endPoint];
+  const middle = points[Math.floor(points.length / 2)];
+  if (points.length % 2 === 1) {
+    return middle;
+  }
+  const previous = points[points.length / 2 - 1];
+  return { x: (previous.x + middle.x) / 2, y: (previous.y + middle.y) / 2 };
+}
+
+function edgeLabel(edge: AspNavigationEdge): string {
+  return `${edgeKindLabel(edge.kind)}${edge.count && edge.count > 1 ? ` x${edge.count}` : ""}`;
+}
+
+function edgeKindLabel(kind: AspNavigationEdge["kind"]): string {
+  return kind
+    .replace(/^html/, "HTML ")
+    .replace(/^javascript/, "JS ")
+    .replace(/^server/, "Server ")
+    .replace(/([a-z])([A-Z])/g, "$1 $2");
 }
 
 function nodeKindOrder(kind: AspNavigationNode["kind"]): number {

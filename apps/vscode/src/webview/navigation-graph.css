@@ -23,6 +23,19 @@ select {
 }
 
 .navigation-shell {
+  --navigation-page: #5ea0ff;
+  --navigation-fragment: #70c7a6;
+  --navigation-external: #f2b84b;
+  --navigation-unknown: #d56bd9;
+  --navigation-edge: #7aa7ff;
+  --navigation-edge-muted: color-mix(in srgb, var(--vscode-descriptionForeground) 72%, transparent);
+  --navigation-grid-dot: color-mix(in srgb, var(--vscode-foreground) 18%, transparent);
+  --navigation-minimap-mask: color-mix(in srgb, var(--vscode-editor-background) 72%, transparent);
+  --navigation-card-bg: color-mix(
+    in srgb,
+    var(--vscode-editorWidget-background) 92%,
+    var(--vscode-editor-background)
+  );
   display: grid;
   grid-template-rows: auto 1fr;
   width: 100%;
@@ -71,108 +84,316 @@ select {
   background: var(--vscode-button-hoverBackground);
 }
 
+.navigation-toolbar span {
+  color: var(--vscode-descriptionForeground);
+  white-space: nowrap;
+}
+
 .navigation-main {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) 320px;
+  grid-template-columns: minmax(0, 1fr) 340px;
   min-height: 0;
 }
 
 .navigation-canvas {
   position: relative;
+  min-width: 0;
+  min-height: 0;
   overflow: hidden;
-  background:
-    linear-gradient(var(--vscode-editor-background), var(--vscode-editor-background)),
-    radial-gradient(
-      circle at 1px 1px,
-      color-mix(in srgb, var(--vscode-foreground) 14%, transparent) 1px,
-      transparent 0
-    );
-  background-size:
-    auto,
-    24px 24px;
+  background: linear-gradient(
+    135deg,
+    color-mix(in srgb, var(--vscode-editor-background) 96%, var(--navigation-page)),
+    var(--vscode-editor-background) 34%,
+    color-mix(in srgb, var(--vscode-editor-background) 96%, var(--navigation-fragment))
+  );
 }
 
-.navigation-canvas svg {
-  display: block;
-  width: 100%;
-  height: 100%;
-  cursor: grab;
-  user-select: none;
+.navigation-canvas .react-flow {
+  background: transparent;
 }
 
-.navigation-canvas svg.dragging {
-  cursor: grabbing;
+.react-flow__node.navigation-flow-node {
+  width: 238px;
+  height: 88px;
+  transition:
+    transform 560ms cubic-bezier(0.2, 0.8, 0.2, 1),
+    opacity 220ms ease,
+    filter 220ms ease;
 }
 
-.navigation-node rect {
-  fill: var(--vscode-editorWidget-background);
-  stroke: var(--vscode-panel-border);
-  stroke-width: 1.2;
-  rx: 6;
+.navigation-node-card {
+  position: relative;
+  width: 238px;
+  height: 88px;
+  padding: 11px 14px 12px;
+  overflow: hidden;
+  color: var(--vscode-foreground);
+  background: var(--navigation-card-bg);
+  border: 1px solid color-mix(in srgb, var(--vscode-panel-border) 72%, var(--navigation-page));
+  border-radius: 8px;
+  box-shadow:
+    0 10px 24px color-mix(in srgb, #000 20%, transparent),
+    inset 0 1px 0 color-mix(in srgb, #fff 12%, transparent);
+  animation: nav-node-reveal 520ms cubic-bezier(0.2, 0.8, 0.2, 1) both;
+  animation-delay: var(--nav-reveal-delay, 0ms);
+  transition:
+    border-color 180ms ease,
+    box-shadow 180ms ease,
+    filter 180ms ease,
+    transform 180ms ease;
 }
 
-.navigation-node.selected rect {
-  stroke: var(--vscode-focusBorder);
-  stroke-width: 2;
-}
-
-.navigation-node text {
-  fill: var(--vscode-foreground);
+.navigation-node-card__shine {
+  position: absolute;
+  inset: 0;
   pointer-events: none;
+  background: linear-gradient(
+    110deg,
+    color-mix(in srgb, #fff 13%, transparent),
+    transparent 28%,
+    transparent 72%,
+    color-mix(in srgb, #fff 8%, transparent)
+  );
 }
 
-.navigation-node .kind {
-  fill: var(--vscode-descriptionForeground);
+.navigation-node-card__header {
+  position: relative;
+  display: flex;
+  gap: 5px;
+  align-items: center;
+  min-width: 0;
+  margin-bottom: 7px;
+}
+
+.navigation-node-card__header span {
+  min-width: 0;
+  padding: 2px 6px;
+  overflow: hidden;
+  color: var(--vscode-badge-foreground);
+  text-overflow: ellipsis;
+  text-transform: uppercase;
+  white-space: nowrap;
+  background: color-mix(in srgb, var(--vscode-badge-background) 85%, transparent);
+  border-radius: 4px;
+  font-size: 10px;
+  font-weight: 700;
+}
+
+.navigation-node-card__title {
+  position: relative;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 14px;
+  font-weight: 700;
+}
+
+.navigation-node-card__meta {
+  position: relative;
+  margin-top: 5px;
+  overflow: hidden;
+  color: var(--vscode-descriptionForeground);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 11px;
+}
+
+.navigation-node-card--page {
+  border-left: 4px solid var(--navigation-page);
+}
+
+.navigation-node-card--fragment {
+  border-left: 4px solid var(--navigation-fragment);
+}
+
+.navigation-node-card--external {
+  border-left: 4px solid var(--navigation-external);
+}
+
+.navigation-node-card--unknown {
+  border-left: 4px solid var(--navigation-unknown);
+}
+
+.navigation-node-card.is-selected {
+  border-color: var(--vscode-focusBorder);
+  box-shadow:
+    0 16px 34px color-mix(in srgb, #000 28%, transparent),
+    0 0 0 3px color-mix(in srgb, var(--vscode-focusBorder) 36%, transparent),
+    0 0 24px color-mix(in srgb, var(--vscode-focusBorder) 30%, transparent);
+  transform: translateY(-2px);
+}
+
+.navigation-node-card.is-search-hit::after {
+  position: absolute;
+  inset: -5px;
+  pointer-events: none;
+  content: "";
+  border: 2px solid color-mix(in srgb, var(--vscode-focusBorder) 82%, transparent);
+  border-radius: 12px;
+  animation: nav-search-pulse 1400ms ease-in-out infinite;
+}
+
+.navigation-node-card.is-dimmed {
+  filter: saturate(0.74);
+}
+
+.navigation-flow-node.navigation-node--dimmed {
+  opacity: 0.36;
+}
+
+.navigation-handle {
+  width: 9px;
+  height: 9px;
+  background: var(--navigation-edge);
+  border: 2px solid var(--vscode-editor-background);
+}
+
+.navigation-flow-edge {
+  transition:
+    opacity 180ms ease,
+    filter 180ms ease;
+}
+
+.navigation-flow-edge-path {
+  fill: none;
+  stroke: var(--navigation-edge);
+  stroke-width: 2.4;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  stroke-dasharray: var(--nav-edge-length);
+  stroke-dashoffset: var(--nav-edge-length);
+  animation: nav-edge-draw 720ms cubic-bezier(0.16, 1, 0.3, 1) forwards;
+  animation-delay: var(--nav-edge-delay, 0ms);
+  transition:
+    stroke 180ms ease,
+    stroke-width 180ms ease,
+    filter 180ms ease;
+}
+
+.navigation-edge--probable .navigation-flow-edge-path {
+  stroke: color-mix(in srgb, var(--navigation-edge) 78%, var(--navigation-fragment));
+}
+
+.navigation-edge--possible .navigation-flow-edge-path {
+  stroke: color-mix(in srgb, var(--navigation-edge) 68%, var(--navigation-external));
+}
+
+.navigation-edge--unknown .navigation-flow-edge-path {
+  stroke: color-mix(in srgb, var(--navigation-edge) 58%, var(--navigation-unknown));
+}
+
+.navigation-edge--uncertain .navigation-flow-edge-path {
+  stroke-dasharray: 8 8;
+  stroke-dashoffset: 0;
+  animation:
+    nav-edge-draw 620ms cubic-bezier(0.16, 1, 0.3, 1) forwards,
+    nav-dash-flow 4200ms linear infinite;
+  animation-delay: var(--nav-edge-delay, 0ms), calc(var(--nav-edge-delay, 0ms) + 620ms);
+}
+
+.navigation-edge--selected .navigation-flow-edge-path {
+  stroke: var(--vscode-focusBorder);
+  stroke-width: 3.5;
+  filter: drop-shadow(0 0 7px color-mix(in srgb, var(--vscode-focusBorder) 72%, transparent));
+  animation:
+    nav-edge-draw 500ms ease-out forwards,
+    nav-selected-pulse 1600ms ease-in-out infinite;
+}
+
+.navigation-edge--search-hit .navigation-flow-edge-path {
+  filter: drop-shadow(0 0 8px color-mix(in srgb, var(--vscode-focusBorder) 62%, transparent));
+}
+
+.navigation-edge--dimmed {
+  opacity: 0.24;
+}
+
+.navigation-edge-badge {
+  position: absolute;
+  display: inline-flex;
+  gap: 7px;
+  align-items: center;
+  max-width: 220px;
+  height: 24px;
+  padding: 0 8px;
+  color: var(--vscode-badge-foreground);
+  white-space: nowrap;
+  background: color-mix(
+    in srgb,
+    var(--vscode-badge-background) 92%,
+    var(--vscode-editor-background)
+  );
+  border: 1px solid color-mix(in srgb, var(--vscode-focusBorder) 22%, transparent);
+  border-radius: 999px;
+  box-shadow: 0 4px 14px color-mix(in srgb, #000 18%, transparent);
+  cursor: pointer;
+  animation: nav-edge-badge-reveal 360ms ease-out both;
+  animation-delay: var(--nav-edge-delay, 0ms);
+  transition:
+    background 160ms ease,
+    border-color 160ms ease,
+    box-shadow 160ms ease,
+    opacity 160ms ease;
+}
+
+.navigation-edge-badge span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.navigation-edge-badge strong {
+  color: color-mix(in srgb, var(--vscode-badge-foreground) 82%, var(--navigation-external));
   font-size: 10px;
   text-transform: uppercase;
 }
 
-.navigation-node.external rect {
-  fill: color-mix(in srgb, var(--vscode-charts-blue) 12%, var(--vscode-editorWidget-background));
+.navigation-edge-badge.is-selected {
+  border-color: var(--vscode-focusBorder);
+  box-shadow:
+    0 6px 18px color-mix(in srgb, #000 24%, transparent),
+    0 0 16px color-mix(in srgb, var(--vscode-focusBorder) 34%, transparent);
 }
 
-.navigation-node.unknown rect {
-  fill: color-mix(in srgb, var(--vscode-charts-yellow) 12%, var(--vscode-editorWidget-background));
+.navigation-edge-badge.is-search-hit {
+  animation:
+    nav-edge-badge-reveal 360ms ease-out both,
+    nav-search-pulse 1400ms ease-in-out infinite;
 }
 
-.navigation-edge {
-  fill: none;
-  stroke: var(--vscode-charts-blue);
-  stroke-width: 2;
-}
-
-.navigation-edge.probable,
-.navigation-edge.possible,
-.navigation-edge.unknown {
-  stroke-dasharray: 7 6;
-}
-
-.navigation-edge.selected {
-  stroke: var(--vscode-focusBorder);
-  stroke-width: 3;
-}
-
-.navigation-edge-label rect {
-  fill: var(--vscode-badge-background);
-  rx: 5;
-}
-
-.navigation-edge-label text {
-  fill: var(--vscode-badge-foreground);
+.navigation-layout-status {
+  position: absolute;
+  top: 12px;
+  right: 12px;
+  padding: 5px 8px;
+  color: var(--vscode-badge-foreground);
+  background: color-mix(in srgb, var(--vscode-badge-background) 90%, transparent);
+  border-radius: 5px;
   font-size: 11px;
   pointer-events: none;
 }
 
-.navigation-minimap {
-  position: absolute;
-  right: 12px;
-  bottom: 12px;
-  width: 164px;
-  height: 108px;
-  padding: 6px;
+.navigation-canvas .react-flow__controls,
+.navigation-canvas .react-flow__minimap {
+  color: var(--vscode-foreground);
+  background: color-mix(in srgb, var(--vscode-editorWidget-background) 94%, transparent);
   border: 1px solid var(--vscode-panel-border);
   border-radius: 6px;
-  background: color-mix(in srgb, var(--vscode-editorWidget-background) 92%, transparent);
+  box-shadow: 0 10px 24px color-mix(in srgb, #000 18%, transparent);
+}
+
+.navigation-canvas .react-flow__controls-button {
+  color: var(--vscode-foreground);
+  background: transparent;
+  border-bottom: 1px solid var(--vscode-panel-border);
+}
+
+.navigation-canvas .react-flow__controls-button:hover {
+  background: var(--vscode-toolbar-hoverBackground);
+}
+
+.navigation-canvas .react-flow__minimap {
+  overflow: hidden;
 }
 
 .navigation-inspector {
@@ -189,9 +410,13 @@ select {
   font-size: 14px;
 }
 
+.navigation-inspector h3 {
+  margin-top: 14px;
+}
+
 .navigation-inspector dl {
   display: grid;
-  grid-template-columns: 92px 1fr;
+  grid-template-columns: 96px 1fr;
   gap: 6px 10px;
   margin: 0 0 14px;
 }
@@ -212,6 +437,8 @@ select {
 }
 
 .navigation-evidence-item {
+  display: grid;
+  gap: 7px;
   padding: 8px;
   border: 1px solid var(--vscode-panel-border);
   border-radius: 6px;
@@ -219,29 +446,88 @@ select {
 }
 
 .navigation-evidence-item code {
-  display: block;
-  margin: 6px 0;
-  color: var(--vscode-textPreformat-foreground);
-  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  color: var(--vscode-textPreformat-foreground, var(--vscode-foreground));
 }
 
 .navigation-empty {
-  padding: 16px;
   color: var(--vscode-descriptionForeground);
 }
 
-@media (max-width: 900px) {
-  .navigation-main {
-    grid-template-columns: 1fr;
-    grid-template-rows: minmax(0, 1fr) 260px;
+@keyframes nav-node-reveal {
+  from {
+    opacity: 0;
+    transform: translateX(-34px) scale(0.96);
+  }
+  to {
+    opacity: 1;
+    transform: translateX(0) scale(1);
+  }
+}
+
+@keyframes nav-edge-draw {
+  to {
+    stroke-dashoffset: 0;
+  }
+}
+
+@keyframes nav-dash-flow {
+  to {
+    stroke-dashoffset: -64;
+  }
+}
+
+@keyframes nav-selected-pulse {
+  0%,
+  100% {
+    filter: drop-shadow(0 0 6px color-mix(in srgb, var(--vscode-focusBorder) 58%, transparent));
+  }
+  50% {
+    filter: drop-shadow(0 0 13px color-mix(in srgb, var(--vscode-focusBorder) 82%, transparent));
+  }
+}
+
+@keyframes nav-search-pulse {
+  0%,
+  100% {
+    opacity: 0.5;
+    transform: scale(1);
+  }
+  50% {
+    opacity: 1;
+    transform: scale(1.04);
+  }
+}
+
+@keyframes nav-edge-badge-reveal {
+  from {
+    opacity: 0;
+    filter: blur(2px);
+  }
+  to {
+    opacity: 1;
+    filter: blur(0);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .react-flow__node.navigation-flow-node,
+  .navigation-node-card,
+  .navigation-flow-edge,
+  .navigation-flow-edge-path,
+  .navigation-edge-badge {
+    transition-duration: 80ms;
+    animation-duration: 80ms;
+    animation-delay: 0ms;
+    animation-iteration-count: 1;
   }
 
-  .navigation-inspector {
-    border-left: 0;
-    border-top: 1px solid var(--vscode-panel-border);
-  }
-
-  .navigation-toolbar {
-    flex-wrap: wrap;
+  .navigation-edge--uncertain .navigation-flow-edge-path,
+  .navigation-edge--selected .navigation-flow-edge-path,
+  .navigation-edge-badge.is-search-hit,
+  .navigation-node-card.is-search-hit::after {
+    animation-name: nav-edge-draw;
+    animation-duration: 80ms;
+    animation-iteration-count: 1;
   }
 }
