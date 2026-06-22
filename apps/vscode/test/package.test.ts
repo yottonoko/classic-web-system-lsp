@@ -352,6 +352,52 @@ describe("VS Code extension package", () => {
     ).toEqual({ selectionEnd: 3, selectionStart: 0, value: "ACC" });
   });
 
+  it("recovers the previous selection when the first IME text already replaced it", () => {
+    const fullPrefixMatch = imeSafeCompositionStartSnapshot(
+      { selectionEnd: 1, selectionStart: 0, value: "A" },
+      { selectionEnd: 3, selectionStart: 0, value: "ABC" },
+      "A",
+      "A",
+    );
+    expect(fullPrefixMatch).toEqual({ selectionEnd: 3, selectionStart: 0, value: "ABC" });
+    expect(imeSafeCompositionEndValue(fullPrefixMatch, imeSafeCommittedText("A", "A"), "A")).toBe(
+      "A",
+    );
+
+    const embeddedPrefixMatch = imeSafeCompositionStartSnapshot(
+      { selectionEnd: 2, selectionStart: 1, value: "xAz" },
+      { selectionEnd: 4, selectionStart: 1, value: "xABCz" },
+      "xAz",
+      "A",
+    );
+    expect(embeddedPrefixMatch).toEqual({ selectionEnd: 4, selectionStart: 1, value: "xABCz" });
+    expect(
+      imeSafeCompositionEndValue(embeddedPrefixMatch, imeSafeCommittedText("A", "A"), "xAz"),
+    ).toBe("xAz");
+
+    const japanesePrefixMatch = imeSafeCompositionStartSnapshot(
+      { selectionEnd: 1, selectionStart: 0, value: "あ" },
+      { selectionEnd: 3, selectionStart: 0, value: "あいう" },
+      "あ",
+      "あ",
+    );
+    expect(japanesePrefixMatch).toEqual({ selectionEnd: 3, selectionStart: 0, value: "あいう" });
+    expect(
+      imeSafeCompositionEndValue(japanesePrefixMatch, imeSafeCommittedText("あ", "あ"), "あ"),
+    ).toBe("あ");
+  });
+
+  it("does not infer a wider first-text replacement without a previous selection", () => {
+    expect(
+      imeSafeCompositionStartSnapshot(
+        { selectionEnd: 1, selectionStart: 0, value: "A" },
+        undefined,
+        "A",
+        "A",
+      ),
+    ).toEqual({ selectionEnd: 1, selectionStart: 0, value: "A" });
+  });
+
   it("keeps the previous full selection when compositionstart exposes a short IME range", () => {
     const snapshot = imeSafeCompositionStartSnapshot(
       { selectionEnd: 1, selectionStart: 0, value: "ACC" },

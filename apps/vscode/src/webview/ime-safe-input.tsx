@@ -65,16 +65,66 @@ function snapshotSelectionLength(snapshot: ImeCompositionSnapshot): number {
   return snapshot.selectionEnd - snapshot.selectionStart;
 }
 
+function snapshotValueWithSelectionReplacement(
+  snapshot: ImeCompositionSnapshot,
+  replacementText: string,
+): string | undefined {
+  if (replacementText.length === 0) {
+    return undefined;
+  }
+  return `${snapshot.value.slice(0, snapshot.selectionStart)}${replacementText}${snapshot.value.slice(
+    snapshot.selectionEnd,
+  )}`;
+}
+
+function snapshotSelectionContainsRange(
+  snapshot: ImeCompositionSnapshot,
+  selectionStart: number,
+  selectionEnd: number,
+): boolean {
+  return snapshot.selectionStart <= selectionStart && snapshot.selectionEnd >= selectionEnd;
+}
+
+function snapshotRangeIsInsideReplacement(
+  currentSnapshot: ImeCompositionSnapshot | undefined,
+  previousSelectionSnapshot: ImeCompositionSnapshot,
+  replacementText: string,
+  currentValue: string,
+): boolean {
+  if (!currentSnapshot) {
+    return true;
+  }
+  if (currentSnapshot.value !== currentValue) {
+    return false;
+  }
+  const replacementStart = previousSelectionSnapshot.selectionStart;
+  const replacementEnd = replacementStart + replacementText.length;
+  return (
+    currentSnapshot.selectionStart >= replacementStart &&
+    currentSnapshot.selectionEnd <= replacementEnd
+  );
+}
+
 function shouldUsePreviousSelectionSnapshot(
   currentSnapshot: ImeCompositionSnapshot | undefined,
   previousSelectionSnapshot: ImeCompositionSnapshot | undefined,
   currentValue: string,
+  compositionStartText: string,
 ): previousSelectionSnapshot is ImeCompositionSnapshot {
-  if (
-    !snapshotHasSelection(previousSelectionSnapshot) ||
-    previousSelectionSnapshot.value !== currentValue
-  ) {
+  if (!snapshotHasSelection(previousSelectionSnapshot)) {
     return false;
+  }
+  if (previousSelectionSnapshot.value !== currentValue) {
+    return (
+      snapshotValueWithSelectionReplacement(previousSelectionSnapshot, compositionStartText) ===
+        currentValue &&
+      snapshotRangeIsInsideReplacement(
+        currentSnapshot,
+        previousSelectionSnapshot,
+        compositionStartText,
+        currentValue,
+      )
+    );
   }
   if (!snapshotHasSelection(currentSnapshot)) {
     return true;
@@ -84,8 +134,11 @@ function shouldUsePreviousSelectionSnapshot(
   }
   return (
     snapshotSelectionLength(previousSelectionSnapshot) > snapshotSelectionLength(currentSnapshot) &&
-    previousSelectionSnapshot.selectionStart <= currentSnapshot.selectionStart &&
-    previousSelectionSnapshot.selectionEnd >= currentSnapshot.selectionEnd
+    snapshotSelectionContainsRange(
+      previousSelectionSnapshot,
+      currentSnapshot.selectionStart,
+      currentSnapshot.selectionEnd,
+    )
   );
 }
 
@@ -96,7 +149,12 @@ export function imeSafeCompositionStartSnapshot(
   selectedText: string,
 ): ImeCompositionSnapshot | undefined {
   if (
-    shouldUsePreviousSelectionSnapshot(currentSnapshot, previousSelectionSnapshot, currentValue)
+    shouldUsePreviousSelectionSnapshot(
+      currentSnapshot,
+      previousSelectionSnapshot,
+      currentValue,
+      selectedText,
+    )
   ) {
     return previousSelectionSnapshot;
   }
