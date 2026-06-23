@@ -14,6 +14,8 @@ export interface NavigationFlowNodeData extends Record<string, unknown> {
   searchHit?: boolean;
   dimmed?: boolean;
   revealDelayMs?: number;
+  onHover?: () => void;
+  onHoverEnd?: () => void;
 }
 
 export interface NavigationFlowEdgeData extends Record<string, unknown> {
