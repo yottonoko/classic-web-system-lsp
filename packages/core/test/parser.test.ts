@@ -1207,6 +1207,130 @@ console.log(a);
     expect(docs.get("css")?.text).not.toContain("</style>");
   });
 
+  it("keeps mixed Classic ASP islands masked while retaining VBScript symbols", () => {
+    const source = `<%@ LANGUAGE="VBScript" %>
+<div id="<%= itemId %>" data-state="<% Response.Write stateAttr %>">
+<style>
+.card { color: <%= themeColor %>; width: <% Response.Write width %>px; }
+</style>
+<script>
+const payload = { id: <%= ClientId %>, raw: <% Response.Write ClientJson %> };
+</script>
+<script runat="server" language="VBScript">
+Function BuildTitle(value)
+  BuildTitle = UCase(value)
+End Function
+</script>
+<% If showTitle Then %>
+<h1><%= BuildTitle(title) %></h1>
+<% End If %>
+</div>`;
+    const parsed = parseAspDocument("file:///site/mixed-islands.asp", source);
+    const docs = buildVirtualDocuments(parsed);
+    const html = docs.get("html");
+    const css = docs.get("css");
+    const javascript = docs.get("javascript");
+    const vbscript = docs.get("vbscript");
+    const syntaxDiagnostics = analyzeVbscript(parsed, {
+      unusedDiagnostics: false,
+    }).diagnostics.filter((diagnostic) => diagnostic.source === "asp-lsp-vbscript-syntax");
+
+    expect(parsed.diagnostics).toHaveLength(0);
+    expect(parsed.regions.filter((region) => region.kind === "asp-expression")).toHaveLength(4);
+    expect(parsed.regions.filter((region) => region.kind === "asp-block")).toHaveLength(5);
+    expect(parsed.regions.some((region) => region.kind === "server-script")).toBe(true);
+    expect(html?.text).toContain("<div");
+    expect(html?.text).toContain("<h1>");
+    expect(html?.text).not.toContain("BuildTitle");
+    expect(html?.sourceMap.toVirtualOffset(source.indexOf("data-state"))).toBeDefined();
+    expect(html?.sourceMap.toVirtualOffset(source.indexOf("stateAttr"))).toBeUndefined();
+    expect(css?.text).toContain(".card");
+    expect(css?.text).not.toContain("themeColor");
+    expect(css?.text).not.toContain("Response.Write");
+    expect(javascript?.text).toContain("const payload = { id: 0");
+    expect(javascript?.text).not.toContain("ClientJson");
+    expect(vbscript?.text).toContain("Function BuildTitle(value)");
+    expect(collectVbscriptSymbols(parsed).map((symbol) => symbol.name)).toContain("BuildTitle");
+    expect(syntaxDiagnostics).toHaveLength(0);
+  });
+
+  it.each([
+    {
+      name: "HTML attributes",
+      source: `<button data-id="<%= PrivateAspMarker %>" <% Response.Write PrivateAspMarkerAttr %>>Save</button>`,
+      language: "html" as const,
+      visible: ["<button", "Save"],
+      hidden: ["PrivateAspMarker", "PrivateAspMarkerAttr", "Response.Write"],
+      expressions: 1,
+      blocks: 1,
+    },
+    {
+      name: "CSS values",
+      source: `<style>.x { color: <%= PrivateAspMarker %>; width: <% Response.Write PrivateAspMarkerWidth %>px; }</style>`,
+      language: "css" as const,
+      visible: [".x { color:", "width:"],
+      hidden: ["PrivateAspMarker", "PrivateAspMarkerWidth", "Response.Write"],
+      expressions: 1,
+      blocks: 1,
+    },
+    {
+      name: "JavaScript expressions",
+      source: `<script>const value = <%= PrivateAspMarker %>; run(<% Response.Write PrivateAspMarkerArg %>);</script>`,
+      language: "javascript" as const,
+      visible: ["const value = 0", "run(0"],
+      hidden: ["PrivateAspMarker", "PrivateAspMarkerArg", "Response.Write"],
+      expressions: 1,
+      blocks: 1,
+    },
+    {
+      name: "server script plus split markup",
+      source: `<script runat="server" language="VBScript">
+Sub Render()
+  Response.Write "ok"
+End Sub
+</script>
+<% If PrivateAspMarker Then %><span>ok</span><% End If %>`,
+      language: "html" as const,
+      visible: ["<span>ok</span>"],
+      hidden: ["PrivateAspMarker"],
+      expressions: 0,
+      blocks: 2,
+    },
+    {
+      name: "table fragments in include files",
+      source: `<% For Each PrivateAspMarker In rows %>
+<tr data-row="<%= PrivateAspMarker %>"><td><% Response.Write PrivateAspMarker.Name %></td></tr>
+<% Next %>`,
+      language: "html" as const,
+      visible: ["<tr", "<td>"],
+      hidden: ["PrivateAspMarker.Name", "Response.Write"],
+      expressions: 1,
+      blocks: 3,
+    },
+  ])("keeps representative Classic ASP container stable: $name", (testCase) => {
+    const parsed = parseAspDocument("file:///site/container-regression.asp", testCase.source);
+    const virtual = buildVirtualDocuments(parsed).get(testCase.language);
+    const syntaxDiagnostics = analyzeVbscript(parsed, {
+      unusedDiagnostics: false,
+    }).diagnostics.filter((diagnostic) => diagnostic.source === "asp-lsp-vbscript-syntax");
+
+    expect(parsed.diagnostics).toHaveLength(0);
+    expect(parsed.regions.filter((region) => region.kind === "asp-expression")).toHaveLength(
+      testCase.expressions,
+    );
+    expect(parsed.regions.filter((region) => region.kind === "asp-block")).toHaveLength(
+      testCase.blocks,
+    );
+    expect(virtual).toBeTruthy();
+    for (const visible of testCase.visible) {
+      expect(virtual?.text, `${testCase.name}: ${visible}`).toContain(visible);
+    }
+    for (const hidden of testCase.hidden) {
+      expect(virtual?.text, `${testCase.name}: ${hidden}`).not.toContain(hidden);
+    }
+    expect(syntaxDiagnostics).toHaveLength(0);
+  });
+
   it("masks inline ASP inside CSS regions while keeping ASP completions routable", () => {
     const source = `<style>.x { color: <%= themeColor %>; }</style>`;
     const parsed = parseAspDocument("file:///site/default.asp", source);
@@ -6132,6 +6256,157 @@ Application_OnStart
     expect(diagnostics.some((diagnostic) => diagnostic.message.includes("Response"))).toBe(true);
   });
 
+  it("models standalone VBS as one mappable VBScript virtual document", () => {
+    const source = `Option Explicit
+Dim shell
+Set shell = WScript.CreateObject("WScript.Shell")
+WScript.Echo shell.ExpandEnvironmentStrings("%TEMP%")
+`;
+    const parsed = parseVbscriptDocument("file:///site/startup.vbs", source);
+    const docs = buildVirtualDocuments(parsed);
+    const vbscript = docs.get("vbscript");
+    const symbols = collectVbscriptSymbols(parsed);
+    const diagnostics = analyzeVbscript(parsed, {
+      symbols,
+      unusedDiagnostics: false,
+    }).diagnostics.filter((diagnostic) => diagnostic.source === "asp-lsp-vbscript");
+
+    expect(parsed.regions).toEqual([
+      expect.objectContaining({
+        kind: "server-script",
+        language: "vbscript",
+        start: 0,
+        end: source.length,
+        contentStart: 0,
+        contentEnd: source.length,
+      }),
+    ]);
+    expect(vbscript?.text).toContain("WScript.Echo shell.ExpandEnvironmentStrings");
+    expect(vbscript?.sourceMap.toVirtualOffset(source.indexOf("WScript.Echo"))).toBe(
+      source.indexOf("WScript.Echo"),
+    );
+    expect(symbols.find((symbol) => symbol.name === "shell")?.kind).toBe("variable");
+    expect(diagnostics.some((diagnostic) => diagnostic.message.includes("WScript"))).toBe(false);
+    expect(diagnostics.some((diagnostic) => diagnostic.message.includes("CreateObject"))).toBe(
+      false,
+    );
+    expect(
+      getVbscriptCompletions(parsed, { line: 1, character: 0 }, { symbols }).some(
+        (item) => item.label === "Response",
+      ),
+    ).toBe(false);
+  });
+
+  it("flags Windows Script Host-only built-ins in Classic ASP while keeping ASP built-ins", () => {
+    const parsed = parseAspDocument(
+      "file:///site/runtime-separation.asp",
+      `<%
+Option Explicit
+Response.Write "ok"
+WScript.Echo "bad"
+Response.
+%>`,
+    );
+    const symbols = collectVbscriptSymbols(parsed);
+    const diagnostics = analyzeVbscript(parsed, {
+      symbols,
+      unusedDiagnostics: false,
+    }).diagnostics.filter((diagnostic) => diagnostic.source === "asp-lsp-vbscript");
+    const topLevelCompletions = getVbscriptCompletions(
+      parsed,
+      { line: 1, character: 0 },
+      { symbols },
+    );
+    const responseCompletions = getVbscriptCompletions(
+      parsed,
+      positionAt(parsed.text, parsed.text.indexOf("Response.") + "Response.".length),
+      { symbols },
+    );
+
+    expect(diagnostics.some((diagnostic) => diagnostic.message.includes("WScript"))).toBe(true);
+    expect(diagnostics.some((diagnostic) => diagnostic.message.includes("Response"))).toBe(false);
+    expect(topLevelCompletions.some((item) => item.label === "Response")).toBe(true);
+    expect(topLevelCompletions.some((item) => item.label === "WScript")).toBe(false);
+    expect(responseCompletions.map((item) => item.label)).toContain("Write");
+    expect(
+      getVbscriptHover(parsed, positionAt(parsed.text, parsed.text.indexOf("WScript"))) ?? "",
+    ).not.toContain("Dim WScript As WScript");
+  });
+
+  it.each([
+    {
+      name: "array access and single-line If",
+      source: `Option Explicit
+Dim values(2)
+values(0) = 1
+If values(0) > 0 Then values(1) = 2 Else values(1) = 3`,
+    },
+    {
+      name: "continued call arguments and concatenation",
+      source: `Sub Render(ByVal title, ByRef output)
+output = title & _
+  "!"
+End Sub
+Dim value
+Call Render("ok", value)`,
+    },
+    {
+      name: "default property get and let",
+      source: `Class Customer
+Private currentName
+Public Default Property Get Name
+  Name = currentName
+End Property
+Public Property Let Name(ByVal value)
+  currentName = value
+End Property
+End Class`,
+    },
+    {
+      name: "Select Case with comparison clauses",
+      source: `Select Case kind
+Case "a", "b"
+  result = 1
+Case Is > 10
+  result = 2
+Case Else
+  result = 3
+End Select`,
+    },
+    {
+      name: "For Each and With member calls",
+      source: `For Each item In items
+With WScript
+  .Echo item
+End With
+Next`,
+    },
+    {
+      name: "Do loops, While loops, and Exit Do",
+      source: `Do Until done
+  Exit Do
+Loop
+While waiting
+  waiting = False
+Wend`,
+    },
+    {
+      name: "On Error and Err object flow",
+      source: `On Error Resume Next
+Err.Clear
+If Err.Number <> 0 Then WScript.Echo Err.Description
+On Error GoTo 0`,
+    },
+  ])("accepts representative standalone VBScript syntax: $name", (testCase) => {
+    const parsed = parseVbscriptDocument("file:///site/syntax-regression.vbs", testCase.source);
+    const syntaxDiagnostics = analyzeVbscript(parsed, {
+      ifSyntaxDiagnostics: "strict",
+      unusedDiagnostics: false,
+    }).diagnostics.filter((diagnostic) => diagnostic.source === "asp-lsp-vbscript-syntax");
+
+    expect(syntaxDiagnostics).toHaveLength(0);
+  });
+
   it("treats Err as a typed VBScript built-in object", () => {
     const parsed = parseAspDocument(
       "file:///site/err-object.asp",
@@ -9006,6 +9281,69 @@ End Select
   Case "a"
     Response.Write "a"
   End Select`);
+  });
+
+  it("formats split ASP control-flow islands without rewriting CSS or JavaScript bodies", () => {
+    const source = `<ul>
+<%If showItems Then%>
+<li class="<%= itemClass %>"><%= itemTitle %></li>
+<%Else%>
+<li class="empty">None</li>
+<%End If%>
+</ul>
+<style>.badge { color: <%= badgeColor %>; }</style>
+<script>const state = <%= stateJson %>;</script>`;
+    const parsed = parseAspDocument("file:///site/split-format.asp", source);
+    const formatted = applyTextEdits(
+      source,
+      formatAspDocument(parsed, { tabSize: 2, insertSpaces: true }),
+    );
+    const reformatted = formatAspDocument(parseAspDocument(parsed.uri, formatted), {
+      tabSize: 2,
+      insertSpaces: true,
+    });
+
+    expect(formatted.match(/<%/g)).toHaveLength(source.match(/<%/g)?.length ?? 0);
+    expect(formatted).toContain("<% If showItems Then %>");
+    expect(formatted).toContain("<% Else %>");
+    expect(formatted).toContain("<% End If %>");
+    expect(formatted).toContain(`<li class="<%= itemClass %>"><%= itemTitle %></li>`);
+    expect(formatted).toContain(".badge { color: <%= badgeColor %>; }");
+    expect(formatted).toContain("const state = <%= stateJson %>;");
+    expect(formatted.match(/itemTitle/g)).toHaveLength(1);
+    expect(formatted.match(/stateJson/g)).toHaveLength(1);
+    expect(reformatted).toEqual([]);
+  });
+
+  it("formats one ASP block range without normalizing later ASP blocks", () => {
+    const source = `<%
+If first Then
+Response.Write "first"
+End If
+%>
+<p>middle</p>
+<%
+If second Then
+Response.Write "second"
+End If
+%>`;
+    const firstBlockEnd = source.indexOf("%>") + "%>".length;
+    const edits = formatAspRange(
+      parseAspDocument("file:///site/range-blocks.asp", source),
+      {
+        start: { line: 0, character: 0 },
+        end: positionAt(source, firstBlockEnd),
+      },
+      { tabSize: 2, insertSpaces: true },
+    );
+    const formatted = applyTextEdits(source, edits);
+
+    expect(formatted).toContain(`  If first Then
+    Response.Write "first"
+  End If`);
+    expect(formatted).toContain(`If second Then
+Response.Write "second"
+End If`);
   });
 
   it("can compact ASP delimiter spacing and uppercase VBScript keywords", () => {
