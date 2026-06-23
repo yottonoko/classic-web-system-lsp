@@ -15,4 +15,4 @@ export const cancelProgressTaskServerCommand = "aspLsp.server.cancelProgressTask
 export const statusNotificationMethod = "aspLsp/status";
 export const graphUpdatedNotificationMethod = "aspLsp/graphUpdated";
 export const navigationGraphUpdatedNotificationMethod = "aspLsp/navigationGraphUpdated";
-export const languageServerVersion = "0.7.16";
+export const languageServerVersion = "0.7.17";
