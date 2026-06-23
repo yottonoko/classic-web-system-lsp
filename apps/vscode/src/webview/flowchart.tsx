@@ -183,11 +183,11 @@ function App(): React.ReactElement {
     "asp-lsp-flowchart-shell grid h-full bg-[#101419] text-[#d9e0ea]",
     showSourcePanel
       ? infoPanelPosition === "right"
-        ? "grid-cols-[var(--flowchart-source-panel-width)_6px_minmax(0,1fr)_6px_var(--flowchart-panel-width)]"
-        : "grid-cols-[var(--flowchart-panel-width)_6px_minmax(0,1fr)_6px_var(--flowchart-source-panel-width)]"
+        ? "grid-cols-[var(--flowchart-source-panel-width)_1px_minmax(0,1fr)_1px_var(--flowchart-panel-width)]"
+        : "grid-cols-[var(--flowchart-panel-width)_1px_minmax(0,1fr)_1px_var(--flowchart-source-panel-width)]"
       : infoPanelPosition === "right"
-        ? "grid-cols-[minmax(0,1fr)_6px_var(--flowchart-panel-width)]"
-        : "grid-cols-[var(--flowchart-panel-width)_6px_minmax(0,1fr)]",
+        ? "grid-cols-[minmax(0,1fr)_1px_var(--flowchart-panel-width)]"
+        : "grid-cols-[var(--flowchart-panel-width)_1px_minmax(0,1fr)]",
   );
   const infoPanelClassName = cn(
     "flex min-h-0 flex-col bg-[#151b23]",
@@ -1154,7 +1154,7 @@ function FlowchartPaneResizeHandle({
       aria-valuenow={width}
       title={label}
       className={cn(
-        "relative cursor-col-resize bg-[#101820] outline-none before:absolute before:inset-y-0 before:left-1/2 before:w-px before:-translate-x-1/2 before:bg-[#263140] hover:bg-[#172131] focus:bg-[#172131] focus:before:bg-[#7dd3fc]",
+        "relative z-10 w-[9px] justify-self-center cursor-col-resize bg-transparent outline-none before:absolute before:inset-y-0 before:left-1/2 before:w-px before:-translate-x-1/2 before:bg-[#263140] hover:bg-[#172131] focus:bg-[#172131] focus:before:bg-[#7dd3fc]",
         className ?? "order-2",
       )}
       onKeyDown={handleKeyDown}

@@ -768,7 +768,9 @@ describe("VS Code extension package", () => {
     expect(webviewSource).not.toContain("action.preview");
     expect(webviewSource).toContain('@import "tailwindcss";');
     expect(webviewSource).toContain('from "../lib/utils"');
-    expect(webviewSource).toContain("grid-template-columns: minmax(540px, 1fr)");
+    expect(webviewSource).toContain(
+      "grid-template-columns: minmax(0, 1fr) minmax(300px, min(34vw, 420px))",
+    );
     expect(webviewSource).toContain("visibleTreeRows(treeRows(payload), collapsedTreeIds)");
     expect(webviewSource).toContain("function HighlightedText");
     expect(webviewSource).toContain('className="tree-match"');

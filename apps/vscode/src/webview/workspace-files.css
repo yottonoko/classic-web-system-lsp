@@ -12,6 +12,8 @@ body,
 #root {
   height: 100%;
   margin: 0;
+  overflow: hidden;
+  width: 100%;
 }
 
 body {
@@ -82,8 +84,9 @@ button:disabled {
   display: grid;
   grid-template-rows: auto auto auto minmax(0, 1fr);
   height: 100%;
-  min-width: 760px;
+  min-width: 0;
   overflow: hidden;
+  width: 100%;
 }
 
 .workspace-files-app[data-asp-lsp-theme="light"] {
@@ -109,6 +112,7 @@ button:disabled {
   display: flex;
   gap: 18px;
   justify-content: space-between;
+  min-width: 0;
   padding: 14px 22px;
 }
 
@@ -161,6 +165,7 @@ button:disabled {
   display: grid;
   gap: 14px;
   grid-template-columns: minmax(220px, 1fr) minmax(220px, 1fr) auto;
+  min-width: 0;
   padding: 12px 22px 14px;
 }
 
@@ -280,8 +285,9 @@ button:disabled {
 
 .workspace-files-main {
   display: grid;
-  grid-template-columns: minmax(540px, 1fr) minmax(360px, 480px);
+  grid-template-columns: minmax(0, 1fr) minmax(300px, min(34vw, 420px));
   min-height: 0;
+  min-width: 0;
   overflow: hidden;
 }
 
@@ -435,6 +441,7 @@ button:disabled {
   background:
     linear-gradient(180deg, rgb(255 255 255 / 2%), transparent 220px), var(--asp-lsp-panel);
   min-height: 0;
+  min-width: 0;
   overflow: auto;
   padding: 16px 20px;
 }
@@ -578,11 +585,7 @@ button:disabled {
   text-align: center;
 }
 
-@media (max-width: 980px) {
-  .workspace-files-app {
-    min-width: 0;
-  }
-
+@media (max-width: 1120px) {
   .workspace-files-toolbar {
     align-items: stretch;
     flex-direction: column;
