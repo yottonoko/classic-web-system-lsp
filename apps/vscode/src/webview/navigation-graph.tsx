@@ -65,6 +65,7 @@ const edgeKinds: AspNavigationEdgeKind[] = [
 const emptyLayout: NavigationFlowLayout = { width: 720, height: 520, nodes: [], edges: [] };
 const nodeTypes = { navigationPage: NavigationPageNode } satisfies NodeTypes;
 const edgeTypes = { navigationTransition: NavigationTransitionEdge } satisfies EdgeTypes;
+const hoverClearDelayMs = 80;
 
 function NavigationGraphApp(): React.ReactElement {
   const [payload, setPayload] = useState<NavigationGraphWebviewPayload>(
@@ -109,6 +110,7 @@ function NavigationGraphSurface({
   const [layout, setLayout] = useState<NavigationFlowLayout>(emptyLayout);
   const [isLayouting, setIsLayouting] = useState(false);
   const layoutRequest = useRef(0);
+  const hoverClearTimer = useRef<number | undefined>(undefined);
   const filteredPayload = useMemo(
     () => filterPayload(payload, { search, confidence, edgeKind, method }),
     [payload, search, confidence, edgeKind, method],
@@ -149,6 +151,32 @@ function NavigationGraphSurface({
   useEffect(() => {
     setSelection(undefined);
   }, [payload]);
+
+  useEffect(
+    () => () => {
+      if (hoverClearTimer.current !== undefined) {
+        window.clearTimeout(hoverClearTimer.current);
+      }
+    },
+    [],
+  );
+
+  const setHoveredTarget = useCallback((target: Exclude<HoverTarget, undefined>) => {
+    if (hoverClearTimer.current !== undefined) {
+      window.clearTimeout(hoverClearTimer.current);
+      hoverClearTimer.current = undefined;
+    }
+    setHovered((current) => (sameHoverTarget(current, target) ? current : target));
+  }, []);
+  const clearHoveredTarget = useCallback(() => {
+    if (hoverClearTimer.current !== undefined) {
+      window.clearTimeout(hoverClearTimer.current);
+    }
+    hoverClearTimer.current = window.setTimeout(() => {
+      hoverClearTimer.current = undefined;
+      setHovered(undefined);
+    }, hoverClearDelayMs);
+  }, []);
 
   const searchHits = useMemo(
     () => searchHitSets(filteredPayload, search),
@@ -209,10 +237,21 @@ function NavigationGraphSurface({
             uncertain,
             revealDelayMs: revealDelay(0, edgeData.revealIndex, reducedMotion),
             onSelect: () => setSelection({ kind: "edge", id: edge.id }),
+            onHover: () => setHoveredTarget({ kind: "edge", id: edge.id }),
+            onHoverEnd: clearHoveredTarget,
           },
         };
       }),
-    [hovered, layout.edges, reducedMotion, related.edges, searchHits.edges, selection],
+    [
+      clearHoveredTarget,
+      hovered,
+      layout.edges,
+      reducedMotion,
+      related.edges,
+      searchHits.edges,
+      selection,
+      setHoveredTarget,
+    ],
   );
   const nodeById = useMemo(
     () => new Map(filteredPayload.nodes.map((node) => [node.id, node])),
@@ -284,10 +323,10 @@ function NavigationGraphSurface({
             onNodeClick={(_, node) => setSelection({ kind: "node", id: node.id })}
             onEdgeClick={(_, edge) => setSelection({ kind: "edge", id: edge.id })}
             onPaneClick={() => setSelection(undefined)}
-            onNodeMouseEnter={(_, node) => setHovered({ kind: "node", id: node.id })}
-            onNodeMouseLeave={() => setHovered(undefined)}
-            onEdgeMouseEnter={(_, edge) => setHovered({ kind: "edge", id: edge.id })}
-            onEdgeMouseLeave={() => setHovered(undefined)}
+            onNodeMouseEnter={(_, node) => setHoveredTarget({ kind: "node", id: node.id })}
+            onNodeMouseLeave={clearHoveredTarget}
+            onEdgeMouseEnter={(_, edge) => setHoveredTarget({ kind: "edge", id: edge.id })}
+            onEdgeMouseLeave={clearHoveredTarget}
           >
             <Background gap={24} size={1.2} color="var(--navigation-grid-dot)" />
             <MiniMap
@@ -396,6 +435,12 @@ function NavigationTransitionEdge({
   return (
     <>
       <path
+        className="navigation-flow-edge-interaction-path"
+        d={path}
+        onPointerEnter={() => data?.onHover?.()}
+        onPointerLeave={() => data?.onHoverEnd?.()}
+      />
+      <path
         id={id}
         ref={pathRef}
         className="react-flow__edge-path navigation-flow-edge-path"
@@ -414,10 +459,11 @@ function NavigationTransitionEdge({
             data?.searchHit && "is-search-hit",
           )}
           style={labelStyle}
+          onPointerEnter={() => data?.onHover?.()}
+          onPointerLeave={() => data?.onHoverEnd?.()}
           onClick={(event) => {
             event.stopPropagation();
-            const onSelect = data?.onSelect as (() => void) | undefined;
-            onSelect?.();
+            data?.onSelect?.();
           }}
         >
           <span>{data?.label ?? "transition"}</span>
@@ -657,6 +703,10 @@ function relatedElementSets(
     }
   }
   return { nodes, edges: edgeIds };
+}
+
+function sameHoverTarget(left: HoverTarget, right: HoverTarget): boolean {
+  return left?.kind === right?.kind && left?.id === right?.id;
 }
 
 function useReducedMotion(): boolean {

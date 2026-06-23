@@ -33,6 +33,8 @@ export interface NavigationFlowEdgeData extends Record<string, unknown> {
   uncertain?: boolean;
   revealDelayMs?: number;
   onSelect?: () => void;
+  onHover?: () => void;
+  onHoverEnd?: () => void;
 }
 
 export type NavigationFlowNode = Node<NavigationFlowNodeData, "navigationPage">;
