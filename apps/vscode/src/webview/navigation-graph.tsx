@@ -205,10 +205,21 @@ function NavigationGraphSurface({
             searchHit,
             dimmed,
             revealDelayMs: revealDelay(node.data.layer, node.data.revealIndex, reducedMotion),
+            onHover: () => setHoveredTarget({ kind: "node", id: node.id }),
+            onHoverEnd: clearHoveredTarget,
           },
         };
       }),
-    [hovered, layout.nodes, reducedMotion, related.nodes, searchHits.nodes, selection],
+    [
+      clearHoveredTarget,
+      hovered,
+      layout.nodes,
+      reducedMotion,
+      related.nodes,
+      searchHits.nodes,
+      selection,
+      setHoveredTarget,
+    ],
   );
   const flowEdges = useMemo(
     () =>
@@ -363,6 +374,8 @@ function NavigationPageNode({ data, selected }: NodeProps<NavigationFlowNode>): 
         data.dimmed && "is-dimmed",
       )}
       style={style}
+      onPointerEnter={() => data.onHover?.()}
+      onPointerLeave={() => data.onHoverEnd?.()}
     >
       <Handle
         className="navigation-handle navigation-handle--target"
