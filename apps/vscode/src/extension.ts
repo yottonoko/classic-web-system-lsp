@@ -235,7 +235,8 @@ async function autoCloseHtmlTag(event: vscode.TextDocumentChangeEvent): Promise<
     !client ||
     event.document.languageId !== "classic-asp" ||
     event.contentChanges.length !== 1 ||
-    event.contentChanges[0]?.text !== ">"
+    event.contentChanges[0]?.text !== ">" ||
+    !event.contentChanges[0].range.isEmpty
   ) {
     return;
   }
@@ -298,7 +299,8 @@ async function autoCloseAspBlock(event: vscode.TextDocumentChangeEvent): Promise
   if (
     event.document.languageId !== "classic-asp" ||
     event.contentChanges.length !== 1 ||
-    event.contentChanges[0]?.text !== "%"
+    event.contentChanges[0]?.text !== "%" ||
+    !event.contentChanges[0].range.isEmpty
   ) {
     return;
   }

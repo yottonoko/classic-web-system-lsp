@@ -2108,7 +2108,7 @@ describe("VS Code extension package", () => {
     expect(languageConfiguration.brackets).toContainEqual(["[", "]"]);
     expect(languageConfiguration.colorizedBracketPairs).toContainEqual(["(", ")"]);
     expect(languageConfiguration.colorizedBracketPairs).toContainEqual(["[", "]"]);
-    expect(languageConfiguration.autoClosingPairs).toContainEqual({
+    expect(languageConfiguration.autoClosingPairs).not.toContainEqual({
       open: "<",
       close: ">",
     });
@@ -2155,10 +2155,16 @@ describe("VS Code extension package", () => {
     expect(extensionSource).toContain("document.version !== documentVersion");
     expect(extensionSource).toContain("setTimeout(resolve, 0)");
     expect(extensionSource).toContain("autoCloseAspBlock");
+    const autoCloseHtmlTagSource = extensionSource.slice(
+      extensionSource.indexOf("async function autoCloseHtmlTag"),
+      extensionSource.indexOf("function waitForLanguageClientTextDocumentSync"),
+    );
+    expect(autoCloseHtmlTagSource).toContain("!event.contentChanges[0].range.isEmpty");
     const autoCloseAspBlockSource = extensionSource.slice(
       extensionSource.indexOf("async function autoCloseAspBlock"),
       extensionSource.indexOf("function couldTriggerHtmlTagCompleteBefore"),
     );
+    expect(autoCloseAspBlockSource).toContain("!event.contentChanges[0].range.isEmpty");
     expect(autoCloseAspBlockSource).toContain(
       "const applied = await vscode.workspace.applyEdit(workspaceEdit)",
     );
