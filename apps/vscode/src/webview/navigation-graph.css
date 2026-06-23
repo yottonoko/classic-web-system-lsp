@@ -254,6 +254,13 @@ select {
     filter 180ms ease;
 }
 
+.navigation-flow-edge-interaction-path {
+  fill: none;
+  stroke: transparent;
+  stroke-width: 18;
+  pointer-events: stroke;
+}
+
 .navigation-flow-edge-path {
   fill: none;
   stroke: var(--navigation-edge);
@@ -264,6 +271,7 @@ select {
   stroke-dashoffset: var(--nav-edge-length);
   animation: nav-edge-draw 720ms cubic-bezier(0.16, 1, 0.3, 1) forwards;
   animation-delay: var(--nav-edge-delay, 0ms);
+  pointer-events: none;
   transition:
     stroke 180ms ease,
     stroke-width 180ms ease,

@@ -849,6 +849,10 @@ describe("VS Code extension package", () => {
     expect(webviewSource).toContain("nav-selected-pulse");
     expect(webviewSource).toContain("nav-search-pulse");
     expect(webviewSource).toContain("prefers-reduced-motion");
+    expect(webviewSource).toContain("hoverClearDelayMs");
+    expect(webviewSource).toContain("navigation-flow-edge-interaction-path");
+    expect(webviewSource).toContain("pointer-events: none");
+    expect(webviewSource).toContain("pointer-events: stroke");
     expect(manifest.contributes?.menus?.["editor/title"]).toContainEqual(
       expect.objectContaining({
         command: "aspLsp.showCurrentFileNavigationGraph",
