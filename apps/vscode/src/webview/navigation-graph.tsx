@@ -66,6 +66,7 @@ const emptyLayout: NavigationFlowLayout = { width: 720, height: 520, nodes: [], 
 const nodeTypes = { navigationPage: NavigationPageNode } satisfies NodeTypes;
 const edgeTypes = { navigationTransition: NavigationTransitionEdge } satisfies EdgeTypes;
 const hoverClearDelayMs = 80;
+const navigationFitViewPadding = 0.05;
 
 function NavigationGraphApp(): React.ReactElement {
   const [payload, setPayload] = useState<NavigationGraphWebviewPayload>(
@@ -137,7 +138,7 @@ function NavigationGraphSurface({
   const fitToView = useCallback(() => {
     window.requestAnimationFrame(() => {
       reactFlow.fitView({
-        padding: 0.18,
+        padding: navigationFitViewPadding,
         duration: reducedMotion ? 80 : 720,
         includeHiddenNodes: false,
       });
@@ -329,7 +330,7 @@ function NavigationGraphSurface({
             elementsSelectable
             panOnScroll
             fitView
-            fitViewOptions={{ padding: 0.18 }}
+            fitViewOptions={{ padding: navigationFitViewPadding }}
             proOptions={{ hideAttribution: true }}
             onNodeClick={(_, node) => setSelection({ kind: "node", id: node.id })}
             onEdgeClick={(_, edge) => setSelection({ kind: "edge", id: edge.id })}

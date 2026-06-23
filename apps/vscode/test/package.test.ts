@@ -791,6 +791,8 @@ describe("VS Code extension package", () => {
     expect(webviewSource).toContain("Controls");
     expect(webviewSource).toContain("Background");
     expect(webviewSource).toContain("fitView");
+    expect(webviewSource).toContain("const navigationFitViewPadding = 0.05");
+    expect(webviewSource).not.toContain("padding: 0.18");
     expect(webviewSource).toContain("Inspector");
     expect(webviewSource).toContain('type: "openRange"');
     expect(webviewSource).not.toContain("react-force-graph-2d");
