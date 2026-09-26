@@ -1,6 +1,10 @@
+import { randomBytes } from "node:crypto";
 import * as vscode from "vscode";
-import type { AspNavigationGraphPayload, AspNavigationEvidence } from "@asp-lsp/core";
+import type { AspNavigationGraphPayload, AspNavigationEvidence } from "./protocol-types";
 import { displayPathForUriText } from "./path-display";
+import { uriTextForVSCode } from "./uri-encoding";
+import { graphWebviewContentSecurityPolicy } from "./webview-csp";
+import { extensionLocalizerForLocale } from "./extension-localization";
 
 export type AspNavigationGraphLocale = "en" | "ja";
 export type AspNavigationGraphWebviewThemeSetting = "auto" | "light" | "dark";
@@ -43,9 +47,23 @@ export function showAspNavigationGraphWebview(
   });
   panel.webview.onDidReceiveMessage((message: WebviewMessage) => {
     if (message.type === "openRange") {
-      void openNavigationRange(message.uri, message.range);
+      void openNavigationRange(message.uri, message.range).catch((error) => {
+        void vscode.window.showErrorMessage(
+          extensionLocalizerForLocale(locale)("navigationGraph.openFailed", {
+            error: errorMessage(error),
+          }),
+        );
+      });
     } else if (message.type === "copyText") {
-      void vscode.env.clipboard.writeText(message.content);
+      void Promise.resolve(vscode.env.clipboard.writeText(message.content)).catch(
+        (error: unknown) => {
+          void vscode.window.showErrorMessage(
+            extensionLocalizerForLocale(locale)("navigationGraph.copyFailed", {
+              error: errorMessage(error),
+            }),
+          );
+        },
+      );
     }
   });
   panel.webview.html = navigationGraphWebviewHtml(
@@ -74,7 +92,7 @@ async function openNavigationRange(
   uriText: string,
   range: AspNavigationEvidence["range"] | undefined,
 ): Promise<void> {
-  const uri = vscode.Uri.parse(uriText);
+  const uri = vscode.Uri.parse(uriTextForVSCode(uriText));
   const selection = range
     ? new vscode.Range(range.start.line, range.start.character, range.end.line, range.end.character)
     : undefined;
@@ -89,11 +107,19 @@ function navigationPayloadForWebview(
   locale: AspNavigationGraphLocale,
   settings: AspNavigationGraphWebviewSettings,
 ): NavigationGraphPayload {
+  const nodes = Array.isArray(payload.nodes) ? payload.nodes : [];
+  const edges = Array.isArray(payload.edges) ? payload.edges : [];
   return {
     ...payload,
-    nodes: payload.nodes.map((node) => ({
+    nodes: nodes.map((node) => ({
       ...node,
       label: node.uri ? (displayPathForUriText(node.uri) ?? node.label) : node.label,
+    })),
+    edges: edges.map((edge) => ({
+      ...edge,
+      confidence: edge.confidence ?? "unknown",
+      ranges: Array.isArray(edge.ranges) ? edge.ranges : [],
+      evidence: Array.isArray(edge.evidence) ? edge.evidence : [],
     })),
     locale,
     webviewSettings: settings,
@@ -115,7 +141,7 @@ function navigationGraphWebviewHtml(
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; img-src ${webview.cspSource} data:; style-src ${webview.cspSource} 'unsafe-inline'; script-src 'nonce-${nonce}';">
+  <meta http-equiv="Content-Security-Policy" content="${graphWebviewContentSecurityPolicy(webview, nonce)}">
   <title>${escapeHtml(title)}</title>
 </head>
 <body>
@@ -127,12 +153,7 @@ function navigationGraphWebviewHtml(
 }
 
 function nonceString(): string {
-  const alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789";
-  let value = "";
-  for (let index = 0; index < 32; index++) {
-    value += alphabet[Math.floor(Math.random() * alphabet.length)];
-  }
-  return value;
+  return randomBytes(24).toString("base64");
 }
 
 function escapeHtml(value: string): string {
@@ -141,6 +162,10 @@ function escapeHtml(value: string): string {
     .replaceAll("<", "&lt;")
     .replaceAll(">", "&gt;")
     .replaceAll('"', "&quot;");
+}
+
+function errorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
 }
 
 export type { AspNavigationGraphPayload };

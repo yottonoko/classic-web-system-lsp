@@ -1,11 +1,11 @@
-import type React from "react";
+import type { WebviewStyle } from "./webview-dom-types";
 import type {
   AspFlowchartLabelMode,
   AspFlowchartNode,
   AspFlowchartNodeLink,
   AspFlowchartPayload,
   AspFlowchartSection,
-} from "@asp-lsp/core";
+} from "../protocol-types";
 
 type FlowchartLocale = "en" | "ja";
 type InfoPanelPosition = "left" | "right";
@@ -15,8 +15,6 @@ type FlowchartNodeLinkRole = AspFlowchartNodeLink["role"];
 interface FlowchartPayload extends AspFlowchartPayload {
   locale?: FlowchartLocale;
   settings?: {
-    maxTextSize?: number;
-    maxEdges?: number;
     labelLineLength?: number;
     labelMode?: AspFlowchartLabelMode;
     minZoom?: number;
@@ -63,16 +61,12 @@ interface FlowchartZoomRange {
 
 const flowchartLabelLineLength = 34;
 const flowchartEdgeLabelLineLength = 22;
-const maximumFlowchartLabelCharacters = 180;
-const maximumFlowchartEdgeLabelCharacters = 80;
 const minimumFlowchartLabelLineLength = 8;
 const defaultMinimumFlowchartZoom = 0.1;
 const defaultMaximumFlowchartZoom = 4;
 const flowchartPanelMinimumWidth = 320;
 const flowchartPanelMaximumWidth = 620;
 const flowchartCanvasMinimumWidth = 360;
-const flowchartPaneResizeHandleWidth = 6;
-const flowchartSourcePanelDefaultWidth = 420;
 const flowchartSourcePanelMinimumWidth = 280;
 const flowchartSourcePanelMaximumWidth = 720;
 const flowchartLabelModes: AspFlowchartLabelMode[] = ["raw", "normal", "description"];
@@ -94,6 +88,8 @@ const flowchartNodeKindLabels: Record<FlowchartLocale, Record<FlowchartNodeKind,
     declaration: "Declaration",
     exceptionHandling: "Exception handling",
     exit: "Exit",
+    merge: "Merge",
+    output: "Response output",
     statement: "Statement",
   },
   ja: {
@@ -112,6 +108,8 @@ const flowchartNodeKindLabels: Record<FlowchartLocale, Record<FlowchartNodeKind,
     declaration: "宣言",
     exceptionHandling: "例外処理",
     exit: "終了",
+    merge: "合流",
+    output: "レスポンス出力",
     statement: "実行",
   },
 };
@@ -230,7 +228,7 @@ export function mermaidForSelectedSection(
   for (const node of nodes) {
     lines.push(`  ${mermaidNode(node, labelLineLength)}`);
     lines.push(
-      `  class ${mermaidId(node.id)} ${themePalette.nodeKindStyles[node.kind].mermaidClass}`,
+      `  class ${mermaidId(node.id)} ${flowchartNodeVisualStyle(themePalette, node.kind).mermaidClass}`,
     );
   }
   for (const edge of edges) {
@@ -291,7 +289,6 @@ function escapeMermaidEdgeLabel(value: string): string {
   return mermaidLabel(value, {
     escape: escapeMermaidEdgeText,
     lineLength: flowchartEdgeLabelLineLength,
-    maximumCharacters: maximumFlowchartEdgeLabelCharacters,
   });
 }
 
@@ -300,15 +297,10 @@ function mermaidLabel(
   options: {
     escape?: (value: string) => string;
     lineLength?: number;
-    maximumCharacters?: number;
   } = {},
 ): string {
   const normalized = value.replace(/\s+/g, " ").trim();
-  const clipped = clipFlowchartLabel(
-    normalized,
-    options.maximumCharacters ?? maximumFlowchartLabelCharacters,
-  );
-  const lines = wrapFlowchartLabel(clipped, options.lineLength ?? flowchartLabelLineLength);
+  const lines = wrapFlowchartLabel(normalized, options.lineLength ?? flowchartLabelLineLength);
   const escape = options.escape ?? escapeMermaidText;
   return (lines.length > 0 ? lines : [""]).map(escape).join("<br/>");
 }
@@ -324,14 +316,6 @@ function flowchartLabelLineLengthForPayload(payload: FlowchartPayload): number {
 
 function escapeMermaidEdgeText(value: string): string {
   return value.replaceAll("<", "&lt;").replaceAll(">", "&gt;").replaceAll("|", "/").trim();
-}
-
-function clipFlowchartLabel(value: string, maximumCharacters: number): string {
-  const characters = Array.from(value);
-  if (characters.length <= maximumCharacters) {
-    return value;
-  }
-  return `${characters.slice(0, Math.max(0, maximumCharacters - 3)).join("")}...`;
 }
 
 function wrapFlowchartLabel(value: string, lineLength: number): string[] {
@@ -414,6 +398,13 @@ export function flowchartNodeLinkHint(
 
 export function flowchartNodeKindLabel(kind: FlowchartNodeKind, locale: FlowchartLocale): string {
   return flowchartNodeKindLabels[locale][kind] ?? flowchartNodeKindLabels.en[kind] ?? kind;
+}
+
+export function flowchartNodeVisualStyle(
+  themePalette: FlowchartThemePalette,
+  kind: FlowchartNodeKind,
+): FlowchartVisualStyle {
+  return themePalette.nodeKindStyles[kind] ?? themePalette.nodeKindStyles.statement;
 }
 
 export function flowchartSectionKindLabel(
@@ -514,7 +505,7 @@ export function formatFlowchartSymbolKind(symbolKind: string): string {
     .trim();
 }
 
-export function flowchartSwatchStyle(style: FlowchartVisualStyle): React.CSSProperties {
+export function flowchartSwatchStyle(style: FlowchartVisualStyle): WebviewStyle {
   return {
     backgroundColor: style.background,
     borderColor: style.border,
@@ -544,7 +535,7 @@ export function scaledFlowchartCanvasStyle(
   svgSize: FlowchartSvgSize | undefined,
   zoom: number,
   viewportSize: FlowchartViewportSize,
-): React.CSSProperties {
+): WebviewStyle {
   if (!svgSize) {
     return {};
   }
@@ -560,8 +551,8 @@ export function flowchartSvgLayerStyle(
   svgSize: FlowchartSvgSize | undefined,
   zoom: number,
   viewportSize: FlowchartViewportSize,
-): React.CSSProperties {
-  const style: React.CSSProperties = {
+): WebviewStyle {
+  const style: WebviewStyle = {
     transform: `scale(${zoom})`,
   };
   if (!svgSize) {
@@ -678,31 +669,40 @@ export function clamp(value: number, minimum: number, maximum: number): number {
   return Math.min(maximum, Math.max(minimum, value));
 }
 
-export function maxFlowchartInfoPanelWidthForLayout(containerWidth: number): number {
-  if (containerWidth <= 0) {
-    return flowchartPanelMaximumWidth;
+/** Reserve a usable canvas before allocating side panes; switch to tabs when they cannot fit. */
+export function flowchartPaneLayout(
+  width: number,
+  info: number,
+  source: number,
+  showSource: boolean,
+) {
+  const handles = showSource ? 2 : 1;
+  const minimum = flowchartPanelMinimumWidth + (showSource ? flowchartSourcePanelMinimumWidth : 0);
+  const available = Math.max(minimum, width - flowchartCanvasMinimumWidth - handles);
+  let infoWidth = clamp(info, flowchartPanelMinimumWidth, flowchartPanelMaximumWidth);
+  let sourceWidth = showSource
+    ? clamp(source, flowchartSourcePanelMinimumWidth, flowchartSourcePanelMaximumWidth)
+    : 0;
+  const excess = Math.max(0, infoWidth + sourceWidth - available);
+  const slack = infoWidth + sourceWidth - minimum;
+  if (excess > 0 && slack > 0) {
+    const infoReduction = (excess * (infoWidth - flowchartPanelMinimumWidth)) / slack;
+    infoWidth -= infoReduction;
+    sourceWidth -= excess - infoReduction;
   }
-  return Math.max(
-    flowchartPanelMinimumWidth,
-    Math.min(
-      flowchartPanelMaximumWidth,
-      containerWidth - flowchartCanvasMinimumWidth - flowchartPaneResizeHandleWidth,
+  return {
+    compact: width > 0 && width < minimum + flowchartCanvasMinimumWidth + handles,
+    infoWidth,
+    sourceWidth,
+    maxInfoWidth: Math.max(
+      flowchartPanelMinimumWidth,
+      Math.min(flowchartPanelMaximumWidth, available - sourceWidth),
     ),
-  );
-}
-
-export function maxFlowchartSourcePanelWidthForLayout(containerWidth: number): number {
-  if (containerWidth <= 0) {
-    return flowchartSourcePanelDefaultWidth;
-  }
-  return Math.max(
-    flowchartSourcePanelMinimumWidth,
-    Math.min(
-      flowchartSourcePanelMaximumWidth,
-      Math.floor(containerWidth * 0.42),
-      containerWidth - flowchartCanvasMinimumWidth - flowchartPaneResizeHandleWidth * 2,
+    maxSourceWidth: Math.max(
+      flowchartSourcePanelMinimumWidth,
+      Math.min(flowchartSourcePanelMaximumWidth, available - infoWidth),
     ),
-  );
+  };
 }
 
 export function modulo(value: number, divisor: number): number {

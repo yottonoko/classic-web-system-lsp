@@ -4,13 +4,23 @@
   "scopeName": "text.html.classic-asp",
   "patterns": [
     { "include": "#asp-include" },
+    { "include": "#html-comment" },
+    { "include": "#embedded-block-comment-bridge" },
     { "include": "#asp-expression" },
     { "include": "#asp-directive" },
     { "include": "#asp-block" },
     { "include": "text.html.basic" }
   ],
   "injections": {
-    "L:source.css, L:source.js": {
+    "L:source.css": {
+      "patterns": [
+        { "include": "#css-property-at-rule" },
+        { "include": "#asp-expression" },
+        { "include": "#asp-directive" },
+        { "include": "#asp-block" }
+      ]
+    },
+    "L:source.js": {
       "patterns": [
         { "include": "#asp-expression" },
         { "include": "#asp-directive" },
@@ -19,6 +29,63 @@
     }
   },
   "repository": {
+    "css-property-at-rule": {
+      "name": "meta.at-rule.property.css",
+      "begin": "(?i)(@property)\\s+(--[-_a-z0-9]+)\\s*(\\{)",
+      "beginCaptures": {
+        "1": { "name": "keyword.control.at-rule.property.css" },
+        "2": { "name": "variable.other.custom-property.css" },
+        "3": { "name": "punctuation.section.block.begin.css" }
+      },
+      "end": "\\}|(?i)(?=</style\\s*>)",
+      "endCaptures": {
+        "0": { "name": "punctuation.section.block.end.css" }
+      },
+      "patterns": [
+        { "include": "#asp-expression" },
+        { "include": "#asp-directive" },
+        { "include": "#asp-block" },
+        { "include": "#css-property-descriptor" },
+        { "include": "source.css#comment-block" }
+      ]
+    },
+    "css-property-descriptor": {
+      "name": "meta.property-value.css",
+      "begin": "(?i)\\b(syntax|inherits|initial-value)\\b(\\s*)(:)",
+      "beginCaptures": {
+        "1": { "name": "support.type.property-name.css" },
+        "3": { "name": "punctuation.separator.key-value.css" }
+      },
+      "end": ";|(?=\\}|(?i:</style\\s*>))",
+      "endCaptures": {
+        "0": { "name": "punctuation.terminator.rule.css" }
+      },
+      "patterns": [
+        { "include": "#asp-expression" },
+        { "include": "#asp-directive" },
+        { "include": "#asp-block" },
+        {
+          "match": "(?i)\\b(true|false)\\b",
+          "name": "constant.language.boolean.css"
+        },
+        { "include": "source.css#property-values" }
+      ]
+    },
+    "html-comment": {
+      "name": "comment.block.html",
+      "begin": "<!--",
+      "end": "-->",
+      "patterns": [
+        { "include": "#asp-expression" },
+        { "include": "#asp-directive" },
+        { "include": "#asp-block" }
+      ]
+    },
+    "embedded-block-comment-bridge": {
+      "name": "comment.block.css",
+      "begin": "(?<=-->)\\/\\*",
+      "end": "\\*\\/(?=<!--)"
+    },
     "asp-include": {
       "name": "comment.block.html meta.include.asp",
       "begin": "<!--\\s*(#include)\\b",
@@ -126,7 +193,7 @@
       ]
     },
     "asp-vbscript-rem-comment": {
-      "begin": "(?i)(^|:)\\s*Rem\\b",
+      "begin": "(?i)(?:^|(?<=<%)|(?<=:))[\\t ]*Rem\\b",
       "beginCaptures": {
         "0": { "name": "comment.line.rem.vbscript" }
       },
@@ -145,11 +212,12 @@
       "name": "string.quoted.double.vbscript"
     },
     "asp-vbscript-documentation-comment": {
-      "begin": "(''')\\s?",
+      "begin": "(?:(?:^|(?<=<%)|(?<=:))[\\t ]*)?(''')[\\t ]?",
       "beginCaptures": {
         "1": { "name": "comment.line.documentation.vbscript" }
       },
       "end": "(?=%>)|$",
+      "name": "comment.line.documentation.vbscript",
       "patterns": [
         { "include": "source.vbscript#documentation-tag" },
         { "include": "source.vbscript#documentation-entity" },
@@ -160,15 +228,16 @@
       ]
     },
     "asp-vbscript-annotation-comment": {
-      "begin": "(')\\s*(?=@(?:type|param|returns|member)\\b)",
+      "begin": "(?:(?:^|(?<=<%)|(?<=:))[\\t ]*)?(')[\\t ]*(?=@(?:type|param|returns|member)\\b)",
       "beginCaptures": {
         "1": { "name": "comment.line.annotation.vbscript" }
       },
       "end": "(?=%>)|$",
+      "name": "comment.line.annotation.vbscript",
       "patterns": [{ "include": "source.vbscript#annotation-comment" }]
     },
     "asp-vbscript-apostrophe-comment": {
-      "begin": "'",
+      "begin": "(?:(?:^|(?<=<%)|(?<=:))[\\t ]*)?(')",
       "beginCaptures": {
         "0": { "name": "comment.line.apostrophe.vbscript" }
       },

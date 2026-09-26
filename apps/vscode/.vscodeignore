@@ -10,3 +10,4 @@ tsconfig.json
 tsconfig.tsbuildinfo
 *.vsix
 **/*.map
+third_party_licenses/.generated-by-collect-licenses

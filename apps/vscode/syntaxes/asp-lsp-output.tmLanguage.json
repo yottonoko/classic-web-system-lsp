@@ -31,7 +31,7 @@
     "state": {
       "patterns": [
         {
-          "match": "\\b(?:started|completed)\\b",
+          "match": "\\b(?:started|completed|requested|received|complete|failed|cancelled|stale|ready|published|built|hit|miss|reuse)\\b",
           "name": "keyword.control.state.asp-lsp-output"
         }
       ]
@@ -39,7 +39,18 @@
     "step": {
       "patterns": [
         {
-          "match": "\\b(?:analysis|check|vbscript|format)(?:\\.[A-Za-z0-9_-]+)+\\b",
+          "match": "\\b([A-Za-z][A-Za-z0-9_-]*(?:\\.[A-Za-z0-9_-]+)*\\.)(started|completed|requested|received|complete|failed|cancelled|stale|ready|published|built|hit|miss|reuse)\\b",
+          "captures": {
+            "1": {
+              "name": "entity.name.function.step.asp-lsp-output"
+            },
+            "2": {
+              "name": "keyword.control.state.asp-lsp-output"
+            }
+          }
+        },
+        {
+          "match": "\\b[A-Za-z][A-Za-z0-9_-]*(?:\\.[A-Za-z0-9_-]+)+\\b",
           "name": "entity.name.function.step.asp-lsp-output"
         }
       ]
@@ -54,6 +65,10 @@
     },
     "duration": {
       "patterns": [
+        {
+          "match": "\\b(?:durationMs|deliveryMs|roundTripMs)=[0-9]+(?:\\.[0-9]+)?\\b",
+          "name": "constant.numeric.duration.asp-lsp-output"
+        },
         {
           "match": "\\bin\\s+(?:(?:[0-9]|[1-4][0-9])(?:\\.\\d+)?|50(?:\\.0+)?)\\s+ms\\b",
           "name": "constant.numeric.duration.asp-lsp-output.fast"

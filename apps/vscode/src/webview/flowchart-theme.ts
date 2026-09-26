@@ -97,6 +97,18 @@ const darkFlowchartNodeKindStyles: Record<FlowchartNodeKind, FlowchartVisualStyl
     mermaidClass: "flowExit",
     text: "#ffd4da",
   },
+  merge: {
+    background: "#1f2937",
+    border: "#94a3b8",
+    mermaidClass: "flowMerge",
+    text: "#f1f5f9",
+  },
+  output: {
+    background: "#102a2a",
+    border: "#7ee787",
+    mermaidClass: "flowOutput",
+    text: "#c8fff1",
+  },
   statement: {
     background: "#172131",
     border: "#89ddff",
@@ -195,6 +207,18 @@ const lightFlowchartNodeKindStyles: Record<FlowchartNodeKind, FlowchartVisualSty
     border: "#e11d48",
     mermaidClass: "flowExit",
     text: "#881337",
+  },
+  merge: {
+    background: "#e2e8f0",
+    border: "#64748b",
+    mermaidClass: "flowMerge",
+    text: "#0f172a",
+  },
+  output: {
+    background: "#dcfce7",
+    border: "#16a34a",
+    mermaidClass: "flowOutput",
+    text: "#14532d",
   },
   statement: {
     background: "#e0f2fe",
@@ -468,3 +492,94 @@ export const flowchartThemePalettes: Record<WebviewTheme, FlowchartThemePalette>
     symbolKindStyles: lightFlowchartSymbolKindStyles,
   },
 };
+
+export type VsCodeColorLookup = (name: string) => string | undefined;
+
+function mermaidSafeColor(value: string): string {
+  const match = value.match(
+    /^rgba?\(\s*([\d.]+%?)\s*,\s*([\d.]+%?)\s*,\s*([\d.]+%?)(?:\s*,\s*([\d.]+%?))?\s*\)$/i,
+  );
+  if (!match) {
+    return value;
+  }
+  const byte = (component: string): number => {
+    const percentage = component.endsWith("%");
+    const numeric = Number.parseFloat(component);
+    return Math.round(Math.min(255, Math.max(0, percentage ? (numeric / 100) * 255 : numeric)));
+  };
+  const alpha = (component: string | undefined): number => {
+    if (!component) {
+      return 255;
+    }
+    const percentage = component.endsWith("%");
+    const numeric = Number.parseFloat(component);
+    return Math.round(
+      Math.min(255, Math.max(0, percentage ? (numeric / 100) * 255 : numeric * 255)),
+    );
+  };
+  const hex = [byte(match[1]), byte(match[2]), byte(match[3])]
+    .map((component) => component.toString(16).padStart(2, "0"))
+    .join("");
+  const alphaByte = alpha(match[4]);
+  return `#${hex}${alphaByte < 255 ? alphaByte.toString(16).padStart(2, "0") : ""}`;
+}
+
+/** Resolves the auto theme to literal VS Code colors so Mermaid SVG exports stay self-contained. */
+export function flowchartThemePaletteForSetting(
+  theme: WebviewTheme,
+  setting: WebviewTheme | "auto" | undefined,
+  color: VsCodeColorLookup,
+): FlowchartThemePalette {
+  const fallback = flowchartThemePalettes[theme];
+  if (setting === "light" || setting === "dark") {
+    return fallback;
+  }
+  const resolveColor = (name: string, fallbackColor: string): string =>
+    mermaidSafeColor(color(name) ?? fallbackColor);
+  const foreground = resolveColor("editor-foreground", theme === "light" ? "#0f172a" : "#d9e0ea");
+  const background = resolveColor("editor-background", theme === "light" ? "#ffffff" : "#0d1117");
+  const surface = resolveColor("editorWidget-background", background);
+  const palette = [
+    color("charts-blue"),
+    color("charts-yellow"),
+    color("charts-purple"),
+    color("charts-green"),
+    color("charts-orange"),
+    color("charts-red"),
+  ]
+    .filter((value): value is string => Boolean(value))
+    .map(mermaidSafeColor);
+  const accent = mermaidSafeColor(
+    color("focusBorder") ?? color("textLink-foreground") ?? fallback.nodeKindStyles.start.border,
+  );
+  const recolor = <T extends string>(
+    styles: Record<T, FlowchartVisualStyle>,
+  ): Record<T, FlowchartVisualStyle> =>
+    Object.fromEntries(
+      Object.entries<FlowchartVisualStyle>(styles).map(([key, style], index) => [
+        key,
+        {
+          ...style,
+          background: surface,
+          border: palette[index % Math.max(palette.length, 1)] ?? accent,
+          text: foreground,
+        },
+      ]),
+    ) as Record<T, FlowchartVisualStyle>;
+  return {
+    mermaidTheme: "base",
+    mermaidThemeVariables: {
+      background,
+      mainBkg: surface,
+      primaryColor: surface,
+      primaryBorderColor: accent,
+      primaryTextColor: foreground,
+      lineColor: resolveColor("charts-foreground", foreground),
+      textColor: foreground,
+      edgeLabelBackground: surface,
+    },
+    nodeKindStyles: recolor(fallback.nodeKindStyles),
+    linkRoleStyles: recolor(fallback.linkRoleStyles),
+    symbolKindStyles: recolor(fallback.symbolKindStyles),
+  };
+}

@@ -36,29 +36,15 @@ node generate.mjs
 Run the benchmark from the repository root:
 
 ```sh
-pnpm run benchmark:huge
+pnpm run benchmark:go
 ```
 
-The benchmark rebuilds `@asp-lsp/core`, regenerates this sample, and measures
-parsing, virtual document construction, VBScript symbol collection, and VBScript
-diagnostics analysis over the generated files. The default run uses one warmup
-and five measured iterations. Override those counts when needed:
+The Go benchmark suite measures parsing, virtual document construction,
+VBScript symbol collection, and diagnostics analysis over generated files.
+Override benchmark counts when needed:
 
 ```sh
-ASP_LSP_BENCH_WARMUPS=2 ASP_LSP_BENCH_ITERATIONS=10 pnpm run benchmark:huge
-```
-
-Measure end-to-end editor update latency through the LSP server on the huge
-sample:
-
-```sh
-pnpm run benchmark:change:huge
-```
-
-Start with a narrow scenario when comparing interactive changes:
-
-```sh
-ASP_LSP_BENCH_ITERATIONS=1 ASP_LSP_BENCH_WARMUPS=1 ASP_LSP_BENCH_CHANGE_KIND=replace ASP_LSP_BENCH_CHANGE_MODE=default ASP_LSP_BENCH_BACKGROUND=off pnpm run benchmark:change:huge
+go test ./... -bench . -run '^$' -count 10
 ```
 
 Useful checks:

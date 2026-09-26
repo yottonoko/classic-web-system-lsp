@@ -1,128 +1,148 @@
-import React, { useEffect, useMemo, useRef } from "react";
-import { useVirtualizer } from "@tanstack/react-virtual";
+import {
+  createEffect,
+  createMemo,
+  createSignal,
+  For,
+  onSettled,
+  untrack,
+  type Accessor,
+} from "solid-js";
+import type { JSX } from "@solidjs/web";
+import {
+  Virtualizer,
+  elementScroll,
+  observeElementOffset,
+  observeElementRect,
+  type VirtualizerOptions,
+} from "@tanstack/virtual-core";
 import { cn } from "../lib/utils";
-
+type ListOptions = Pick<
+  VirtualizerOptions<HTMLDivElement, Element>,
+  "count" | "estimateSize" | "getItemKey" | "getScrollElement" | "overscan"
+>;
+/** Connect the framework-neutral virtualizer to Solid's tracked reads and lifecycle. */
+export function createVirtualizer(options: Accessor<ListOptions>) {
+  const [revision, setRevision] = createSignal(0);
+  const resolved = () => ({
+    ...options(),
+    scrollToFn: elementScroll,
+    observeElementRect,
+    observeElementOffset,
+    onChange: () => setRevision((value) => value + 1),
+  });
+  const instance = new Virtualizer<HTMLDivElement, Element>(untrack(resolved));
+  createEffect(options, () => {
+    instance.setOptions(resolved());
+    instance._willUpdate();
+    setRevision((value) => value + 1);
+  });
+  onSettled(() => {
+    const dispose = instance._didMount();
+    instance._willUpdate();
+    return dispose;
+  });
+  return {
+    getVirtualItems: () => {
+      revision();
+      return instance.getVirtualItems();
+    },
+    getTotalSize: () => {
+      revision();
+      return instance.getTotalSize();
+    },
+    scrollToIndex: instance.scrollToIndex,
+    measureElement: instance.measureElement,
+  };
+}
 export interface VirtualListProps<TItem> {
   className?: string;
   estimateSize: number | ((item: TItem, index: number) => number);
   gap?: number;
-  getKey(item: TItem, index: number): React.Key;
+  getKey(item: TItem, index: number): string | number | bigint;
   itemClassName?: string;
   items: readonly TItem[];
   maxHeight: number | string;
   onVisibleItemsChange?(items: readonly TItem[]): void;
   overscan?: number;
-  renderItem(item: TItem, index: number): React.ReactNode;
+  renderItem(item: TItem, index: number): JSX.Element;
   scrollToIndex?: number;
   threshold?: number;
 }
-
-const defaultVirtualListThreshold = 40;
-const defaultVirtualListOverscan = 6;
-const defaultVirtualListGap = 8;
-
-export function VirtualList<TItem>({
-  className,
-  estimateSize,
-  gap = defaultVirtualListGap,
-  getKey,
-  itemClassName,
-  items,
-  maxHeight,
-  onVisibleItemsChange,
-  overscan = defaultVirtualListOverscan,
-  renderItem,
-  scrollToIndex,
-  threshold = defaultVirtualListThreshold,
-}: VirtualListProps<TItem>): React.ReactElement {
-  const parentRef = useRef<HTMLDivElement>(null);
-  const shouldVirtualize = items.length > threshold;
-  const virtualizer = useVirtualizer({
-    count: shouldVirtualize ? items.length : 0,
-    estimateSize: (index) => estimatedItemSize(items[index], index, estimateSize) + gap,
-    getItemKey: (index) => {
-      const item = items[index];
-      return item === undefined ? String(index) : String(getKey(item, index));
+/** Render only the visible portion of long lists while measuring variable-height rows. */
+export function VirtualList<TItem>(props: VirtualListProps<TItem>): JSX.Element {
+  let parent: HTMLDivElement | undefined;
+  const virtualized = createMemo(() => props.items.length > (props.threshold ?? 40));
+  const virtualizer = createVirtualizer(() => ({
+    count: virtualized() ? props.items.length : 0,
+    estimateSize: (index) =>
+      (typeof props.estimateSize === "number"
+        ? props.estimateSize
+        : props.estimateSize(props.items[index], index)) + (props.gap ?? 8),
+    getItemKey: (index) => String(props.getKey(props.items[index], index)),
+    getScrollElement: () => parent ?? null,
+    overscan: props.overscan ?? 6,
+  }));
+  const virtualItems = createMemo(() => virtualizer.getVirtualItems());
+  const visible = createMemo(() =>
+    virtualized()
+      ? virtualItems()
+          .map((item) => props.items[item.index])
+          .filter((item) => item !== undefined)
+      : props.items,
+  );
+  createEffect(visible, (items) => props.onVisibleItemsChange?.(items));
+  createEffect(
+    () => [props.scrollToIndex, props.items.length, virtualized()] as const,
+    ([index, length, enabled]) => {
+      if (enabled && index !== undefined && index >= 0 && length)
+        virtualizer.scrollToIndex(Math.min(index, length - 1), { align: "auto" });
     },
-    getScrollElement: () => parentRef.current,
-    overscan,
-  });
-
-  const virtualItems = virtualizer.getVirtualItems();
-  const visibleItemsKey = shouldVirtualize
-    ? virtualItems.map((item) => item.key).join("\u0000")
-    : items.map((item, index) => String(getKey(item, index))).join("\u0000");
-  const visibleItems = useMemo(
-    () =>
-      shouldVirtualize
-        ? virtualItems
-            .map((item) => items[item.index])
-            .filter((item): item is TItem => item !== undefined)
-        : items,
-    [items, shouldVirtualize, visibleItemsKey],
   );
-
-  useEffect(() => {
-    onVisibleItemsChange?.(visibleItems);
-  }, [onVisibleItemsChange, visibleItems]);
-
-  useEffect(() => {
-    if (!shouldVirtualize || scrollToIndex === undefined || scrollToIndex < 0) {
-      return;
-    }
-    virtualizer.scrollToIndex(Math.min(scrollToIndex, items.length - 1), { align: "auto" });
-  }, [items.length, scrollToIndex, shouldVirtualize, virtualizer]);
-
-  if (!shouldVirtualize) {
-    return (
-      <div className={className}>
-        {items.map((item, index) => (
-          <React.Fragment key={getKey(item, index)}>{renderItem(item, index)}</React.Fragment>
-        ))}
-      </div>
-    );
-  }
-
   return (
-    <div ref={parentRef} className={cn(className, "overflow-auto pr-1")} style={{ maxHeight }}>
-      <div
-        className="relative w-full"
-        style={{
-          height: `${virtualizer.getTotalSize()}px`,
-        }}
-      >
-        {virtualItems.map((virtualItem) => {
-          const item = items[virtualItem.index];
-          if (item === undefined) {
-            return null;
-          }
-          return (
-            <div
-              key={virtualItem.key}
-              ref={virtualizer.measureElement}
-              data-index={virtualItem.index}
-              className={cn("absolute top-0 left-0 box-border w-full", itemClassName)}
-              style={{
-                paddingBottom: gap,
-                transform: `translateY(${virtualItem.start}px)`,
+    <>
+      {virtualized() ? (
+        <div
+          ref={(element) => {
+            parent = element;
+          }}
+          class={cn(props.className, "overflow-auto pr-1")}
+          style={{
+            "max-height":
+              typeof props.maxHeight === "number" ? `${props.maxHeight}px` : props.maxHeight,
+          }}
+        >
+          <div class="relative w-full" style={{ height: `${virtualizer.getTotalSize()}px` }}>
+            <For each={virtualItems()}>
+              {(item) => {
+                let element: HTMLDivElement | undefined;
+                onSettled(() => {
+                  if (element) virtualizer.measureElement(element);
+                  return () => virtualizer.measureElement(null);
+                });
+                return (
+                  <div
+                    ref={(node) => {
+                      element = node;
+                    }}
+                    data-index={item.index}
+                    class={cn("absolute top-0 left-0 box-border w-full", props.itemClassName)}
+                    style={{
+                      "padding-bottom": `${props.gap ?? 8}px`,
+                      transform: `translateY(${item.start}px)`,
+                    }}
+                  >
+                    {props.renderItem(props.items[item.index], item.index)}
+                  </div>
+                );
               }}
-            >
-              {renderItem(item, virtualItem.index)}
-            </div>
-          );
-        })}
-      </div>
-    </div>
+            </For>
+          </div>
+        </div>
+      ) : (
+        <div class={props.className}>
+          <For each={props.items}>{(item, index) => props.renderItem(item, index())}</For>
+        </div>
+      )}
+    </>
   );
-}
-
-function estimatedItemSize<TItem>(
-  item: TItem | undefined,
-  index: number,
-  estimateSize: number | ((item: TItem, index: number) => number),
-): number {
-  if (typeof estimateSize === "number" || item === undefined) {
-    return typeof estimateSize === "number" ? estimateSize : 48;
-  }
-  return estimateSize(item, index);
 }

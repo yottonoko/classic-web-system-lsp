@@ -1,121 +1,77 @@
-import React, { useEffect, useMemo, useRef, useState } from "react";
-import { createRoot } from "react-dom/client";
-import { ImeSafeInput, imeSafeKeyboardEventIsComposing } from "./ime-safe-input";
+import { createSignal, createMemo, createEffect, untrack, type Accessor } from "solid-js";
+import { render, type JSX } from "@solidjs/web";
+import { webviewStyle } from "./webview-dom-types";
+import { ImeSafeInput } from "./ime-safe-input";
 import { VirtualList } from "./virtual-list";
+import { WebviewErrorBoundary } from "./webview-error-boundary";
 import styles from "./workspace-files.css?inline";
-import { cn } from "../lib/utils";
 import type {
-  WorkspaceFilesFile,
-  WorkspaceFilesGlobStat,
   WorkspaceFilesPayload,
   WorkspaceFilesPreviewRequest,
 } from "../workspace-files-webview";
-
+import { MetricCard, GlobChips, GlobEditor, TreeRowView } from "./workspace-files-components";
+import {
+  createGlobItem,
+  excludePatternForTreeRow,
+  emptyPayload,
+  fileType,
+  formatBytes,
+  formatDate,
+  formatDateShort,
+  formatNumber,
+  globItems,
+  globValues,
+  isCollapsibleTreeRow,
+  summarizePayload,
+  treeRows,
+  visibleTreeRows,
+} from "./workspace-files-model";
+import type {
+  GlobInputItem,
+  GlobKind,
+  Locale,
+  TextKey,
+  TreeContextMenu,
+  TreeRow,
+} from "./workspace-files-types";
 declare const acquireVsCodeApi: () => {
   postMessage(message: unknown): void;
 };
-
 declare global {
   interface Window {
     __ASP_LSP_WORKSPACE_FILES__?: WorkspaceFilesPayload;
   }
 }
-
-type TreeRow =
-  | {
-      id: string;
-      kind: "root";
-      depth: number;
-      label: string;
-      matchesFilter: boolean;
-      detail?: string;
-    }
-  | {
-      id: string;
-      kind: "folder";
-      depth: number;
-      label: string;
-      matchesFilter: boolean;
-      detail?: string;
-    }
-  | {
-      id: string;
-      kind: "file";
-      depth: number;
-      label: string;
-      matchesFilter: boolean;
-      detail?: string;
-      file: WorkspaceFilesFile;
-    };
-
-type Summary = {
-  aspFiles: number;
-  asaFiles: number;
-  folders: number;
-  incFiles: number;
-  latestModifiedMs: number;
-};
-
-type GlobInputItem = {
-  id: string;
-  value: string;
-};
-
-type GlobKind = "exclude" | "include";
-
-type TreeContextMenu = {
-  x: number;
-  y: number;
-  pattern: string;
-};
-
-type Locale = "en" | "ja";
-type TextKey =
-  | "action.addGlob"
-  | "action.excludePattern"
-  | "action.export"
-  | "action.removeGlob"
-  | "action.saveSettings"
-  | "analysisOverview"
-  | "currentFilters"
-  | "empty"
-  | "excludeGlobs"
-  | "fileCount"
-  | "files"
-  | "filters"
-  | "folder"
-  | "foldersScanned"
-  | "fullPath"
-  | "globPending"
-  | "includeGlobs"
-  | "lastModified"
-  | "lastScanned"
-  | "name"
-  | "noSelection"
-  | "none"
-  | "open"
-  | "previewFailed"
-  | "projectRoot"
-  | "relativePath"
-  | "respectGitIgnore"
-  | "search"
-  | "selectedFile"
-  | "settingsSaveFailed"
-  | "settingsSaved"
-  | "showUnmatched"
-  | "size"
-  | "savingSettings"
-  | "title"
-  | "totalSize"
-  | "truncated"
-  | "type"
-  | "workspace";
-
 const vscode = acquireVsCodeApi();
 const initialPayload = window.__ASP_LSP_WORKSPACE_FILES__;
 const initialWorkspaceFilesPayload = initialPayload ?? emptyPayload();
-let nextGlobItemId = 0;
-
+function detectedWorkspaceTheme(): "light" | "dark" {
+  const classList = document.body.classList;
+  return classList.contains("vscode-light") || classList.contains("vscode-high-contrast-light")
+    ? "light"
+    : "dark";
+}
+function createResolvedWorkspaceTheme(
+  setting: Accessor<"auto" | "light" | "dark" | undefined>,
+): Accessor<"light" | "dark"> {
+  const [theme, setTheme] = createSignal<"light" | "dark">(untrack(() => detectedWorkspaceTheme()));
+  createEffect(setting, (setting) => {
+    if (setting === "light" || setting === "dark") {
+      setTheme(setting);
+      return undefined;
+    }
+    const observer = new MutationObserver(() => setTheme(detectedWorkspaceTheme()));
+    const options: MutationObserverInit = { attributes: true, attributeFilter: ["class", "style"] };
+    observer.observe(document.body, options);
+    observer.observe(document.documentElement, options);
+    setTheme(detectedWorkspaceTheme());
+    return () => observer.disconnect();
+  });
+  return createMemo(() => {
+    const value = setting();
+    return value === "light" || value === "dark" ? value : theme();
+  });
+}
 const messages: Record<Locale, Record<TextKey, string>> = {
   en: {
     "action.addGlob": "Add glob",
@@ -154,7 +110,6 @@ const messages: Record<Locale, Record<TextKey, string>> = {
     savingSettings: "Saving...",
     title: "Analysis files",
     totalSize: "Total size",
-    truncated: "Truncated: {reason}",
     type: "Type",
     workspace: "Workspace",
   },
@@ -195,12 +150,10 @@ const messages: Record<Locale, Record<TextKey, string>> = {
     savingSettings: "保存中...",
     title: "解析ファイル",
     totalSize: "合計サイズ",
-    truncated: "表示を切り詰めました: {reason}",
     type: "種類",
     workspace: "ワークスペース",
   },
 };
-
 function messageText(
   locale: Locale,
   key: TextKey,
@@ -212,11 +165,9 @@ function messageText(
   }
   return message;
 }
-
 function createRequestId(): string {
   return `${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`;
 }
-
 function previewRequestSignature(request: WorkspaceFilesPreviewRequest): string {
   return JSON.stringify({
     includeGlobs: request.includeGlobs,
@@ -225,7 +176,6 @@ function previewRequestSignature(request: WorkspaceFilesPreviewRequest): string 
     showUnmatched: request.showUnmatched,
   });
 }
-
 function settingsRequestSignature(request: WorkspaceFilesPreviewRequest): string {
   return JSON.stringify({
     includeGlobs: request.includeGlobs,
@@ -233,7 +183,6 @@ function settingsRequestSignature(request: WorkspaceFilesPreviewRequest): string
     respectGitIgnore: request.respectGitIgnore,
   });
 }
-
 function previewRequestFromPayload(payload: WorkspaceFilesPayload): WorkspaceFilesPreviewRequest {
   return {
     includeGlobs: payload.includeGlobs,
@@ -242,168 +191,175 @@ function previewRequestFromPayload(payload: WorkspaceFilesPayload): WorkspaceFil
     showUnmatched: payload.showUnmatched,
   };
 }
-
-function App(): React.ReactElement {
-  const [payload, setPayload] = useState<WorkspaceFilesPayload>(initialWorkspaceFilesPayload);
-  const locale: Locale = payload.locale === "ja" ? "ja" : "en";
-  const [includeGlobItems, setIncludeGlobItems] = useState(() =>
-    globItems(payload.includeGlobs, "include"),
+function App(): JSX.Element {
+  const [payload, setPayload] = createSignal<WorkspaceFilesPayload>(initialWorkspaceFilesPayload);
+  const locale = createMemo<Locale>(() => (payload().locale === "ja" ? "ja" : "en"));
+  const theme = createResolvedWorkspaceTheme(() => payload().settings?.theme);
+  const [includeGlobItems, setIncludeGlobItems] = createSignal(
+    untrack(() => globItems(payload().includeGlobs, "include")),
   );
-  const [excludeGlobItems, setExcludeGlobItems] = useState(() =>
-    globItems(payload.excludeGlobs, "exclude"),
+  const [excludeGlobItems, setExcludeGlobItems] = createSignal(
+    untrack(() => globItems(payload().excludeGlobs, "exclude")),
   );
-  const [respectGitIgnore, setRespectGitIgnore] = useState(payload.respectGitIgnore);
-  const [showUnmatched, setShowUnmatched] = useState(payload.showUnmatched !== false);
-  const [search, setSearch] = useState("");
-  const [collapsedTreeIds, setCollapsedTreeIds] = useState<ReadonlySet<string>>(() => new Set());
-  const [selectedUri, setSelectedUri] = useState<string | undefined>();
-  const [contextMenu, setContextMenu] = useState<TreeContextMenu | undefined>();
+  const [respectGitIgnore, setRespectGitIgnore] = createSignal(payload().respectGitIgnore);
+  const [showUnmatched, setShowUnmatched] = createSignal(payload().showUnmatched !== false);
+  const [search, setSearch] = createSignal("");
+  const [collapsedTreeIds, setCollapsedTreeIds] = createSignal<ReadonlySet<string>>(
+    untrack(() => new Set<string>()),
+  );
+  const [selectedUri, setSelectedUri] = createSignal<string | undefined>();
+  const [contextMenu, setContextMenu] = createSignal<TreeContextMenu | undefined>();
   const [committedPreviewRequest, setCommittedPreviewRequest] =
-    useState<WorkspaceFilesPreviewRequest>(() => previewRequestFromPayload(payload));
-  const [savedSettingsSignature, setSavedSettingsSignature] = useState(() =>
-    settingsRequestSignature(previewRequestFromPayload(payload)),
+    createSignal<WorkspaceFilesPreviewRequest>(untrack(() => previewRequestFromPayload(payload())));
+  const [savedSettingsSignature, setSavedSettingsSignature] = createSignal(
+    untrack(() => settingsRequestSignature(previewRequestFromPayload(payload()))),
   );
-  const [previewBusy, setPreviewBusy] = useState(false);
-  const [exportBusy, setExportBusy] = useState(false);
-  const [saveBusy, setSaveBusy] = useState(false);
-  const [error, setError] = useState<string | undefined>();
-  const [status, setStatus] = useState<string | undefined>();
-  const activePreviewRequestIdRef = useRef<string | undefined>(undefined);
-  const activeSaveRequestIdRef = useRef<string | undefined>(undefined);
-  const draftPreviewSignatureRef = useRef<string | undefined>(undefined);
-  const lastPreviewSignatureRef = useRef<string | undefined>(undefined);
-  const allFiles = useMemo(() => payload.roots.flatMap((root) => root.files), [payload]);
-  const rows = useMemo(
-    () => visibleTreeRows(treeRows(payload), collapsedTreeIds),
-    [payload, collapsedTreeIds],
+  const [previewBusy, setPreviewBusy] = createSignal(false);
+  const [exportBusy, setExportBusy] = createSignal(false);
+  const [saveBusy, setSaveBusy] = createSignal(false);
+  const [error, setError] = createSignal<string | undefined>();
+  const [status, setStatus] = createSignal<string | undefined>();
+  const activePreviewRequestIdRef = { current: undefined } as {
+    current: (string | undefined) | undefined;
+  };
+  const activeSaveRequestIdRef = { current: undefined } as {
+    current: (string | undefined) | undefined;
+  };
+  const draftPreviewSignatureRef = { current: undefined } as {
+    current: (string | undefined) | undefined;
+  };
+  const lastPreviewSignatureRef = { current: undefined } as {
+    current: (string | undefined) | undefined;
+  };
+  const allFiles = createMemo(() => payload().roots.flatMap((root) => root.files));
+  const rows = createMemo(() => visibleTreeRows(treeRows(payload()), collapsedTreeIds()));
+  const summary = createMemo(() => summarizePayload(payload()));
+  const selectedFile = createMemo(
+    () => allFiles().find((file) => file.uri === selectedUri()) ?? allFiles()[0] ?? undefined,
   );
-  const summary = useMemo(() => summarizePayload(payload), [payload]);
-  const selectedFile =
-    allFiles.find((file) => file.uri === selectedUri) ?? allFiles[0] ?? undefined;
-  const includeList = useMemo(() => globValues(includeGlobItems), [includeGlobItems]);
-  const excludeList = useMemo(() => globValues(excludeGlobItems), [excludeGlobItems]);
-  const previewRequest = useMemo<WorkspaceFilesPreviewRequest>(
-    () => ({
-      includeGlobs: includeList,
-      excludeGlobs: excludeList,
-      respectGitIgnore,
-      showUnmatched,
-    }),
-    [excludeList, includeList, respectGitIgnore, showUnmatched],
+  const includeList = createMemo(() => globValues(includeGlobItems()));
+  const excludeList = createMemo(() => globValues(excludeGlobItems()));
+  const previewRequest = createMemo<WorkspaceFilesPreviewRequest>(() => ({
+    includeGlobs: includeList(),
+    excludeGlobs: excludeList(),
+    respectGitIgnore: respectGitIgnore(),
+    showUnmatched: showUnmatched(),
+  }));
+  const draftPreviewSignature = createMemo(() => previewRequestSignature(previewRequest()));
+  const committedPreviewSignature = createMemo(() =>
+    previewRequestSignature(committedPreviewRequest()),
   );
-  const draftPreviewSignature = useMemo(
-    () => previewRequestSignature(previewRequest),
-    [previewRequest],
-  );
-  const committedPreviewSignature = useMemo(
-    () => previewRequestSignature(committedPreviewRequest),
-    [committedPreviewRequest],
-  );
-  const draftSettingsSignature = useMemo(
-    () => settingsRequestSignature(previewRequest),
-    [previewRequest],
-  );
-  const previewPending = draftPreviewSignature !== committedPreviewSignature;
-  const settingsDirty = draftSettingsSignature !== savedSettingsSignature;
-  const busy = previewBusy || exportBusy || saveBusy;
+  const draftSettingsSignature = createMemo(() => settingsRequestSignature(previewRequest()));
+  const previewPending = createMemo(() => draftPreviewSignature() !== committedPreviewSignature());
+  const settingsDirty = createMemo(() => draftSettingsSignature() !== savedSettingsSignature());
+  const busy = createMemo(() => previewBusy() || exportBusy() || saveBusy());
   const text = (key: TextKey, params: Record<string, string | number> = {}): string =>
-    messageText(locale, key, params);
-  const rootLabel =
-    payload.roots.map((root) => root.displayPath ?? root.name).join(", ") || text("workspace");
-
-  useEffect(() => {
-    draftPreviewSignatureRef.current = draftPreviewSignature;
-  }, [draftPreviewSignature]);
-
-  useEffect(() => {
-    if (lastPreviewSignatureRef.current === undefined) {
-      lastPreviewSignatureRef.current = committedPreviewSignature;
-      return;
-    }
-    if (committedPreviewSignature === lastPreviewSignatureRef.current) {
-      return;
-    }
-    if (activePreviewRequestIdRef.current !== undefined) {
-      activePreviewRequestIdRef.current = undefined;
-      setPreviewBusy(false);
-    }
-    const requestId = createRequestId();
-    const requestSignature = committedPreviewSignature;
-    let listener: ((event: MessageEvent) => void) | undefined;
-    activePreviewRequestIdRef.current = requestId;
-    setPreviewBusy(true);
-    setError(undefined);
-    listener = (event: MessageEvent): void => {
-      const message = event.data as {
-        type?: string;
-        requestId?: string;
-        payload?: WorkspaceFilesPayload;
-        error?: string;
-      };
-      if (message.type !== "previewResult" || message.requestId !== requestId) {
+    messageText(locale(), key, params);
+  const rootLabel = createMemo(
+    () =>
+      payload()
+        .roots.map((root) => root.displayPath ?? root.name)
+        .join(", ") || text("workspace"),
+  );
+  createEffect(
+    () => [draftPreviewSignature()],
+    () => {
+      draftPreviewSignatureRef.current = draftPreviewSignature();
+    },
+  );
+  createEffect(
+    () => [committedPreviewRequest(), committedPreviewSignature(), locale()],
+    () => {
+      if (lastPreviewSignatureRef.current === undefined) {
+        lastPreviewSignatureRef.current = committedPreviewSignature();
         return;
       }
-      if (listener) {
-        window.removeEventListener("message", listener);
-      }
-      if (activePreviewRequestIdRef.current !== requestId) {
+      if (committedPreviewSignature() === lastPreviewSignatureRef.current) {
         return;
       }
-      activePreviewRequestIdRef.current = undefined;
-      setPreviewBusy(false);
-      if (message.payload) {
-        const nextRequest = previewRequestFromPayload(message.payload);
-        const nextSignature = previewRequestSignature(nextRequest);
-        lastPreviewSignatureRef.current = nextSignature;
-        setPayload(message.payload);
-        setCommittedPreviewRequest(nextRequest);
-        setSelectedUri(undefined);
-        setCollapsedTreeIds(new Set());
-        if (draftPreviewSignatureRef.current === requestSignature) {
-          setIncludeGlobItems(globItems(message.payload.includeGlobs, "include"));
-          setExcludeGlobItems(globItems(message.payload.excludeGlobs, "exclude"));
-          setRespectGitIgnore(message.payload.respectGitIgnore);
-          setShowUnmatched(message.payload.showUnmatched !== false);
-        }
-      } else {
-        setError(messageText(locale, "previewFailed", { error: message.error ?? "unknown" }));
-      }
-    };
-    window.addEventListener("message", listener);
-    vscode.postMessage({ type: "preview", requestId, ...committedPreviewRequest });
-    return () => {
-      if (listener) {
-        window.removeEventListener("message", listener);
-      }
-      if (activePreviewRequestIdRef.current === requestId) {
+      if (activePreviewRequestIdRef.current !== undefined) {
         activePreviewRequestIdRef.current = undefined;
         setPreviewBusy(false);
       }
-    };
-  }, [committedPreviewRequest, committedPreviewSignature, locale]);
-
-  useEffect(() => {
-    if (!contextMenu) {
-      return;
-    }
-    const close = (): void => setContextMenu(undefined);
-    const onKeyDown = (event: KeyboardEvent): void => {
-      if (event.key === "Escape") {
-        close();
+      const requestId = createRequestId();
+      const requestSignature = committedPreviewSignature();
+      let listener: ((event: MessageEvent) => void) | undefined;
+      activePreviewRequestIdRef.current = requestId;
+      setPreviewBusy(true);
+      setError(undefined);
+      listener = (event: MessageEvent): void => {
+        const message = event.data as {
+          type?: string;
+          requestId?: string;
+          payload?: WorkspaceFilesPayload;
+          error?: string;
+        };
+        if (message.type !== "previewResult" || message.requestId !== requestId) {
+          return;
+        }
+        if (listener) {
+          window.removeEventListener("message", listener);
+        }
+        if (activePreviewRequestIdRef.current !== requestId) {
+          return;
+        }
+        activePreviewRequestIdRef.current = undefined;
+        setPreviewBusy(false);
+        if (message.payload) {
+          const nextRequest = previewRequestFromPayload(message.payload);
+          const nextSignature = previewRequestSignature(nextRequest);
+          lastPreviewSignatureRef.current = nextSignature;
+          setPayload(message.payload);
+          setCommittedPreviewRequest(nextRequest);
+          setSelectedUri(undefined);
+          setCollapsedTreeIds(new Set<string>());
+          if (draftPreviewSignatureRef.current === requestSignature) {
+            setIncludeGlobItems(globItems(message.payload.includeGlobs, "include"));
+            setExcludeGlobItems(globItems(message.payload.excludeGlobs, "exclude"));
+            setRespectGitIgnore(message.payload.respectGitIgnore);
+            setShowUnmatched(message.payload.showUnmatched !== false);
+          }
+        } else {
+          setError(messageText(locale(), "previewFailed", { error: message.error ?? "unknown" }));
+        }
+      };
+      window.addEventListener("message", listener);
+      vscode.postMessage({ type: "preview", requestId, ...committedPreviewRequest() });
+      return () => {
+        if (listener) {
+          window.removeEventListener("message", listener);
+        }
+        if (activePreviewRequestIdRef.current === requestId) {
+          activePreviewRequestIdRef.current = undefined;
+          setPreviewBusy(false);
+        }
+      };
+    },
+  );
+  createEffect(
+    () => [contextMenu()],
+    () => {
+      if (!contextMenu()) {
+        return;
       }
-    };
-    window.addEventListener("mousedown", close);
-    window.addEventListener("blur", close);
-    window.addEventListener("scroll", close, true);
-    window.addEventListener("keydown", onKeyDown);
-    return () => {
-      window.removeEventListener("mousedown", close);
-      window.removeEventListener("blur", close);
-      window.removeEventListener("scroll", close, true);
-      window.removeEventListener("keydown", onKeyDown);
-    };
-  }, [contextMenu]);
-
+      const close = (): void => setContextMenu(undefined);
+      const onKeyDown = (event: KeyboardEvent): void => {
+        if (event.key === "Escape") {
+          close();
+        }
+      };
+      window.addEventListener("mousedown", close);
+      window.addEventListener("blur", close);
+      window.addEventListener("scroll", close, true);
+      window.addEventListener("keydown", onKeyDown);
+      return () => {
+        window.removeEventListener("mousedown", close);
+        window.removeEventListener("blur", close);
+        window.removeEventListener("scroll", close, true);
+        window.removeEventListener("keydown", onKeyDown);
+      };
+    },
+  );
   const toggleTreeRow = (id: string): void => {
     setCollapsedTreeIds((ids) => {
       const next = new Set(ids);
@@ -415,7 +371,6 @@ function App(): React.ReactElement {
       return next;
     });
   };
-
   const requestFromGlobItems = (
     includeItems: GlobInputItem[],
     excludeItems: GlobInputItem[],
@@ -425,18 +380,16 @@ function App(): React.ReactElement {
   ): WorkspaceFilesPreviewRequest => ({
     includeGlobs: globValues(includeItems),
     excludeGlobs: globValues(excludeItems),
-    respectGitIgnore: overrides.respectGitIgnore ?? respectGitIgnore,
-    showUnmatched: overrides.showUnmatched ?? showUnmatched,
+    respectGitIgnore: overrides.respectGitIgnore ?? respectGitIgnore(),
+    showUnmatched: overrides.showUnmatched ?? showUnmatched(),
   });
-
   const commitPreviewRequest = (request: WorkspaceFilesPreviewRequest): void => {
-    if (previewRequestSignature(request) === committedPreviewSignature) {
+    if (previewRequestSignature(request) === committedPreviewSignature()) {
       return;
     }
     setStatus(undefined);
     setCommittedPreviewRequest(request);
   };
-
   const updateGlobItem = (kind: GlobKind, id: string, value: string): void => {
     setStatus(undefined);
     const update = (item: GlobInputItem): GlobInputItem =>
@@ -447,7 +400,6 @@ function App(): React.ReactElement {
       setExcludeGlobItems((items) => items.map(update));
     }
   };
-
   const addGlobItem = (kind: GlobKind): void => {
     setStatus(undefined);
     const item = createGlobItem(kind, "");
@@ -457,12 +409,13 @@ function App(): React.ReactElement {
       setExcludeGlobItems((items) => [...items, item]);
     }
   };
-
   const commitGlobItem = (kind: GlobKind, id: string, value: string): void => {
     const update = (item: GlobInputItem): GlobInputItem =>
       item.id === id ? { ...item, value } : item;
-    const nextIncludeItems = kind === "include" ? includeGlobItems.map(update) : includeGlobItems;
-    const nextExcludeItems = kind === "exclude" ? excludeGlobItems.map(update) : excludeGlobItems;
+    const nextIncludeItems =
+      kind === "include" ? includeGlobItems().map(update) : includeGlobItems();
+    const nextExcludeItems =
+      kind === "exclude" ? excludeGlobItems().map(update) : excludeGlobItems();
     if (kind === "include") {
       setIncludeGlobItems(nextIncludeItems);
     } else {
@@ -470,14 +423,13 @@ function App(): React.ReactElement {
     }
     commitPreviewRequest(requestFromGlobItems(nextIncludeItems, nextExcludeItems));
   };
-
   const removeGlobItem = (kind: GlobKind, id: string): void => {
     const remove = (items: GlobInputItem[]): GlobInputItem[] => {
       const next = items.filter((item) => item.id !== id);
       return next.length > 0 ? next : [createGlobItem(kind, "")];
     };
-    const nextIncludeItems = kind === "include" ? remove(includeGlobItems) : includeGlobItems;
-    const nextExcludeItems = kind === "exclude" ? remove(excludeGlobItems) : excludeGlobItems;
+    const nextIncludeItems = kind === "include" ? remove(includeGlobItems()) : includeGlobItems();
+    const nextExcludeItems = kind === "exclude" ? remove(excludeGlobItems()) : excludeGlobItems();
     if (kind === "include") {
       setIncludeGlobItems(nextIncludeItems);
     } else {
@@ -485,24 +437,22 @@ function App(): React.ReactElement {
     }
     commitPreviewRequest(requestFromGlobItems(nextIncludeItems, nextExcludeItems));
   };
-
   const addExcludeGlobPattern = (pattern: string): void => {
-    let nextExcludeItems = excludeGlobItems;
-    if (!excludeGlobItems.some((item) => item.value.trim() === pattern)) {
-      const emptyIndex = excludeGlobItems.findIndex((item) => item.value.trim().length === 0);
+    let nextExcludeItems = excludeGlobItems();
+    if (!excludeGlobItems().some((item) => item.value.trim() === pattern)) {
+      const emptyIndex = excludeGlobItems().findIndex((item) => item.value.trim().length === 0);
       nextExcludeItems =
         emptyIndex >= 0
-          ? excludeGlobItems.map((item, index) =>
+          ? excludeGlobItems().map((item, index) =>
               index === emptyIndex ? { ...item, value: pattern } : item,
             )
-          : [...excludeGlobItems, createGlobItem("exclude", pattern)];
+          : [...excludeGlobItems(), createGlobItem("exclude", pattern)];
       setExcludeGlobItems(nextExcludeItems);
     }
-    commitPreviewRequest(requestFromGlobItems(includeGlobItems, nextExcludeItems));
+    commitPreviewRequest(requestFromGlobItems(includeGlobItems(), nextExcludeItems));
     setContextMenu(undefined);
   };
-
-  const openTreeContextMenu = (row: TreeRow, event: React.MouseEvent): void => {
+  const openTreeContextMenu = (row: TreeRow, event: MouseEvent): void => {
     const pattern = excludePatternForTreeRow(row);
     if (!pattern) {
       return;
@@ -511,14 +461,17 @@ function App(): React.ReactElement {
     event.stopPropagation();
     setContextMenu({ x: event.clientX, y: event.clientY, pattern });
   };
-
   function exportSelectedExcel(): void {
-    if (!selectedFile) {
+    if (!selectedFile()) {
       return;
     }
     setExportBusy(true);
     const listener = (event: MessageEvent): void => {
-      const message = event.data as { type?: string; ok?: boolean; error?: string };
+      const message = event.data as {
+        type?: string;
+        ok?: boolean;
+        error?: string;
+      };
       if (message.type !== "exportResult") {
         return;
       }
@@ -531,17 +484,16 @@ function App(): React.ReactElement {
     window.addEventListener("message", listener);
     vscode.postMessage({
       type: "exportSelectedExcel",
-      selectedUri: selectedFile.uri,
-      ...committedPreviewRequest,
+      selectedUri: selectedFile().uri,
+      ...committedPreviewRequest(),
     });
   }
-
   function saveWorkspaceSettings(): void {
-    if (!settingsDirty || saveBusy) {
+    if (!settingsDirty() || saveBusy()) {
       return;
     }
     const requestId = createRequestId();
-    const request = previewRequest;
+    const request = previewRequest();
     const requestSignature = settingsRequestSignature(request);
     activeSaveRequestIdRef.current = requestId;
     setSaveBusy(true);
@@ -564,7 +516,9 @@ function App(): React.ReactElement {
       activeSaveRequestIdRef.current = undefined;
       setSaveBusy(false);
       if (message.ok === false) {
-        setError(messageText(locale, "settingsSaveFailed", { error: message.error ?? "unknown" }));
+        setError(
+          messageText(locale(), "settingsSaveFailed", { error: message.error ?? "unknown" }),
+        );
       } else {
         setSavedSettingsSignature(requestSignature);
         setStatus(text("settingsSaved"));
@@ -579,37 +533,37 @@ function App(): React.ReactElement {
       respectGitIgnore: request.respectGitIgnore,
     });
   }
-
   return (
     <div
-      className="workspace-files-app"
-      data-asp-lsp-theme={payload.settings?.theme === "light" ? "light" : "dark"}
+      class="workspace-files-app"
+      data-asp-lsp-theme={theme()}
+      data-asp-lsp-theme-setting={initialWorkspaceFilesPayload.settings?.theme ?? "auto"}
     >
       <style>{styles}</style>
-      <header className="workspace-files-toolbar">
-        <div className="toolbar-title">
+      <header class="workspace-files-toolbar">
+        <div class="toolbar-title">
           <h1>{text("title")}</h1>
           <p>
-            {text("fileCount", { count: payload.stats.files })} · {text("totalSize")}{" "}
-            {formatBytes(payload.stats.totalBytes)}
+            {text("fileCount", { count: payload().stats.files })} · {text("totalSize")}{" "}
+            {formatBytes(payload().stats.totalBytes)}
           </p>
         </div>
-        <div className="toolbar-actions">
+        <div class="toolbar-actions">
           <ImeSafeInput
             aria-label={text("search")}
-            className="search-input"
+            class="search-input"
             placeholder={text("search")}
-            value={search}
+            value={search()}
             onValueChange={setSearch}
           />
         </div>
       </header>
-      <section className="filter-strip" aria-label={text("filters")}>
+      <section class="filter-strip" aria-label={text("filters")}>
         <GlobEditor
-          items={includeGlobItems}
+          items={includeGlobItems()}
           kind="include"
           label={text("includeGlobs")}
-          stats={payload.globStats?.include}
+          stats={payload().globStats?.include}
           text={text}
           onAdd={() => addGlobItem("include")}
           onChange={(id, value) => updateGlobItem("include", id, value)}
@@ -617,26 +571,26 @@ function App(): React.ReactElement {
           onRemove={(id) => removeGlobItem("include", id)}
         />
         <GlobEditor
-          items={excludeGlobItems}
+          items={excludeGlobItems()}
           kind="exclude"
           label={text("excludeGlobs")}
-          stats={payload.globStats?.exclude}
+          stats={payload().globStats?.exclude}
           text={text}
           onAdd={() => addGlobItem("exclude")}
           onChange={(id, value) => updateGlobItem("exclude", id, value)}
           onCommit={(id, value) => commitGlobItem("exclude", id, value)}
           onRemove={(id) => removeGlobItem("exclude", id)}
         />
-        <div className="filter-actions">
-          <label className="checkbox-row">
+        <div class="filter-actions">
+          <label class="checkbox-row">
             <input
               type="checkbox"
-              checked={respectGitIgnore}
-              onChange={(event) => {
+              checked={respectGitIgnore()}
+              onInput={(event) => {
                 const nextRespectGitIgnore = event.currentTarget.checked;
                 setRespectGitIgnore(nextRespectGitIgnore);
                 commitPreviewRequest(
-                  requestFromGlobItems(includeGlobItems, excludeGlobItems, {
+                  requestFromGlobItems(includeGlobItems(), excludeGlobItems(), {
                     respectGitIgnore: nextRespectGitIgnore,
                   }),
                 );
@@ -644,15 +598,15 @@ function App(): React.ReactElement {
             />
             <span>{text("respectGitIgnore")}</span>
           </label>
-          <label className="checkbox-row">
+          <label class="checkbox-row">
             <input
               type="checkbox"
-              checked={showUnmatched}
-              onChange={(event) => {
+              checked={showUnmatched()}
+              onInput={(event) => {
                 const nextShowUnmatched = event.currentTarget.checked;
                 setShowUnmatched(nextShowUnmatched);
                 commitPreviewRequest(
-                  requestFromGlobItems(includeGlobItems, excludeGlobItems, {
+                  requestFromGlobItems(includeGlobItems(), excludeGlobItems(), {
                     showUnmatched: nextShowUnmatched,
                   }),
                 );
@@ -660,56 +614,53 @@ function App(): React.ReactElement {
             />
             <span>{text("showUnmatched")}</span>
           </label>
-          <div className="filter-status" aria-live="polite">
-            {previewPending ? text("globPending") : (status ?? "")}
+          <div class="filter-status" aria-live="polite">
+            {previewPending() ? text("globPending") : (status() ?? "")}
           </div>
           <button
             type="button"
-            className="primary-button"
-            disabled={!settingsDirty || saveBusy}
+            class="primary-button"
+            disabled={!settingsDirty() || saveBusy()}
             onClick={saveWorkspaceSettings}
           >
-            {saveBusy ? text("savingSettings") : text("action.saveSettings")}
+            {saveBusy() ? text("savingSettings") : text("action.saveSettings")}
           </button>
         </div>
       </section>
-      {payload.truncated ? (
-        <div className="notice">{text("truncated", { reason: payload.truncated.reason })}</div>
-      ) : null}
-      {error ? <div className="notice danger">{error}</div> : null}
-      <main className="workspace-files-main">
-        <section className="tree-pane" aria-label={text("files")}>
-          <div className="tree-pane-heading">
+      {error() ? <div class="notice danger">{error()}</div> : null}
+      <main class="workspace-files-main">
+        <section class="tree-pane" aria-label={text("files")}>
+          <div class="tree-pane-heading">
             <div>
               <h2>{text("projectRoot")}</h2>
-              <p>{rootLabel}</p>
+              <p>{rootLabel()}</p>
             </div>
-            <span>{text("fileCount", { count: payload.stats.files })}</span>
+            <span>{text("fileCount", { count: payload().stats.files })}</span>
           </div>
-          <div className="tree-table-header" aria-hidden="true">
+          <div class="tree-table-header" aria-hidden="true">
             <span>{text("name")}</span>
             <span>{text("type")}</span>
             <span>{text("size")}</span>
             <span>{text("lastModified")}</span>
           </div>
-          {rows.length === 0 ? (
-            <div className="empty-state">{text("empty")}</div>
+          {rows().length === 0 ? (
+            <div class="empty-state">{text("empty")}</div>
           ) : (
             <VirtualList
               className="tree-list"
               estimateSize={34}
               gap={0}
               getKey={(row) => row.id}
-              items={rows}
+              items={rows()}
               maxHeight="100%"
               renderItem={(row) => (
                 <TreeRowView
-                  locale={locale}
+                  locale={locale()}
                   row={row}
-                  search={search}
-                  selected={row.kind === "file" && row.file.uri === selectedFile?.uri}
+                  search={search()}
+                  selected={row.kind === "file" && row.file.uri === selectedFile()?.uri}
                   text={text}
-                  collapsed={isCollapsibleTreeRow(row) && collapsedTreeIds.has(row.id)}
+                  collapsed={isCollapsibleTreeRow(row) && collapsedTreeIds().has(row.id)}
                   onSelect={() => {
                     if (row.kind === "file") {
                       setSelectedUri(row.file.uri);
@@ -724,82 +675,87 @@ function App(): React.ReactElement {
             />
           )}
         </section>
-        <aside className="side-pane">
-          <section className="panel-section overview-section">
+        <aside class="side-pane">
+          <section class="panel-section overview-section">
             <h2>{text("analysisOverview")}</h2>
-            <div className="overview-grid">
+            <div class="overview-grid">
               <MetricCard
-                detail={`ASP: ${summary.aspFiles} · INC: ${summary.incFiles} · ASA: ${summary.asaFiles}`}
+                detail={`ASP: ${summary().aspFiles} · INC: ${summary().incFiles} · ASA: ${summary().asaFiles}`}
                 label={text("files")}
-                value={formatNumber(payload.stats.files, locale)}
+                value={formatNumber(payload().stats.files, locale())}
               />
               <MetricCard
                 label={text("foldersScanned")}
-                value={formatNumber(summary.folders, locale)}
+                value={formatNumber(summary().folders, locale())}
               />
-              <MetricCard label={text("totalSize")} value={formatBytes(payload.stats.totalBytes)} />
+              <MetricCard
+                label={text("totalSize")}
+                value={formatBytes(payload().stats.totalBytes)}
+              />
               <MetricCard
                 detail={
-                  summary.latestModifiedMs > 0 ? formatDate(summary.latestModifiedMs, locale) : ""
+                  summary().latestModifiedMs > 0
+                    ? formatDate(summary().latestModifiedMs, locale())
+                    : ""
                 }
                 label={text("lastScanned")}
                 value={
-                  summary.latestModifiedMs > 0
-                    ? formatDateShort(summary.latestModifiedMs, locale)
+                  summary().latestModifiedMs > 0
+                    ? formatDateShort(summary().latestModifiedMs, locale())
                     : "-"
                 }
               />
             </div>
           </section>
-          <section className="panel-section">
+          <section class="panel-section">
             <h2>{text("currentFilters")}</h2>
             <GlobChips
               label={text("includeGlobs")}
               none={text("none")}
-              stats={payload.globStats?.include}
+              stats={payload().globStats?.include}
               text={text}
-              values={includeList}
+              values={includeList()}
             />
             <GlobChips
               label={text("excludeGlobs")}
               none={text("none")}
-              stats={payload.globStats?.exclude}
+              stats={payload().globStats?.exclude}
               text={text}
               tone="danger"
-              values={excludeList}
+              values={excludeList()}
             />
           </section>
-          <section className="panel-section selected-section">
+          <section class="panel-section selected-section">
             <h2>{text("selectedFile")}</h2>
-            {selectedFile ? (
-              <dl className="details-list">
+            {selectedFile() ? (
+              <dl class="details-list">
                 <dt>{text("type")}</dt>
-                <dd>{fileType(selectedFile)}</dd>
+                <dd>{fileType(selectedFile())}</dd>
                 <dt>{text("size")}</dt>
-                <dd>{formatBytes(selectedFile.size)}</dd>
+                <dd>{formatBytes(selectedFile().size)}</dd>
                 <dt>{text("lastModified")}</dt>
-                <dd>{formatDate(selectedFile.mtimeMs, locale)}</dd>
+                <dd>{formatDate(selectedFile().mtimeMs, locale())}</dd>
                 <dt>{text("relativePath")}</dt>
-                <dd>{selectedFile.displayPath ?? selectedFile.relativePath}</dd>
+                <dd>{selectedFile().displayPath ?? selectedFile().relativePath}</dd>
                 <dt>{text("fullPath")}</dt>
-                <dd>{selectedFile.fileName}</dd>
+                <dd>{selectedFile().fileName}</dd>
               </dl>
             ) : (
-              <p className="muted">{text("noSelection")}</p>
+              <p class="muted">{text("noSelection")}</p>
             )}
-            {selectedFile ? (
-              <div className="selected-actions">
+            {selectedFile() ? (
+              <div class="selected-actions">
                 <button
                   type="button"
-                  onClick={() => vscode.postMessage({ type: "openFile", uri: selectedFile.uri })}
+                  onClick={() => vscode.postMessage({ type: "openFile", uri: selectedFile().uri })}
                 >
                   {text("open")}
                 </button>
                 <button
                   type="button"
-                  className="primary-button"
+                  class="primary-button"
                   onClick={exportSelectedExcel}
-                  disabled={busy}
+                  disabled={busy()}
                 >
                   {text("action.export")}
                 </button>
@@ -808,447 +764,38 @@ function App(): React.ReactElement {
           </section>
         </aside>
       </main>
-      {contextMenu ? (
+      {contextMenu() ? (
         <div
-          className="context-menu fixed z-50 min-w-[220px] rounded-md border border-[var(--asp-lsp-border)] bg-[var(--asp-lsp-panel)] p-1 shadow-[0_14px_30px_rgb(0_0_0_/_35%)]"
-          style={{ left: contextMenu.x, top: contextMenu.y }}
+          class="context-menu fixed z-50 min-w-[220px] rounded-md border border-[var(--asp-lsp-border)] bg-[var(--asp-lsp-panel)] p-1 shadow-[0_14px_30px_rgb(0_0_0_/_35%)]"
+          style={webviewStyle({ left: contextMenu()!.x, top: contextMenu()!.y })}
           onMouseDown={(event) => event.stopPropagation()}
           role="menu"
         >
           <button
             type="button"
-            className="w-full justify-start border-0 bg-transparent px-2 py-1 text-left text-xs text-[var(--asp-lsp-text-strong)] hover:bg-[var(--vscode-list-hoverBackground)]"
-            onClick={() => addExcludeGlobPattern(contextMenu.pattern)}
+            class="w-full justify-start border-0 bg-transparent px-2 py-1 text-left text-xs text-[var(--asp-lsp-text-strong)] hover:bg-[var(--vscode-list-hoverBackground)]"
+            onClick={() => addExcludeGlobPattern(contextMenu()!.pattern)}
             role="menuitem"
           >
-            {text("action.excludePattern", { pattern: contextMenu.pattern })}
+            {text("action.excludePattern", { pattern: contextMenu()!.pattern })}
           </button>
         </div>
       ) : null}
     </div>
   );
 }
-
-function MetricCard({
-  detail,
-  label,
-  value,
-}: {
-  detail?: string;
-  label: string;
-  value: string;
-}): React.ReactElement {
-  return (
-    <div className="metric-card">
-      <span>{label}</span>
-      <strong>{value}</strong>
-      {detail ? <small>{detail}</small> : null}
-    </div>
-  );
-}
-
-function GlobEditor({
-  items,
-  kind,
-  label,
-  stats,
-  text,
-  onAdd,
-  onChange,
-  onCommit,
-  onRemove,
-}: {
-  items: GlobInputItem[];
-  kind: GlobKind;
-  label: string;
-  stats: WorkspaceFilesGlobStat[] | undefined;
-  text(key: TextKey, params?: Record<string, string | number>): string;
-  onAdd(): void;
-  onChange(id: string, value: string): void;
-  onCommit(id: string, value: string): void;
-  onRemove(id: string): void;
-}): React.ReactElement {
-  return (
-    <section className="glob-editor">
-      <div className="glob-editor-heading">
-        <span>{label}</span>
-        <button type="button" onClick={onAdd}>
-          {text("action.addGlob")}
-        </button>
-      </div>
-      <div className="glob-editor-list">
-        {items.map((item, index) => {
-          const count = globStatCount(stats, index, item.value);
-          return (
-            <div className={cn("glob-row", kind)} key={item.id}>
-              <ImeSafeInput
-                aria-label={`${label} ${index + 1}`}
-                value={item.value}
-                onValueChange={(value) => onChange(item.id, value)}
-                onBlur={(event) => onCommit(item.id, event.currentTarget.value)}
-                onKeyDown={(event) => {
-                  if (event.key !== "Enter" || imeSafeKeyboardEventIsComposing(event)) {
-                    return;
-                  }
-                  onCommit(item.id, event.currentTarget.value);
-                  event.currentTarget.blur();
-                }}
-                spellCheck={false}
-              />
-              <span className="glob-count">{globCountText(count, text)}</span>
-              <button
-                type="button"
-                className="icon-button"
-                title={text("action.removeGlob")}
-                onClick={() => onRemove(item.id)}
-              >
-                x
-              </button>
-            </div>
-          );
-        })}
-      </div>
-    </section>
-  );
-}
-
-function GlobChips({
-  label,
-  none,
-  stats,
-  text,
-  tone = "default",
-  values,
-}: {
-  label: string;
-  none: string;
-  stats: WorkspaceFilesGlobStat[] | undefined;
-  text(key: TextKey, params?: Record<string, string | number>): string;
-  tone?: "danger" | "default";
-  values: string[];
-}): React.ReactElement {
-  return (
-    <div className="filter-chip-row">
-      <span>{label}:</span>
-      <div>
-        {values.length === 0 ? (
-          <em>{none}</em>
-        ) : (
-          values.map((value, index) => (
-            <code className={cn("filter-chip", tone)} key={`${value}:${index}`}>
-              {value}
-              <span>{globCountText(globStatCount(stats, index, value), text)}</span>
-            </code>
-          ))
-        )}
-      </div>
-    </div>
-  );
-}
-
-function TreeRowView({
-  collapsed,
-  locale,
-  row,
-  search,
-  selected,
-  text,
-  onContextMenu,
-  onSelect,
-}: {
-  collapsed: boolean;
-  locale: Locale;
-  row: TreeRow;
-  search: string;
-  selected: boolean;
-  text(key: TextKey, params?: Record<string, string | number>): string;
-  onContextMenu(event: React.MouseEvent): void;
-  onSelect(): void;
-}): React.ReactElement {
-  const className = cn(
-    "tree-row",
-    row.kind,
-    selected && "selected",
-    !selected && !row.matchesFilter && "opacity-50",
-  );
-  const collapsible = isCollapsibleTreeRow(row);
-  return (
-    <button
-      type="button"
-      aria-expanded={collapsible ? !collapsed : undefined}
-      className={className}
-      onContextMenu={onContextMenu}
-      onClick={onSelect}
-      title={row.detail ?? row.label}
+const workspaceFilesErrorLocale = initialWorkspaceFilesPayload.locale === "ja" ? "ja" : "en";
+render(
+  () => (
+    <WebviewErrorBoundary
+      title={
+        workspaceFilesErrorLocale === "ja"
+          ? "ワークスペースファイルの表示に失敗しました"
+          : "Workspace files failed to render"
+      }
     >
-      <span className="tree-name" style={{ paddingLeft: `${10 + row.depth * 18}px` }}>
-        <span className="tree-disclosure" aria-hidden="true">
-          {collapsible ? (collapsed ? "+" : "-") : ""}
-        </span>
-        <span className="tree-icon" aria-hidden="true">
-          {row.kind === "file" ? fileType(row.file) : row.kind === "folder" ? "/" : "WS"}
-        </span>
-        <span className="tree-label">
-          <HighlightedText query={search} text={row.label} />
-        </span>
-      </span>
-      <span className="tree-type">
-        {row.kind === "file"
-          ? fileType(row.file)
-          : row.kind === "folder"
-            ? text("folder")
-            : text("workspace")}
-      </span>
-      <span className="tree-size">{row.kind === "file" ? formatBytes(row.file.size) : "-"}</span>
-      <span className="tree-modified">
-        {row.kind === "file" ? formatDateShort(row.file.mtimeMs, locale) : "-"}
-      </span>
-    </button>
-  );
-}
-
-function HighlightedText({ query, text }: { query: string; text: string }): React.ReactElement {
-  const normalizedQuery = query.trim().toLowerCase();
-  if (!normalizedQuery) {
-    return <>{text}</>;
-  }
-
-  const ranges = highlightRanges(text, normalizedQuery);
-  if (ranges.length === 0) {
-    return <>{text}</>;
-  }
-
-  const parts: React.ReactNode[] = [];
-  let cursor = 0;
-  for (const [start, end] of ranges) {
-    if (cursor < start) {
-      parts.push(text.slice(cursor, start));
-    }
-    parts.push(
-      <mark className="tree-match" key={`${start}:${end}`}>
-        {text.slice(start, end)}
-      </mark>,
-    );
-    cursor = end;
-  }
-  if (cursor < text.length) {
-    parts.push(text.slice(cursor));
-  }
-  return <>{parts}</>;
-}
-
-function highlightRanges(text: string, normalizedQuery: string): Array<[number, number]> {
-  const normalizedText = text.toLowerCase();
-  const ranges: Array<[number, number]> = [];
-  let cursor = 0;
-  while (cursor < normalizedText.length) {
-    const start = normalizedText.indexOf(normalizedQuery, cursor);
-    if (start < 0) {
-      break;
-    }
-    const end = start + normalizedQuery.length;
-    ranges.push([start, end]);
-    cursor = end;
-  }
-  return ranges;
-}
-
-function isCollapsibleTreeRow(row: TreeRow): boolean {
-  return row.kind === "folder" || row.kind === "root";
-}
-
-function excludePatternForTreeRow(row: TreeRow): string | undefined {
-  if (row.kind === "file") {
-    return row.file.relativePath;
-  }
-  return row.kind === "folder" && row.detail ? `${row.detail}/**` : undefined;
-}
-
-function visibleTreeRows(rows: TreeRow[], collapsedIds: ReadonlySet<string>): TreeRow[] {
-  const visibleRows: TreeRow[] = [];
-  let collapsedDepth: number | undefined;
-  for (const row of rows) {
-    if (collapsedDepth !== undefined) {
-      if (row.depth > collapsedDepth) {
-        continue;
-      }
-      collapsedDepth = undefined;
-    }
-    visibleRows.push(row);
-    if (isCollapsibleTreeRow(row) && collapsedIds.has(row.id)) {
-      collapsedDepth = row.depth;
-    }
-  }
-  return visibleRows;
-}
-
-function treeRows(payload: WorkspaceFilesPayload): TreeRow[] {
-  const rows: TreeRow[] = [];
-  for (const root of payload.roots) {
-    if (root.files.length === 0) {
-      continue;
-    }
-    const folderMatches = new Map<string, boolean>();
-    for (const file of root.files) {
-      if (!file.matchesFilter) {
-        continue;
-      }
-      const parts = file.relativePath.split("/");
-      for (let index = 0; index < parts.length - 1; index += 1) {
-        folderMatches.set(parts.slice(0, index + 1).join("/"), true);
-      }
-    }
-    rows.push({
-      id: `root:${root.uri}`,
-      kind: "root",
-      depth: 0,
-      label: root.displayPath ?? root.name,
-      matchesFilter: root.files.some((file) => file.matchesFilter),
-      detail: `${root.files.length}`,
-    });
-    const folderIds = new Set<string>();
-    for (const file of [...root.files].sort((left, right) =>
-      left.relativePath.localeCompare(right.relativePath),
-    )) {
-      const parts = file.relativePath.split("/");
-      for (let index = 0; index < parts.length - 1; index += 1) {
-        const folderPath = parts.slice(0, index + 1).join("/");
-        const id = `folder:${root.uri}:${folderPath}`;
-        if (!folderIds.has(id)) {
-          folderIds.add(id);
-          rows.push({
-            id,
-            kind: "folder",
-            depth: index + 1,
-            label: parts[index],
-            matchesFilter: folderMatches.get(folderPath) === true,
-            detail: folderPath,
-          });
-        }
-      }
-      rows.push({
-        id: `file:${file.uri}`,
-        kind: "file",
-        depth: parts.length,
-        label: parts.at(-1) ?? file.relativePath,
-        matchesFilter: file.matchesFilter,
-        detail: file.relativePath,
-        file,
-      });
-    }
-  }
-  return rows;
-}
-
-function summarizePayload(payload: WorkspaceFilesPayload): Summary {
-  const folders = new Set<string>();
-  let aspFiles = 0;
-  let asaFiles = 0;
-  let incFiles = 0;
-  let latestModifiedMs = 0;
-  for (const root of payload.roots) {
-    for (const file of root.files) {
-      const type = fileType(file);
-      if (type === "ASP") {
-        aspFiles += 1;
-      } else if (type === "ASA") {
-        asaFiles += 1;
-      } else if (type === "INC") {
-        incFiles += 1;
-      }
-      latestModifiedMs = Math.max(latestModifiedMs, file.mtimeMs);
-      const parts = file.relativePath.split("/");
-      for (let index = 0; index < parts.length - 1; index += 1) {
-        folders.add(`${root.uri}:${parts.slice(0, index + 1).join("/")}`);
-      }
-    }
-  }
-  return { asaFiles, aspFiles, folders: folders.size, incFiles, latestModifiedMs };
-}
-
-function globItems(globs: string[], kind: GlobKind): GlobInputItem[] {
-  const items = globs.map((glob) => createGlobItem(kind, glob));
-  return items.length > 0 ? items : [createGlobItem(kind, "")];
-}
-
-function createGlobItem(kind: GlobKind, value: string): GlobInputItem {
-  nextGlobItemId += 1;
-  return { id: `${kind}:${nextGlobItemId}`, value };
-}
-
-function globValues(items: GlobInputItem[]): string[] {
-  return items.map((item) => item.value.trim()).filter((value) => value.length > 0);
-}
-
-function globStatCount(
-  stats: WorkspaceFilesGlobStat[] | undefined,
-  index: number,
-  value: string,
-): number | undefined {
-  const glob = value.trim();
-  if (glob.length === 0) {
-    return 0;
-  }
-  const stat = stats?.[index];
-  return stat?.glob === glob ? stat.files : undefined;
-}
-
-function globCountText(
-  count: number | undefined,
-  text: (key: TextKey, params?: Record<string, string | number>) => string,
-): string {
-  return count === undefined ? text("globPending") : text("fileCount", { count });
-}
-
-function fileType(file: WorkspaceFilesFile): string {
-  const extension = file.relativePath.split(".").at(-1)?.toUpperCase();
-  return extension && extension !== file.relativePath.toUpperCase() ? extension : "ASP";
-}
-
-function formatBytes(value: number): string {
-  if (value < 1024) {
-    return `${value} B`;
-  }
-  const units = ["KB", "MB", "GB"];
-  let amount = value / 1024;
-  for (const unit of units) {
-    if (amount < 1024 || unit === units.at(-1)) {
-      return `${amount.toFixed(amount >= 100 ? 0 : amount >= 10 ? 1 : 2)} ${unit}`;
-    }
-    amount /= 1024;
-  }
-  return `${value} B`;
-}
-
-function formatDate(value: number, locale: Locale): string {
-  return new Date(value).toLocaleString(locale);
-}
-
-function formatDateShort(value: number, locale: Locale): string {
-  return new Date(value).toLocaleDateString(locale, {
-    day: "2-digit",
-    month: "2-digit",
-    year: "numeric",
-  });
-}
-
-function formatNumber(value: number, locale: Locale): string {
-  return new Intl.NumberFormat(locale).format(value);
-}
-
-function emptyPayload(): WorkspaceFilesPayload {
-  return {
-    includeGlobs: ["**/*.{asp,asa,inc,vbs}"],
-    excludeGlobs: [],
-    globStats: {
-      include: [{ glob: "**/*.{asp,asa,inc,vbs}", files: 0 }],
-      exclude: [],
-    },
-    respectGitIgnore: false,
-    roots: [],
-    showUnmatched: true,
-    stats: { files: 0, totalBytes: 0 },
-  };
-}
-
-createRoot(document.getElementById("root") ?? document.body).render(<App />);
+      <App />
+    </WebviewErrorBoundary>
+  ),
+  document.getElementById("root") ?? document.body,
+);

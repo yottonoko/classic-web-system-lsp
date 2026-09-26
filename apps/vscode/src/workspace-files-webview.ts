@@ -1,5 +1,9 @@
+import { randomBytes } from "node:crypto";
 import * as vscode from "vscode";
 import { displayPathForUriText } from "./path-display";
+import { uriTextForVSCode } from "./uri-encoding";
+import { graphWebviewContentSecurityPolicy } from "./webview-csp";
+import { extensionLocalizerForLocale } from "./extension-localization";
 
 export type WorkspaceFilesLocale = "en" | "ja";
 export type WorkspaceFilesTheme = "light" | "dark";
@@ -16,9 +20,6 @@ export interface WorkspaceFilesPayload {
   stats: {
     files: number;
     totalBytes: number;
-  };
-  truncated?: {
-    reason: string;
   };
   settings?: {
     theme?: WorkspaceFilesThemeSetting;
@@ -135,13 +136,37 @@ export function showWorkspaceFilesWebview(
   });
   panel.webview.onDidReceiveMessage((message: WebviewMessage) => {
     if (message.type === "preview") {
-      void previewWorkspaceFiles(panel.webview, message, locale, theme, handlers);
+      void previewWorkspaceFiles(panel.webview, message, locale, theme, handlers).catch((error) => {
+        void vscode.window.showErrorMessage(
+          extensionLocalizerForLocale(locale)("workspaceFiles.previewFailed", {
+            error: errorMessage(error),
+          }),
+        );
+      });
     } else if (message.type === "saveSettings") {
-      void saveWorkspaceFilesSettings(panel.webview, message, handlers);
+      void saveWorkspaceFilesSettings(panel.webview, message, handlers).catch((error) => {
+        void vscode.window.showErrorMessage(
+          extensionLocalizerForLocale(locale)("workspaceFiles.settingsFailed", {
+            error: errorMessage(error),
+          }),
+        );
+      });
     } else if (message.type === "exportSelectedExcel") {
-      void exportSelectedWorkspaceFile(panel.webview, message, handlers);
+      void exportSelectedWorkspaceFile(panel.webview, message, handlers).catch((error) => {
+        void vscode.window.showErrorMessage(
+          extensionLocalizerForLocale(locale)("workspaceFiles.exportFailed", {
+            error: errorMessage(error),
+          }),
+        );
+      });
     } else if (message.type === "openFile") {
-      void openWorkspaceFile(message.uri);
+      void openWorkspaceFile(message.uri).catch((error) => {
+        void vscode.window.showErrorMessage(
+          extensionLocalizerForLocale(locale)("workspaceFiles.openFailed", {
+            error: errorMessage(error),
+          }),
+        );
+      });
     }
   });
   panel.webview.html = workspaceFilesWebviewHtml(
@@ -215,7 +240,7 @@ async function exportSelectedWorkspaceFile(
 }
 
 async function openWorkspaceFile(uriText: string): Promise<void> {
-  const uri = vscode.Uri.parse(uriText);
+  const uri = vscode.Uri.parse(uriTextForVSCode(uriText));
   await vscode.window.showTextDocument(uri, { preview: true });
 }
 
@@ -234,7 +259,7 @@ function workspaceFilesWebviewHtml(
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; img-src ${webview.cspSource} data:; style-src ${webview.cspSource} 'unsafe-inline'; script-src 'nonce-${nonce}';">
+  <meta http-equiv="Content-Security-Policy" content="${graphWebviewContentSecurityPolicy(webview, nonce)}">
   <title>${escapeHtml(title)}</title>
 </head>
 <body>
@@ -266,12 +291,7 @@ function payloadForWebview(
 }
 
 function nonceString(): string {
-  const alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789";
-  let value = "";
-  for (let index = 0; index < 32; index += 1) {
-    value += alphabet[Math.floor(Math.random() * alphabet.length)];
-  }
-  return value;
+  return randomBytes(24).toString("base64");
 }
 
 function escapeHtml(value: string): string {
@@ -280,4 +300,8 @@ function escapeHtml(value: string): string {
     .replaceAll("<", "&lt;")
     .replaceAll(">", "&gt;")
     .replaceAll('"', "&quot;");
+}
+
+function errorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
 }

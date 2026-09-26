@@ -6,6 +6,8 @@
   "patterns": [
     { "include": "#style-attribute-double" },
     { "include": "#style-attribute-single" },
+    { "include": "#asp-attribute-double" },
+    { "include": "#asp-attribute-single" },
     { "include": "#asp-expression" },
     { "include": "#asp-directive" },
     { "include": "#asp-block" }
@@ -54,10 +56,10 @@
     "style-css": {
       "patterns": [
         {
-          "match": "(?i)\\b(-?[_a-z][_a-z0-9-]*)(\\s*)(:)",
+          "match": "(?i)(?<![-_a-z0-9])(\\s*)((?:--|-)?[_a-z][_a-z0-9-]*)(\\s*)(:)",
           "captures": {
-            "1": { "name": "support.type.property-name.css" },
-            "3": { "name": "punctuation.separator.key-value.css" }
+            "2": { "name": "support.type.property-name.css" },
+            "4": { "name": "punctuation.separator.key-value.css" }
           }
         },
         {
@@ -67,6 +69,46 @@
         {
           "match": "[^\"'<%;:]+",
           "name": "source.css.embedded.html"
+        }
+      ]
+    },
+    "asp-attribute-double": {
+      "name": "meta.attribute.value.asp.html",
+      "begin": "\"(?=[^\"\\r\\n]*<%)",
+      "beginCaptures": {
+        "0": { "name": "punctuation.definition.string.begin.html" }
+      },
+      "end": "\"",
+      "endCaptures": {
+        "0": { "name": "punctuation.definition.string.end.html" }
+      },
+      "patterns": [
+        { "include": "#asp-expression" },
+        { "include": "#asp-directive" },
+        { "include": "#asp-block" },
+        {
+          "match": "(?:<(?!%)|[^\"<])+",
+          "name": "string.quoted.double.html"
+        }
+      ]
+    },
+    "asp-attribute-single": {
+      "name": "meta.attribute.value.asp.html",
+      "begin": "'(?=[^'\\r\\n]*<%)",
+      "beginCaptures": {
+        "0": { "name": "punctuation.definition.string.begin.html" }
+      },
+      "end": "'",
+      "endCaptures": {
+        "0": { "name": "punctuation.definition.string.end.html" }
+      },
+      "patterns": [
+        { "include": "#asp-expression" },
+        { "include": "#asp-directive" },
+        { "include": "#asp-block" },
+        {
+          "match": "(?:<(?!%)|[^'<])+",
+          "name": "string.quoted.single.html"
         }
       ]
     },

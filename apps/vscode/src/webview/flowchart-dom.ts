@@ -1,15 +1,16 @@
-import { useLayoutEffect, useRef, useState } from "react";
-import type React from "react";
-import type { AspFlowchartNode } from "@asp-lsp/core";
+import { createSignal, onSettled, type Accessor } from "solid-js";
+
+import { type WebviewRef } from "./webview-dom-types";
+import type { AspFlowchartNode } from "../protocol-types";
 import { clamp, flowchartNodeHint, mermaidId } from "./flowchart-model";
 import type { FlowchartPayload } from "./flowchart-types";
-
 export function attachSvgNodeHandlers(
   container: HTMLDivElement,
   payload: FlowchartPayload,
   text: (key: string) => string,
   onOpenContextMenu: (node: AspFlowchartNode, event: MouseEvent) => void,
   onHoverNode: (nodeId: string | undefined) => void,
+  onSelectNode: (node: AspFlowchartNode) => void,
   onOpenFlowchart: (node: AspFlowchartNode) => void,
 ): void {
   const locale = payload.locale ?? "en";
@@ -18,18 +19,48 @@ export function attachSvgNodeHandlers(
     for (const element of elementsByNodeId.get(node.id) ?? []) {
       const hint = flowchartNodeHint(node, text, locale);
       element.setAttribute("aria-label", hint);
-      element.querySelector("title")?.remove();
+      element.setAttribute("role", "button");
+      element.setAttribute("tabindex", "0");
+      setSvgNodeTitle(element, hint);
       element.style.cursor = "pointer";
       element.addEventListener("mouseenter", () => onHoverNode(node.id));
       element.addEventListener("mouseleave", () => onHoverNode(undefined));
+      element.addEventListener("focus", () => onHoverNode(node.id));
+      element.addEventListener("blur", () => onHoverNode(undefined));
       element.addEventListener("click", () => {
-        onOpenFlowchart(node);
+        onSelectNode(node);
+        if (node.links?.some((link) => link.target)) {
+          onOpenFlowchart(node);
+        }
+      });
+      element.addEventListener("keydown", (event) => {
+        if (event.key !== "Enter" && event.key !== " ") {
+          return;
+        }
+        event.preventDefault();
+        if (event.ctrlKey || event.metaKey) {
+          onOpenFlowchart(node);
+        } else {
+          onSelectNode(node);
+          if (node.links?.some((link) => link.target)) {
+            onOpenFlowchart(node);
+          }
+        }
       });
       element.addEventListener("contextmenu", (event) => onOpenContextMenu(node, event));
     }
   }
 }
-
+function setSvgNodeTitle(element: SVGGElement, hint: string): void {
+  let title = Array.from(element.children).find(
+    (child): child is SVGTitleElement => child.tagName.toLowerCase() === "title",
+  );
+  if (!title) {
+    title = document.createElementNS("http://www.w3.org/2000/svg", "title");
+    element.prepend(title);
+  }
+  title.textContent = hint;
+}
 export function syncSvgSearchHighlights(
   container: HTMLDivElement,
   viewport: HTMLDivElement,
@@ -62,7 +93,6 @@ export function syncSvgSearchHighlights(
     scrollFlowchartElementIntoViewport(activeElement, viewport);
   }
 }
-
 export function scrollFlowchartElementIntoViewport(
   element: SVGGraphicsElement,
   viewport: HTMLElement,
@@ -86,8 +116,13 @@ export function scrollFlowchartElementIntoViewport(
     top: Math.max(0, nextTop),
   });
 }
-
-export function clampedContextMenuPosition(x: number, y: number): { left: number; top: number } {
+export function clampedContextMenuPosition(
+  x: number,
+  y: number,
+): {
+  left: number;
+  top: number;
+} {
   const margin = 8;
   const estimatedWidth = 180;
   const estimatedHeight = 120;
@@ -96,7 +131,6 @@ export function clampedContextMenuPosition(x: number, y: number): { left: number
     top: clamp(y, margin, Math.max(margin, window.innerHeight - estimatedHeight - margin)),
   };
 }
-
 export function serializedFlowchartSvg(container: HTMLDivElement | null): string | undefined {
   const svgElement = container?.querySelector<SVGSVGElement>("svg");
   if (!svgElement) {
@@ -111,7 +145,6 @@ export function serializedFlowchartSvg(container: HTMLDivElement | null): string
   }
   return `${new XMLSerializer().serializeToString(clone)}\n`;
 }
-
 export function svgElementsByFlowchartNodeId(
   container: HTMLDivElement,
   nodes: readonly AspFlowchartNode[],
@@ -135,7 +168,6 @@ export function svgElementsByFlowchartNodeId(
     }),
   );
 }
-
 function svgElementIdContainsMermaidNodeId(elementId: string, mermaidNodeId: string): boolean {
   const index = elementId.indexOf(mermaidNodeId);
   if (index < 0) {
@@ -145,24 +177,22 @@ function svgElementIdContainsMermaidNodeId(elementId: string, mermaidNodeId: str
   const after = elementId[index + mermaidNodeId.length] ?? "";
   return isMermaidIdBoundary(before) && isMermaidIdBoundary(after);
 }
-
 function isMermaidIdBoundary(value: string): boolean {
   return !value || !/[A-Za-z0-9_]/.test(value);
 }
-
 export function useElementSize<TElement extends HTMLElement>(): [
-  React.RefObject<TElement | null>,
-  { width: number; height: number },
+  WebviewRef<TElement | null>,
+  Accessor<{ width: number; height: number }>,
 ] {
-  const ref = useRef<TElement>(null);
-  const [size, setSize] = useState({ width: 0, height: 0 });
-
-  useLayoutEffect(() => {
+  const ref = { current: null } as {
+    current: TElement | null;
+  };
+  const [size, setSize] = createSignal({ width: 0, height: 0 });
+  onSettled(() => {
     const element = ref.current;
     if (!element) {
       return undefined;
     }
-
     const updateSize = () => {
       const { width, height } = element.getBoundingClientRect();
       const nextSize = {
@@ -175,12 +205,10 @@ export function useElementSize<TElement extends HTMLElement>(): [
           : nextSize,
       );
     };
-
     updateSize();
     const observer = new ResizeObserver(updateSize);
     observer.observe(element);
     return () => observer.disconnect();
-  }, []);
-
+  });
   return [ref, size];
 }

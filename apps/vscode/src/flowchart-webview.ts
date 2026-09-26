@@ -1,3 +1,4 @@
+import { randomBytes } from "node:crypto";
 import path from "node:path";
 import * as vscode from "vscode";
 import type {
@@ -6,8 +7,11 @@ import type {
   AspFlowchartInclude,
   AspFlowchartLabelMode,
   AspFlowchartTarget,
-} from "@asp-lsp/core";
+} from "./protocol-types";
 import { displayPathForPathOrUri, displayPathForUriText } from "./path-display";
+import { uriTextForVSCode } from "./uri-encoding";
+import { graphWebviewContentSecurityPolicy } from "./webview-csp";
+import { extensionLocalizerForLocale } from "./extension-localization";
 
 export type AspFlowchartLocale = "en" | "ja";
 export type { AspFlowchartLabelMode };
@@ -16,8 +20,6 @@ export type AspFlowchartWebviewThemeSetting = AspFlowchartWebviewTheme | "auto";
 export type AspFlowchartInfoPanelPosition = "left" | "right";
 
 export interface AspFlowchartWebviewSettings {
-  maxTextSize: number;
-  maxEdges: number;
   labelLineLength: number;
   labelMode: AspFlowchartLabelMode;
   minZoom: number;
@@ -57,12 +59,6 @@ interface ReloadFlowchartMessage {
   labelMode?: AspFlowchartLabelMode;
 }
 
-interface OpenGraphLocationMessage {
-  type: "openGraphLocation";
-  uri: string;
-  range?: AspFlowchartTarget["range"];
-}
-
 interface ExportFlowchartMessage {
   type: "exportFlowchart";
   format: "mermaid" | "svg";
@@ -81,7 +77,6 @@ type WebviewMessage =
   | OpenIncludeFlowchartMessage
   | OpenFlowchartLocationMessage
   | ReloadFlowchartMessage
-  | OpenGraphLocationMessage
   | ExportFlowchartMessage
   | CopyTextMessage;
 
@@ -96,7 +91,6 @@ export function showAspFlowchartWebview(
     uri: string,
     labelMode?: AspFlowchartLabelMode,
   ) => Promise<{ payload: AspFlowchartPayload; title: string }>,
-  openGraph: (uri: string, range?: AspFlowchartTarget["range"]) => Promise<void>,
   initialTargetRange?: AspFlowchartTarget["range"],
 ): void {
   const webviewRoot = vscode.Uri.joinPath(context.extensionUri, "dist", "webview");
@@ -105,45 +99,52 @@ export function showAspFlowchartWebview(
     retainContextWhenHidden: true,
     localResourceRoots: [webviewRoot],
   });
+  let loadGeneration = 0;
+  const loadLocation = (
+    uri: string,
+    targetRange: AspFlowchartTarget["range"] | undefined,
+    labelMode: AspFlowchartLabelMode | undefined,
+  ): void => {
+    const generation = ++loadGeneration;
+    void loadFlowchartLocation(
+      panel,
+      uri,
+      targetRange,
+      locale,
+      settings,
+      loadPayload,
+      () => generation === loadGeneration,
+      labelMode,
+    );
+  };
+  panel.onDidDispose(() => {
+    loadGeneration += 1;
+  });
   panel.webview.onDidReceiveMessage((message: WebviewMessage) => {
     if (message.type === "openRange") {
-      void openFlowchartRange(message.uri, message.range);
+      void openFlowchartRange(message.uri, message.range).catch((error) => {
+        void vscode.window.showErrorMessage(
+          extensionLocalizerForLocale(locale)("flowchart.openFailed", {
+            error: errorMessage(error),
+          }),
+        );
+      });
     } else if (message.type === "openIncludeFlowchart") {
-      void loadFlowchartLocation(
-        panel,
-        message.uri,
-        undefined,
-        locale,
-        settings,
-        loadPayload,
-        message.labelMode,
-      );
+      loadLocation(message.uri, undefined, message.labelMode);
     } else if (message.type === "openFlowchartLocation") {
-      void loadFlowchartLocation(
-        panel,
-        message.uri,
-        message.range,
-        locale,
-        settings,
-        loadPayload,
-        message.labelMode,
-      );
+      loadLocation(message.uri, message.range, message.labelMode);
     } else if (message.type === "reloadFlowchart") {
-      void loadFlowchartLocation(
-        panel,
-        message.uri,
-        undefined,
-        locale,
-        settings,
-        loadPayload,
-        message.labelMode,
-      );
-    } else if (message.type === "openGraphLocation") {
-      void openGraph(message.uri, message.range);
+      loadLocation(message.uri, undefined, message.labelMode);
     } else if (message.type === "exportFlowchart") {
       void exportFlowchartContent(message, locale);
     } else if (message.type === "copyText") {
-      void copyFlowchartText(message.content, locale);
+      void copyFlowchartText(message.content, locale).catch((error) => {
+        void vscode.window.showErrorMessage(
+          extensionLocalizerForLocale(locale)("flowchart.copyFailed", {
+            error: errorMessage(error),
+          }),
+        );
+      });
     }
   });
   panel.webview.html = flowchartWebviewHtml(
@@ -159,7 +160,9 @@ export function showAspFlowchartWebview(
 
 async function copyFlowchartText(content: string, locale: AspFlowchartLocale): Promise<void> {
   await vscode.env.clipboard.writeText(content);
-  void vscode.window.showInformationMessage(flowchartHostText(locale, "copied"));
+  void vscode.window.showInformationMessage(
+    extensionLocalizerForLocale(locale)("flowchart.copied"),
+  );
 }
 
 async function loadFlowchartLocation(
@@ -172,15 +175,28 @@ async function loadFlowchartLocation(
     uri: string,
     labelMode?: AspFlowchartLabelMode,
   ) => Promise<{ payload: AspFlowchartPayload; title: string }>,
+  isCurrent: () => boolean,
   labelMode?: AspFlowchartLabelMode,
 ): Promise<void> {
-  const result = await loadPayload(uri, labelMode);
-  panel.title = result.title;
-  await panel.webview.postMessage({
-    type: "flowchartPayload",
-    payload: flowchartPayloadForWebview(result.payload, locale, settings),
-    targetRange,
-  });
+  try {
+    const result = await loadPayload(uri, labelMode);
+    if (!isCurrent()) {
+      return;
+    }
+    panel.title = result.title;
+    await panel.webview.postMessage({
+      type: "flowchartPayload",
+      payload: flowchartPayloadForWebview(result.payload, locale, settings),
+      targetRange,
+    });
+  } catch (error) {
+    if (!isCurrent()) {
+      return;
+    }
+    void vscode.window.showErrorMessage(
+      extensionLocalizerForLocale(locale)("flowchart.openFailed", { error: errorMessage(error) }),
+    );
+  }
 }
 
 async function exportFlowchartContent(
@@ -190,7 +206,9 @@ async function exportFlowchartContent(
   try {
     const content = flowchartExportMessageContent(message);
     if (!content.trim()) {
-      void vscode.window.showErrorMessage(flowchartHostText(locale, "exportEmpty"));
+      void vscode.window.showErrorMessage(
+        extensionLocalizerForLocale(locale)("flowchart.exportEmpty"),
+      );
       return;
     }
     const extension = message.format === "svg" ? "svg" : "mmd";
@@ -200,18 +218,18 @@ async function exportFlowchartContent(
         message.format === "svg"
           ? { "SVG Image": ["svg"] }
           : { "Mermaid Diagram": ["mmd"], "Plain Text": ["txt"] },
-      saveLabel: flowchartHostText(locale, "saveLabel"),
+      saveLabel: extensionLocalizerForLocale(locale)("flowchart.saveLabel"),
     });
     if (!target) {
       return;
     }
     await vscode.workspace.fs.writeFile(target, new TextEncoder().encode(content));
     void vscode.window.showInformationMessage(
-      flowchartHostText(locale, "exported").replace("{file}", target.fsPath),
+      extensionLocalizerForLocale(locale)("flowchart.exported", { file: target.fsPath }),
     );
   } catch (error) {
     void vscode.window.showErrorMessage(
-      flowchartHostText(locale, "exportFailed").replace("{error}", errorMessage(error)),
+      extensionLocalizerForLocale(locale)("flowchart.exportFailed", { error: errorMessage(error) }),
     );
   }
 }
@@ -235,14 +253,14 @@ function flowchartExportDefaultUri(
   if (!uriText.startsWith("file://")) {
     return undefined;
   }
-  const uri = vscode.Uri.parse(uriText);
+  const uri = vscode.Uri.parse(uriTextForVSCode(uriText));
   return vscode.Uri.file(path.join(path.dirname(uri.fsPath), base));
 }
 
 function flowchartExportBaseName(uriText: string): string {
   try {
     return sanitizeFileName(
-      path.basename(vscode.Uri.parse(uriText).fsPath).replace(/\.[^.]+$/, ""),
+      path.basename(vscode.Uri.parse(uriTextForVSCode(uriText)).fsPath).replace(/\.[^.]+$/, ""),
     );
   } catch {
     return "flowchart";
@@ -258,7 +276,7 @@ async function openFlowchartRange(
   uriText: string,
   range: AspFlowchartNode["range"] | undefined,
 ): Promise<void> {
-  const uri = vscode.Uri.parse(uriText);
+  const uri = vscode.Uri.parse(uriTextForVSCode(uriText));
   const selection = range ? toVscodeRange(range) : undefined;
   await vscode.window.showTextDocument(uri, {
     preview: true,
@@ -295,7 +313,7 @@ function flowchartWebviewHtml(
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; img-src ${webview.cspSource} data:; connect-src ${webview.cspSource} data:; style-src ${webview.cspSource} 'unsafe-inline'; script-src 'nonce-${nonce}' 'wasm-unsafe-eval';">
+  <meta http-equiv="Content-Security-Policy" content="${graphWebviewContentSecurityPolicy(webview, nonce)}">
   <title>${escapeHtml(title)}</title>
 </head>
 <body>
@@ -311,10 +329,22 @@ function flowchartPayloadForWebview(
   locale: AspFlowchartLocale,
   settings: AspFlowchartWebviewSettings,
 ): FlowchartPayload {
+  const sections = Array.isArray(payload.sections)
+    ? payload.sections.map((section) => ({
+        ...section,
+        nodeIds: Array.isArray(section.nodeIds) ? section.nodeIds : [],
+      }))
+    : [];
+  const nodes = Array.isArray(payload.nodes) ? payload.nodes : [];
+  const edges = Array.isArray(payload.edges) ? payload.edges : [];
+  const includes = Array.isArray(payload.includes) ? payload.includes : [];
   return {
     ...payload,
     fileName: displayPathForUriText(payload.uri) ?? payload.fileName,
-    includes: payload.includes.map((include) => ({
+    sections,
+    nodes,
+    edges,
+    includes: includes.map((include) => ({
       ...include,
       actualPath: displayPathForPathOrUri(include.actualPath),
     })),
@@ -323,40 +353,12 @@ function flowchartPayloadForWebview(
   };
 }
 
-function flowchartHostText(
-  locale: AspFlowchartLocale,
-  key: "saveLabel" | "exported" | "exportFailed" | "exportEmpty" | "copied",
-): string {
-  const messages = {
-    en: {
-      saveLabel: "Export",
-      exported: "Exported flowchart to {file}.",
-      exportFailed: "Failed to export flowchart: {error}",
-      exportEmpty: "Flowchart content is empty.",
-      copied: "Copied Mermaid flowchart.",
-    },
-    ja: {
-      saveLabel: "出力",
-      exported: "フローチャートを {file} に出力しました。",
-      exportFailed: "フローチャートの出力に失敗しました: {error}",
-      exportEmpty: "フローチャートの内容が空です。",
-      copied: "Mermaid フローチャートをコピーしました。",
-    },
-  };
-  return messages[locale][key] ?? messages.en[key];
-}
-
 function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
 
 function nonceString(): string {
-  const alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789";
-  let value = "";
-  for (let index = 0; index < 32; index++) {
-    value += alphabet[Math.floor(Math.random() * alphabet.length)];
-  }
-  return value;
+  return randomBytes(24).toString("base64");
 }
 
 function escapeHtml(value: string): string {

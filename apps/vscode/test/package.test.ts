@@ -2,8 +2,9 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { createRequire } from "node:module";
-import { execFileSync, spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
+import { execFileSync } from "node:child_process";
 import { describe, expect, it } from "vitest";
+import yauzl from "yauzl";
 import { INITIAL, Registry, parseRawGrammar } from "vscode-textmate";
 import { OnigScanner, OnigString, loadWASM } from "vscode-oniguruma";
 import {
@@ -13,43 +14,150 @@ import {
   imeSafeKeyboardEventIsComposing,
   imeSafeShouldWriteExternalValue,
 } from "../src/webview/ime-safe-input";
-import { getServerModulePath } from "../src/server-path";
-import type { AspNavigationGraphPayload } from "@asp-lsp/core";
+import { getServerExecutablePath } from "../src/server-path";
+import { uriTextForVSCode } from "../src/uri-encoding";
+import {
+  isAspFlowchartPayload,
+  isAspNavigationGraphPayload,
+  type AspNavigationGraphPayload,
+} from "../src/protocol-types";
 import {
   navigationFlowElementsFromElk,
   navigationGraphToElkGraph,
 } from "../src/webview/navigation-graph-layout";
-
-interface JsonRpcMessage {
-  id?: number;
-  method?: string;
-  params?: unknown;
-  result?: unknown;
-}
+import {
+  highlightFlowchartOutputFragment,
+  highlightFlowchartSourceWithSetting,
+  highlightFlowchartSource,
+} from "../src/webview/flowchart-source-highlight";
+import {
+  flowchartSourceScrollTarget,
+  shouldScrollFlowchartSource,
+} from "../src/webview/flowchart-source-scroll";
+import { flowchartThemePaletteForSetting } from "../src/webview/flowchart-theme";
+import type { FlowchartSourceHighlight } from "../src/webview/flowchart-types";
 
 function readWebviewSources(...files: string[]): string {
   return files.map((file) => fs.readFileSync(file, "utf8")).join("\n");
 }
 
-function readGraphWebviewSource(): string {
-  return readWebviewSources(
-    "src/webview/include-graph.tsx",
-    "src/webview/include-graph-i18n.ts",
-    "src/webview/include-graph-model.ts",
-    "src/webview/include-graph-theme.ts",
-    "src/webview/include-graph-types.ts",
-  );
+function readFlatSources(directory: string, include: (entry: string) => boolean): string {
+  return fs
+    .readdirSync(directory)
+    .filter(include)
+    .sort()
+    .map((entry) => fs.readFileSync(path.join(directory, entry), "utf8"))
+    .join("\n");
+}
+
+function readZipEntries(filePath: string): Promise<string[]> {
+  return new Promise((resolve, reject) => {
+    yauzl.open(filePath, { lazyEntries: true }, (error, zipFile) => {
+      if (error || !zipFile) {
+        reject(error ?? new Error(`Unable to open ZIP archive: ${filePath}`));
+        return;
+      }
+      const entries: string[] = [];
+      zipFile.on("entry", (entry) => {
+        entries.push(entry.fileName);
+        zipFile.readEntry();
+      });
+      zipFile.on("error", reject);
+      zipFile.on("end", () => resolve(entries));
+      zipFile.readEntry();
+    });
+  });
+}
+
+describe("URI percent encoding", () => {
+  it("preserves valid URI encoding", () => {
+    expect(uriTextForVSCode("file:///workspace/%E6%97%A5%E6%9C%AC%20file.asp")).toBe(
+      "file:///workspace/%E6%97%A5%E6%9C%AC%20file.asp",
+    );
+  });
+
+  it.each([
+    ["incomplete escape", "file:///workspace/rate%.asp", "file:///workspace/rate%25.asp"],
+    ["non-hex escape", "file:///workspace/%ZZ.asp", "file:///workspace/%25ZZ.asp"],
+    [
+      "mixed valid and invalid escapes",
+      "file:///workspace/valid%20name/rate%.asp",
+      "file:///workspace/valid%20name/rate%25.asp",
+    ],
+    [
+      "invalid UTF-8 escape sequence",
+      "file:///workspace/%E0%A4%A.asp",
+      "file:///workspace/%25E0%25A4%25A.asp",
+    ],
+  ])("escapes percent signs for %s", (_name, uriText, expected) => {
+    expect(() => uriTextForVSCode(uriText)).not.toThrow();
+    expect(uriTextForVSCode(uriText)).toBe(expected);
+  });
+
+  it.each([
+    ["UNC URI", "file:////server/share/default.asp", "file://server/share/default.asp"],
+    [
+      "UNC URI with extra slashes",
+      "file://///server/share/default.asp",
+      "file://server/share/default.asp",
+    ],
+    ["Windows drive URI", "file:////C:/site/default.asp", "file:///C:/site/default.asp"],
+    ["empty file URI path", "file:////", "file:///"],
+  ])("normalizes %s without a double-slash path", (_name, uriText, expected) => {
+    expect(uriTextForVSCode(uriText)).toBe(expected);
+  });
+});
+
+function readTypeScriptSources(directory: string): string {
+  const entries = fs.readdirSync(directory, { withFileTypes: true });
+  const sources: string[] = [];
+  for (const entry of entries) {
+    const entryPath = path.join(directory, entry.name);
+    if (entry.isDirectory()) {
+      sources.push(readTypeScriptSources(entryPath));
+    } else if (entry.isFile() && entry.name.endsWith(".ts")) {
+      sources.push(fs.readFileSync(entryPath, "utf8"));
+    } else if (entry.isFile() && entry.name.endsWith(".tsx")) {
+      sources.push(fs.readFileSync(entryPath, "utf8"));
+    }
+  }
+  return sources.join("\n");
 }
 
 function readFlowchartWebviewSource(): string {
   return readWebviewSources(
     "src/webview/flowchart.tsx",
+    "src/webview/flowchart-canvas.tsx",
     "src/webview/flowchart-dom.ts",
     "src/webview/flowchart-i18n.ts",
     "src/webview/flowchart-model.ts",
+    "src/webview/flowchart-primitives.tsx",
+    "src/webview/flowchart-runtime.ts",
+    "src/webview/flowchart-sidebar.tsx",
+    "src/webview/flowchart-source-highlight.ts",
+    "src/webview/flowchart-source-scroll.ts",
+    "src/webview/flowchart-source-panel.tsx",
     "src/webview/flowchart-theme.ts",
     "src/webview/flowchart-toolbar.tsx",
     "src/webview/flowchart-types.ts",
+  );
+}
+
+function readExtensionSource(): string {
+  return [
+    fs.readFileSync("src/extension.ts", "utf8"),
+    readFlatSources(
+      "src",
+      (entry) => entry !== "extension.ts" && (entry.endsWith(".ts") || entry.endsWith(".tsx")),
+    ),
+  ].join("\n");
+}
+
+function readLanguageServerSource(): string {
+  const directory = "../../internal/lspserver";
+  return readFlatSources(
+    directory,
+    (entry) => entry.endsWith(".go") && !entry.endsWith("_test.go"),
   );
 }
 
@@ -58,6 +166,7 @@ function readNavigationGraphWebviewSource(): string {
     "src/navigation-graph-webview.ts",
     "src/webview/navigation-graph.tsx",
     "src/webview/navigation-graph-layout.ts",
+    "src/webview/navigation-graph-canvas.tsx",
     "src/webview/navigation-graph.css",
   );
 }
@@ -66,7 +175,10 @@ function readWorkspaceFilesWebviewSource(): string {
   return readWebviewSources(
     "src/workspace-files-webview.ts",
     "src/webview/workspace-files.tsx",
+    "src/webview/workspace-files-components.tsx",
     "src/webview/workspace-files.css",
+    "src/webview/workspace-files-model.ts",
+    "src/webview/workspace-files-types.ts",
   );
 }
 
@@ -176,54 +288,234 @@ function sampleNavigationPayload(): AspNavigationGraphPayload {
 }
 
 describe("VS Code extension package", () => {
-  it("keeps the language server as a runtime dependency", () => {
-    const manifest = JSON.parse(fs.readFileSync("package.json", "utf8")) as {
-      dependencies?: Record<string, string>;
-      devDependencies?: Record<string, string>;
-    };
-    expect(manifest.dependencies?.["@asp-lsp/language-server"]).toBe("workspace:*");
-    expect(manifest.dependencies?.["@tanstack/react-virtual"]).toBe("^3.14.2");
-    expect(manifest.dependencies?.["clsx"]).toBeDefined();
-    expect(manifest.dependencies?.["tailwind-merge"]).toBeDefined();
-    expect(manifest.devDependencies?.["@asp-lsp/language-server"]).toBeUndefined();
+  it("prioritizes a selected flowchart node and scrolls each target only once", () => {
+    const range = { start: { line: 4, character: 0 }, end: { line: 4, character: 8 } };
+    const highlights: FlowchartSourceHighlight[] = [
+      { kind: "hover", ranges: [range] },
+      { kind: "selection", ranges: [range] },
+      { kind: "section", ranges: [range] },
+    ];
+    const target = flowchartSourceScrollTarget(highlights, {
+      activeNodeId: "selected",
+      hoveredNodeId: "hovered",
+      sectionId: "section",
+      sectionSequence: 1,
+      uri: "file:///flow.asp",
+    });
+
+    expect(target?.kind).toBe("selection");
+    expect(shouldScrollFlowchartSource(new Set(), target)).toBe(true);
+    expect(shouldScrollFlowchartSource(new Set([target?.key ?? ""]), target)).toBe(false);
+    expect(
+      shouldScrollFlowchartSource(
+        new Set([target?.key ?? ""]),
+        flowchartSourceScrollTarget(highlights, {
+          activeNodeId: "next",
+          hoveredNodeId: "hovered",
+          sectionId: "section",
+          sectionSequence: 1,
+          uri: "file:///flow.asp",
+        }),
+      ),
+    ).toBe(true);
   });
 
-  it("keeps release manifests and server cache version in sync", () => {
+  it("resolves auto flowchart colors from VS Code while preserving fixed themes", () => {
+    const colors = new Map([
+      ["editor-background", "#112233"],
+      ["editor-foreground", "#ddeeff"],
+      ["editorWidget-background", "#223344"],
+      ["focusBorder", "#55aaff"],
+      ["charts-blue", "#1234aa"],
+      ["symbolIcon-keywordForeground", "#cc44aa"],
+    ]);
+    const color = (name: string) => colors.get(name);
+    const autoPalette = flowchartThemePaletteForSetting("dark", "auto", color);
+    const fixedPalette = flowchartThemePaletteForSetting("dark", "dark", color);
+    const highlighted = highlightFlowchartSourceWithSetting(
+      "<% If ready Then %>",
+      "dark",
+      "auto",
+      color,
+    );
+
+    expect(autoPalette.mermaidThemeVariables?.background).toBe("#112233");
+    expect(autoPalette.nodeKindStyles.start.background).toBe("#223344");
+    expect(autoPalette.nodeKindStyles.start.border).toBe("#1234aa");
+    expect(fixedPalette.nodeKindStyles.start.background).not.toBe("#223344");
+    expect(highlighted.style.background).toBe("#112233");
+    expect(highlighted.tokens).toContainEqual(["If", "#cc44aa"]);
+  });
+
+  it("normalizes functional VS Code colors for Mermaid class definitions", () => {
+    const colors = new Map([
+      ["editor-background", "rgb(13, 17, 23)"],
+      ["editor-foreground", "rgb(217, 224, 234)"],
+      ["editorWidget-background", "rgba(32, 43, 56, 0.95)"],
+      ["focusBorder", "rgb(85, 170, 255)"],
+      ["charts-blue", "rgb(18, 52, 170)"],
+    ]);
+    const palette = flowchartThemePaletteForSetting("dark", "auto", (name) => colors.get(name));
+
+    expect(palette.mermaidThemeVariables?.background).toBe("#0d1117");
+    expect(palette.nodeKindStyles.start.background).toBe("#202b38f2");
+    expect(palette.nodeKindStyles.start.border).toBe("#1234aa");
+    expect(JSON.stringify(palette)).not.toMatch(/rgba?\(/);
+  });
+
+  it("highlights flowchart source without loading external grammar or theme resources", () => {
+    const highlighted = highlightFlowchartSource(
+      '<%\nDim greeting\ngreeting = "Hello"\n\' comment\n%>',
+      "dark",
+    );
+    const colorsByText = new Map(
+      highlighted.tokens
+        .filter((token): token is [string, string] => Array.isArray(token) && Boolean(token[1]))
+        .map(([text, color]) => [text, color]),
+    );
+
+    expect(highlighted.lang).toBe("asp");
+    expect(colorsByText.get("Dim")).toBe("#ff7b72");
+    expect(colorsByText.get('"Hello"')).toBe("#a5d6ff");
+    expect(colorsByText.get("' comment")).toBe("#8b949e");
+    expect(new Set(colorsByText.values()).size).toBeGreaterThan(3);
+  });
+
+  it("uses distinct HTML, CSS, JavaScript, and ASP source colors", () => {
+    const highlighted = highlightFlowchartSource(
+      [
+        '<main class="card">',
+        "<style>.card { color: #fff; }</style>",
+        "<script>const render = (value) => document.write(value);</script>",
+        '<% Response.Write "done" %>',
+        "</main>",
+      ].join("\n"),
+      "dark",
+    );
+    const coloredTokens = highlighted.tokens.filter(
+      (token): token is [string, string] => Array.isArray(token) && Boolean(token[1]),
+    );
+    const colorsFor = (text: string) =>
+      coloredTokens.filter(([token]) => token === text).map(([, color]) => color);
+
+    expect(colorsFor("main")).toContain("#7ee787");
+    expect(colorsFor("class")).toContain("#d2a8ff");
+    expect(colorsFor("color")).toContain("#79c0ff");
+    expect(colorsFor("const")).toContain("#ff7b72");
+    expect(colorsFor("render")).toContain("#d2a8ff");
+    expect(colorsFor("Response")).toContain("#ffa657");
+    expect(new Set(coloredTokens.map(([, color]) => color)).size).toBeGreaterThanOrEqual(8);
+  });
+
+  it("highlights typed response output fragments", () => {
+    const html = highlightFlowchartOutputFragment(
+      '<button aria-label="Save">Save</button>',
+      "html",
+      "dark",
+    );
+    const css = highlightFlowchartOutputFragment("button { color: red; }", "css", "dark");
+    const javascript = highlightFlowchartOutputFragment(
+      "const save = () => submit();",
+      "javascript",
+      "dark",
+    );
+
+    expect(html.lang).toBe("html");
+    expect(css.lang).toBe("css");
+    expect(javascript.lang).toBe("javascript");
+    expect(html.tokens).toContainEqual(["button", "#7ee787"]);
+    expect(css.tokens).toContainEqual(["color", "#79c0ff"]);
+    expect(javascript.tokens).toContainEqual(["const", "#ff7b72"]);
+  });
+
+  it("preserves multiline client-language state around ASP islands", () => {
+    const source = [
+      "<!-- comment",
+      "continued -->",
+      "<style>",
+      "/* css",
+      "continued */ .card { color: <% Response.Write themeColor %>; }",
+      "</style>",
+      "<script>",
+      "const template = `first",
+      "second`; const done = true;",
+      "</script>",
+      '<div class="card"',
+      ' data-name="value">text</div>',
+    ].join("\r\n");
+    const highlighted = highlightFlowchartSource(source, "dark");
+
+    expect(highlighted.value).toBe(source);
+    expect(highlighted.tokens).toContainEqual(["continued -->", "#8b949e"]);
+    expect(highlighted.tokens).toContainEqual(["continued */", "#8b949e"]);
+    expect(highlighted.tokens).toContainEqual(["const", "#ff7b72"]);
+    expect(highlighted.tokens).toContainEqual(["data-name", "#d2a8ff"]);
+    expect(() =>
+      highlightFlowchartSource("<script>const value = `unterminated", "dark"),
+    ).not.toThrow();
+  });
+
+  it("keeps the Go language server as the runtime dependency", () => {
+    const manifest = JSON.parse(fs.readFileSync("package.json", "utf8")) as {
+      dependencies?: Record<string, string>;
+    };
+    expect(manifest.dependencies?.["@tanstack/virtual-core"]).toBe("3.17.7");
+    expect(manifest.dependencies?.["solid-js"]).toBe("2.0.0-rc.6");
+    expect(manifest.dependencies?.["@solidjs/web"]).toBe("2.0.0-rc.6");
+    expect(manifest.dependencies?.["react"]).toBeUndefined();
+    expect(manifest.dependencies?.["react-dom"]).toBeUndefined();
+    expect(manifest.dependencies?.["clsx"]).toBeDefined();
+    expect(manifest.dependencies?.["tailwind-merge"]).toBeDefined();
+  });
+
+  it("keeps release manifests and Go server version in sync", () => {
     const rootManifest = JSON.parse(fs.readFileSync("../../package.json", "utf8")) as {
       version?: string;
     };
-    const coreManifest = JSON.parse(
-      fs.readFileSync("../../packages/core/package.json", "utf8"),
-    ) as { version?: string };
-    const serverManifest = JSON.parse(
-      fs.readFileSync("../../packages/language-server/package.json", "utf8"),
-    ) as { version?: string };
     const extensionManifest = JSON.parse(fs.readFileSync("package.json", "utf8")) as {
       version?: string;
     };
-    const serverSource = fs.readFileSync(
-      "../../packages/language-server/src/server/constants.ts",
-      "utf8",
-    );
+    const serverSource = readLanguageServerSource();
 
-    expect(coreManifest.version).toBe(rootManifest.version);
-    expect(serverManifest.version).toBe(rootManifest.version);
     expect(extensionManifest.version).toBe(rootManifest.version);
-    expect(serverSource).toContain(`languageServerVersion = "${rootManifest.version}";`);
+    expect(serverSource).toContain(`"version": "${rootManifest.version}-go"`);
   });
 
-  it("declares a TypeScript-only VSIX packaging script", () => {
+  it("does not configure GitHub Actions workflows", () => {
+    const workflowDirectory = "../../.github/workflows";
+    const workflowFiles = fs.existsSync(workflowDirectory)
+      ? fs.readdirSync(workflowDirectory).filter((entry) => /\.ya?ml$/u.test(entry))
+      : [];
+
+    expect(workflowFiles).toEqual([]);
+  });
+
+  it("declares Go development server scripts while leaving VSIX packaging on TypeScript", () => {
     const rootManifest = JSON.parse(fs.readFileSync("../../package.json", "utf8")) as {
       scripts?: Record<string, string>;
     };
     const manifest = JSON.parse(fs.readFileSync("package.json", "utf8")) as {
       scripts?: Record<string, string>;
     };
-    const extensionSource = fs.readFileSync("src/extension.ts", "utf8");
+    const extensionSource = readExtensionSource();
 
     expect(rootManifest.scripts?.["package:vsix"]).toBe(
       "pnpm --filter classic-asp-lsp run package:vsix",
     );
+    expect(rootManifest.scripts?.["build:go"]).toBe("go build -o bin/asp-lsp-go ./cmd/asp-lsp-go");
+    expect(rootManifest.scripts?.["test:go"]).toBe("go test ./...");
+    const copyServerRuntime = fs.readFileSync("scripts/copy-server-runtime.mjs", "utf8");
+    expect(copyServerRuntime).toContain('"-trimpath"');
+    expect(copyServerRuntime).toContain('"-buildvcs=false"');
+    expect(copyServerRuntime).toContain('"-ldflags=-s -w -buildid="');
+    expect(copyServerRuntime).toContain('execFileSync("go", goBuildArgs');
+    expect(copyServerRuntime).toContain('CGO_ENABLED: "0"');
+    expect(copyServerRuntime).toContain("ASP_LSP_SERVER_GOOS");
+    expect(copyServerRuntime).toContain("asp-lsp-go.exe");
+    expect(copyServerRuntime).not.toContain("if (!fs.existsSync(sourceBinary))");
+    const justfile = fs.readFileSync("../../justfile", "utf8");
+    expect(justfile).toContain('ldflags := "-s -w -buildid="');
+    expect(justfile).toContain("go build -trimpath -buildvcs=false");
     const removedSuffix = "no-" + "nati" + "ve";
     const removedBuild = "build:" + "nati" + "ve";
     const removedAnalysisSetting = "analysis" + "Backend";
@@ -234,80 +526,273 @@ describe("VS Code extension package", () => {
     expect(manifest.scripts?.[`package:vsix:${removedSuffix}`]).toBeUndefined();
     expect(manifest.scripts?.["build"]).toContain("scripts/build-webview.mjs");
     expect(manifest.scripts?.["typecheck"]).toContain("tsconfig.webview.json");
+    expect(manifest.scripts?.["package:vsix"]).toContain("scripts/clean-vsix.mjs");
     expect(manifest.scripts?.["package:vsix"]).not.toContain(removedBuild);
+    const cleanVsixScript = fs.readFileSync("scripts/clean-vsix.mjs", "utf8");
+    expect(cleanVsixScript).toContain("/^classic-asp-lsp-.*\\.vsix$/");
+    expect(cleanVsixScript).toContain("fs.rmSync");
     expect(extensionSource).not.toContain(`package:vsix:${removedSuffix}`);
     expect(extensionSource).not.toContain(removedAnalysisEnv);
     expect(extensionSource).not.toContain(`aspLsp.${removedAnalysisSetting}`);
+    expect(extensionSource).toContain("getServerExecutablePath(context)");
   });
 
-  it("passes the configured locale into the graph webview UI", () => {
-    const extensionSource = fs.readFileSync("src/extension.ts", "utf8");
-    const graphHostSource = fs.readFileSync("src/include-graph-webview.ts", "utf8");
-    const graphWebviewSource = readGraphWebviewSource();
+  it("keeps the legacy TypeScript LSP runtime removed", () => {
+    const repoRoot = path.resolve("..", "..");
+    const rootManifest = JSON.parse(fs.readFileSync("../../package.json", "utf8")) as {
+      dependencies?: Record<string, string>;
+      devDependencies?: Record<string, string>;
+      workspaces?: unknown;
+    };
+    const manifest = JSON.parse(fs.readFileSync("package.json", "utf8")) as {
+      dependencies?: Record<string, string>;
+      devDependencies?: Record<string, string>;
+    };
+    const extensionSources = readTypeScriptSources("src");
+    const rootDependencies = {
+      ...rootManifest.dependencies,
+      ...rootManifest.devDependencies,
+      ...manifest.dependencies,
+      ...manifest.devDependencies,
+    };
 
-    expect(extensionSource).toContain("extensionLocale()");
-    expect(graphHostSource).toContain(
-      "graphPayloadForWebview(payload, locale, theme, infoPanelPosition)",
+    expect(fs.existsSync(path.join(repoRoot, "packages", "core"))).toBe(false);
+    expect(fs.existsSync(path.join(repoRoot, "packages", "language-server"))).toBe(false);
+    expect(rootManifest.workspaces).not.toEqual(expect.arrayContaining(["packages/*"]));
+    expect(rootDependencies["@asp-lsp/core"]).toBeUndefined();
+    expect(rootDependencies["@asp-lsp/language-server"]).toBeUndefined();
+    expect(extensionSources).not.toContain("@asp-lsp/core");
+    expect(extensionSources).not.toContain("@asp-lsp/language-server");
+    expect(extensionSources).not.toContain("getServerModulePath");
+    expect(extensionSources).not.toContain("serverModule");
+    expect(extensionSources).toContain("getServerExecutablePath");
+  });
+
+  it("allows remaining webviews to load wasm, fonts, workers and blob resources", () => {
+    const cspSource = fs.readFileSync("src/webview-csp.ts", "utf8");
+    const flowchartHostSource = fs.readFileSync("src/flowchart-webview.ts", "utf8");
+    const navigationHostSource = fs.readFileSync("src/navigation-graph-webview.ts", "utf8");
+    const workspaceFilesHostSource = fs.readFileSync("src/workspace-files-webview.ts", "utf8");
+
+    expect(cspSource).toContain("graphWebviewContentSecurityPolicy");
+    expect(cspSource).toContain("img-src ${webview.cspSource} data: blob:");
+    expect(cspSource).toContain("font-src ${webview.cspSource} data:");
+    expect(cspSource).toContain("connect-src ${webview.cspSource} data: blob:");
+    expect(cspSource).toContain("script-src 'nonce-${nonce}' 'wasm-unsafe-eval'");
+    expect(cspSource).toContain("worker-src ${webview.cspSource} blob:");
+    for (const source of [flowchartHostSource, navigationHostSource, workspaceFilesHostSource]) {
+      expect(source).toContain('from "./webview-csp"');
+      expect(source).toContain("${graphWebviewContentSecurityPolicy(webview, nonce)}");
+    }
+  });
+
+  it("normalizes flowchart and navigation payload arrays before rendering webviews", () => {
+    const flowchartHostSource = fs.readFileSync("src/flowchart-webview.ts", "utf8");
+    const navigationHostSource = fs.readFileSync("src/navigation-graph-webview.ts", "utf8");
+
+    expect(flowchartHostSource).toContain("const sections = Array.isArray(payload.sections)");
+    expect(flowchartHostSource).toContain("nodeIds: Array.isArray(section.nodeIds)");
+    expect(flowchartHostSource).toContain(
+      "const nodes = Array.isArray(payload.nodes) ? payload.nodes : []",
     );
-    expect(graphHostSource).toContain(
-      "settings: { ...payload.settings, theme, infoPanelPosition }",
+    expect(navigationHostSource).toContain(
+      "const nodes = Array.isArray(payload.nodes) ? payload.nodes : []",
     );
-    expect(graphHostSource).toContain('message.type === "openFlowchart"');
-    expect(graphHostSource).toContain("openFlowchart(message.uri, message.range)");
-    expect(graphHostSource).toContain('message.type === "openSetting"');
-    expect(graphHostSource).toContain('"workbench.action.openSettings"');
-    expect(graphHostSource).toContain("__ASP_LSP_GRAPH_TARGET_RANGE__");
-    expect(graphHostSource).toContain('<html lang="${locale}">');
-    expect(graphHostSource).toContain('graphHostText(locale, "sourceRangeUnavailable")');
-    expect(graphWebviewSource).toContain(
-      'const graphLocale: GraphLocale = initialGraph?.locale === "ja" ? "ja" : "en"',
+    expect(navigationHostSource).toContain(
+      "const edges = Array.isArray(payload.edges) ? payload.edges : []",
     );
-    expect(graphHostSource).toContain('type: "graphUpdated"');
-    expect(graphHostSource).toContain("postAspGraphWebviewUpdate");
-    expect(graphWebviewSource).toContain("isGraphUpdatedMessage");
-    expect(graphWebviewSource).toContain("setGraph(message.payload)");
-    expect(graphWebviewSource).toContain('"toolbar.updating": "graph 更新中..."');
-    expect(graphWebviewSource).toContain('"action.fit": "フィット"');
-    expect(graphWebviewSource).toContain('"action.openFlowchart": "フローチャートを開く"');
-    expect(graphWebviewSource).toContain('type: "openFlowchart"');
-    expect(graphWebviewSource).toContain('type: "openSetting"');
-    expect(graphWebviewSource).toContain("aspLsp.graph.maxNodes");
-    expect(graphWebviewSource).toContain("__ASP_LSP_GRAPH_TARGET_RANGE__");
-    expect(graphWebviewSource).toContain("graphStatsTargetForRange");
-    expect(graphWebviewSource).toContain("hasFocusedInitialTargetRef");
-    expect(graphWebviewSource).toContain('"legend.heading": "凡例"');
-    expect(graphWebviewSource).toContain('"legend.unresolvedNodeFilters": "未解決系"');
-    expect(graphWebviewSource).toContain('"legend.visibilityFilters": "非表示系"');
-    expect(graphWebviewSource).toContain(
-      '"legend.hideUnreferencedGlobalSymbols": "未外部参照を隠す"',
+    expect(navigationHostSource).toContain("ranges: Array.isArray(edge.ranges) ? edge.ranges : []");
+    expect(navigationHostSource).toContain(
+      "evidence: Array.isArray(edge.evidence) ? edge.evidence : []",
     );
-    expect(graphWebviewSource).toContain('"legend.linkFilters": "リンクフィルター"');
-    expect(graphWebviewSource).toContain("unresolvedNodeCategorySet");
-    expect(graphWebviewSource).toContain('"view.inspector": "情報"');
-    expect(graphWebviewSource).toContain('missingInclude: "#ff4db8"');
-    expect(graphWebviewSource).toContain('method: "#a6e3a1"');
-    expect(graphWebviewSource).toContain('methodFunction: "#7ee787"');
-    expect(graphWebviewSource).toContain('methodSub: "#b3f27c"');
-    expect(graphWebviewSource).toContain('method: "#047857"');
-    expect(graphWebviewSource).toContain('methodFunction: "#15803d"');
-    expect(graphWebviewSource).toContain('methodSub: "#4d7c0f"');
-    expect(graphWebviewSource).toContain('"label.missingInclude": "存在しない include"');
-    expect(graphWebviewSource).toContain("graphRoleLabel(link.role)");
-    expect(graphWebviewSource).toContain("includeModeLabel(link.include?.mode)");
-    expect(graphWebviewSource).toContain("booleanLabel(link.include.exists)");
-    expect(graphWebviewSource).toContain(
-      "const canHideUnreferencedGlobalSymbols = hideUnreferencedGlobalSymbols && hasPayloadRoot",
-    );
-    expect(graphWebviewSource).toContain("retainedGlobalSymbolNodeIds");
-    expect(graphWebviewSource).toContain("retainedGlobalNodeIds?.has(node.id) === true");
-    expect(graphWebviewSource).toContain("rootNodeIds.has(sourceId)");
-    expect(graphWebviewSource).toContain("rootUris.has(node.uri)");
-    expect(graphWebviewSource).toContain("hideUnreferencedGlobalSymbols");
-    expect(graphWebviewSource).toContain("asp-lsp-graph-inspector-title");
-    expect(graphWebviewSource).toContain(
-      "tooltipPositionFor(triggerRef.current, tooltipRef.current)",
-    );
-    expect(graphWebviewSource).toContain('graphText("toolbar.searchNodes")');
+  });
+
+  it("rejects incomplete flowchart responses before rendering or exporting", () => {
+    const complete = {
+      uri: "file:///workspace/main.asp",
+      sections: [],
+      nodes: [],
+      edges: [],
+      includes: [],
+      mermaid: "flowchart TB",
+      stats: { sections: 0, nodes: 0, edges: 0, includes: 0 },
+    };
+    expect(isAspFlowchartPayload(complete)).toBe(true);
+    expect(isAspFlowchartPayload({ uri: complete.uri, incomplete: true })).toBe(false);
+    expect(isAspFlowchartPayload({ ...complete, incomplete: true })).toBe(false);
+    expect(isAspFlowchartPayload({ ...complete, mermaid: undefined })).toBe(false);
+
+    const extensionSource = fs.readFileSync("src/extension.ts", "utf8");
+    expect(extensionSource).toContain("isAspFlowchartPayload(response)");
+    expect(extensionSource).toContain('"flowchart.incomplete"');
+  });
+
+  it("accepts valid empty and populated navigation graph responses", () => {
+    const empty = {
+      scope: "folder",
+      nodes: [],
+      edges: [],
+      stats: {
+        documents: 0,
+        nodes: 0,
+        edges: 0,
+        certain: 0,
+        probable: 0,
+        possible: 0,
+        unknown: 0,
+        external: 0,
+      },
+    };
+    expect(isAspNavigationGraphPayload(empty)).toBe(true);
+    expect(isAspNavigationGraphPayload(sampleNavigationPayload())).toBe(true);
+
+    const boundary = sampleNavigationPayload();
+    const boundaryRange = {
+      start: { line: 0, character: 0 },
+      end: { line: 0, character: 0 },
+    };
+    boundary.edges[0] = {
+      ...boundary.edges[0],
+      count: Number.MAX_SAFE_INTEGER,
+      ranges: [boundaryRange],
+    };
+    boundary.stats.documents = Number.MAX_SAFE_INTEGER;
+    expect(isAspNavigationGraphPayload(boundary)).toBe(true);
+  });
+
+  it("rejects malformed navigation graph responses before rendering", () => {
+    const populated = sampleNavigationPayload();
+    const node = populated.nodes[0];
+    const edge = populated.edges[0];
+    const range = edge.ranges[0];
+    const evidence = edge.evidence[0];
+    const parameter = edge.parameters?.[0] ?? { name: "q", source: "formControl" };
+    const invalidPayloads: unknown[] = [
+      null,
+      "payload",
+      1,
+      {},
+      { ...populated, scope: "invalid" },
+      { ...populated, rootUri: null },
+      { ...populated, pending: "true" },
+      { ...populated, stats: null },
+      { ...populated, stats: { ...populated.stats, edges: null } },
+      { ...populated, nodes: null },
+      { ...populated, nodes: [null] },
+      { ...populated, nodes: [1] },
+      { ...populated, nodes: [{ ...node, id: undefined }] },
+      { ...populated, nodes: [{ ...node, kind: "invalid" }] },
+      { ...populated, nodes: [{ ...node, label: null }] },
+      { ...populated, nodes: [{ ...node, uri: null }] },
+      { ...populated, nodes: [{ ...node, exists: "true" }] },
+      { ...populated, nodes: [{ ...node, externalUrl: 1 }] },
+      { ...populated, nodes: [{ ...node, isRoot: "true" }] },
+      { ...populated, edges: null },
+      { ...populated, edges: [null] },
+      { ...populated, edges: ["edge"] },
+      { ...populated, edges: [{ ...edge, id: undefined }] },
+      { ...populated, edges: [{ ...edge, source: null }] },
+      { ...populated, edges: [{ ...edge, target: 1 }] },
+      { ...populated, edges: [{ ...edge, kind: "invalid" }] },
+      { ...populated, edges: [{ ...edge, label: null }] },
+      { ...populated, edges: [{ ...edge, confidence: null }] },
+      { ...populated, edges: [{ ...edge, method: 1 }] },
+      { ...populated, edges: [{ ...edge, targetFrame: false }] },
+      { ...populated, edges: [{ ...edge, ranges: null }] },
+      { ...populated, edges: [{ ...edge, ranges: [null] }] },
+      { ...populated, edges: [{ ...edge, ranges: [{ ...range, start: null }] }] },
+      {
+        ...populated,
+        edges: [{ ...edge, ranges: [{ ...range, end: { line: "1", character: 0 } }] }],
+      },
+      {
+        ...populated,
+        edges: [
+          {
+            ...edge,
+            ranges: [{ start: { line: 2, character: 4 }, end: { line: 2, character: 3 } }],
+          },
+        ],
+      },
+      {
+        ...populated,
+        edges: [
+          {
+            ...edge,
+            ranges: [{ start: { line: 3, character: 0 }, end: { line: 2, character: 5 } }],
+          },
+        ],
+      },
+      { ...populated, edges: [{ ...edge, parameters: null }] },
+      { ...populated, edges: [{ ...edge, parameters: [null] }] },
+      { ...populated, edges: [{ ...edge, parameters: [{ ...parameter, name: null }] }] },
+      { ...populated, edges: [{ ...edge, parameters: [{ ...parameter, source: "invalid" }] }] },
+      {
+        ...populated,
+        edges: [{ ...edge, parameters: [{ ...parameter, confidence: "invalid" }] }],
+      },
+      {
+        ...populated,
+        edges: [{ ...edge, parameters: [{ ...parameter, range: { ...range, end: null } }] }],
+      },
+      {
+        ...populated,
+        edges: [
+          {
+            ...edge,
+            parameters: [
+              {
+                ...parameter,
+                range: { start: { line: 2, character: 4 }, end: { line: 2, character: 3 } },
+              },
+            ],
+          },
+        ],
+      },
+      { ...populated, edges: [{ ...edge, declaredInUri: null }] },
+      { ...populated, edges: [{ ...edge, evidence: null }] },
+      { ...populated, edges: [{ ...edge, evidence: [null] }] },
+      { ...populated, edges: [{ ...edge, evidence: [{ ...evidence, uri: null }] }] },
+      { ...populated, edges: [{ ...edge, evidence: [{ ...evidence, range: null }] }] },
+      { ...populated, edges: [{ ...edge, evidence: [{ ...evidence, valueRange: null }] }] },
+      { ...populated, edges: [{ ...edge, evidence: [{ ...evidence, label: 1 }] }] },
+      { ...populated, edges: [{ ...edge, evidence: [{ ...evidence, snippet: false }] }] },
+      { ...populated, edges: [{ ...edge, evidence: [{ ...evidence, extractor: "invalid" }] }] },
+      {
+        ...populated,
+        edges: [
+          {
+            ...edge,
+            evidence: [
+              {
+                ...evidence,
+                valueRange: {
+                  start: { line: 2, character: 4 },
+                  end: { line: 2, character: 3 },
+                },
+              },
+            ],
+          },
+        ],
+      },
+      { ...populated, edges: [{ ...edge, count: "1" }] },
+      { ...populated, edges: [{ ...edge, count: -1 }] },
+      { ...populated, edges: [{ ...edge, count: 1.5 }] },
+      { ...populated, edges: [{ ...edge, count: Number.NaN }] },
+      { ...populated, edges: [{ ...edge, count: Number.POSITIVE_INFINITY }] },
+      { ...populated, stats: { ...populated.stats, documents: -1 } },
+      { ...populated, stats: { ...populated.stats, nodes: 1.5 } },
+      { ...populated, stats: { ...populated.stats, edges: Number.NaN } },
+      { ...populated, stats: { ...populated.stats, certain: Number.POSITIVE_INFINITY } },
+    ];
+    for (const payload of invalidPayloads) {
+      expect(isAspNavigationGraphPayload(payload)).toBe(false);
+    }
+
+    const extensionSource = fs.readFileSync("src/extension.ts", "utf8");
+    expect(extensionSource).toContain("isAspNavigationGraphPayload(response)");
+    expect(extensionSource).toContain('"navigationGraph.incomplete"');
+    expect(extensionSource).toContain("isAspNavigationGraphPayload(payload)");
   });
 
   it("avoids controlled text writes during IME composition in webviews", () => {
@@ -321,17 +806,13 @@ describe("VS Code extension package", () => {
     expect(imeInputSource).toContain('inputType === "insertCompositionText"');
     expect(imeInputSource).toContain("onCompositionUpdate");
     expect(imeInputSource).toContain("imeSafeKeyboardEventIsComposing");
-    expect(imeInputSource).toContain("defaultValue={value}");
-    expect(imeInputSource).toContain("element.value = value");
+    expect(imeInputSource).toContain("element.value = props.control.value");
+    expect(imeInputSource).toContain("element.value = currentValue");
     expect(imeInputSource).not.toContain("value={value}");
     expect(readWorkspaceFilesWebviewSource()).toContain("ImeSafeInput");
-    expect(readGraphWebviewSource()).toContain("ImeSafeInput");
     expect(readFlowchartWebviewSource()).toContain("ImeSafeInput");
-    expect(readGraphWebviewSource()).toContain("imeSafeKeyboardEventIsComposing(event)");
     expect(readFlowchartWebviewSource()).toContain("imeSafeKeyboardEventIsComposing(event)");
-    expect(readGraphWebviewSource()).toContain('role="searchbox"');
     expect(readFlowchartWebviewSource()).toContain('role="searchbox"');
-    expect(readGraphWebviewSource()).not.toContain('type="search"');
     expect(readFlowchartWebviewSource()).not.toContain('type="search"');
   });
 
@@ -428,18 +909,14 @@ describe("VS Code extension package", () => {
     ).toBe("abcXY-live");
   });
 
-  it("detects IME composing keyboard events from DOM and React wrappers", () => {
+  it("detects IME composing keyboard events from native DOM events", () => {
     expect(
       imeSafeKeyboardEventIsComposing({ isComposing: true, keyCode: 0 } as KeyboardEvent),
     ).toBe(true);
     expect(
       imeSafeKeyboardEventIsComposing({ isComposing: false, keyCode: 229 } as KeyboardEvent),
     ).toBe(true);
-    expect(
-      imeSafeKeyboardEventIsComposing({
-        nativeEvent: { isComposing: true, keyCode: 0 },
-      } as React.KeyboardEvent<HTMLInputElement>),
-    ).toBe(true);
+
     expect(
       imeSafeKeyboardEventIsComposing({ isComposing: false, keyCode: 13 } as KeyboardEvent),
     ).toBe(false);
@@ -535,34 +1012,43 @@ describe("VS Code extension package", () => {
     const flowchartHostSource = fs.readFileSync("src/flowchart-webview.ts", "utf8");
     const virtualListSource = fs.readFileSync("src/webview/virtual-list.tsx", "utf8");
 
-    expect(virtualListSource).toContain('from "@tanstack/react-virtual"');
+    expect(virtualListSource).toContain('from "@tanstack/virtual-core"');
     expect(virtualListSource).toContain("function VirtualList");
-    expect(virtualListSource).toContain("items.length > threshold");
+    expect(virtualListSource).toContain("props.items.length > (props.threshold ?? 40)");
     expect(virtualListSource).toContain("virtualizer.measureElement");
-    expect(virtualListSource).toContain('className={cn(className, "overflow-auto pr-1")}');
-    expect(virtualListSource).toContain('className="relative w-full"');
+    expect(virtualListSource).toContain('class={cn(props.className, "overflow-auto pr-1")}');
+    expect(virtualListSource).toContain('class="relative w-full"');
     expect(virtualListSource).toContain('"absolute top-0 left-0 box-border w-full"');
     expect(flowchartSource).toContain(
-      "flowchartForSection(payload, selectedSectionId, themePalette)",
+      "flowchartForSection(payload(), selectedSectionId(), themePalette())",
     );
     expect(flowchartSource).toContain('from "./virtual-list"');
     expect(flowchartSource).toContain("<VirtualList");
     expect(flowchartSource).toContain(
-      "scrollToIndex={activeNodeIndex >= 0 ? activeNodeIndex : undefined}",
+      "scrollToIndex={activeNodeIndex() >= 0 ? activeNodeIndex() : undefined}",
     );
     expect(flowchartSource).toContain('const lines = ["flowchart TB"]');
     expect(flowchartSource).toContain("attachSvgNodeHandlers(");
     expect(flowchartSource).toContain("onOpenContextMenu");
     expect(flowchartSource).toContain("setFocusedFlowchartNodeId(node.id)");
-    expect(flowchartSource).toContain("focusedFlowchartNodeId ?? activeSearchNode?.id");
+    expect(flowchartSource).toContain("focusedFlowchartNodeId() ?? activeSearchNode()?.id");
     expect(flowchartSource).toContain("onSelectNode(node)");
     expect(flowchartSource).toContain("onOpenFlowchart(node);");
+    expect(flowchartSource).toContain('element.addEventListener("click"');
+    expect(flowchartSource).toContain("node.links?.some((link) => link.target)");
+    expect(flowchartSource).toContain("node.links?.find((link) => link.target)?.target");
+    expect(flowchartSource).toContain('element.addEventListener("focus"');
+    expect(flowchartSource).toContain('element.setAttribute("role", "button")');
+    expect(flowchartSource).toContain("setSvgNodeTitle(element, hint)");
     expect(flowchartSource).toContain("flowchartThemePalettes");
     expect(flowchartSource).toContain("darkFlowchartNodeKindStyles");
     expect(flowchartSource).toContain("lightFlowchartNodeKindStyles");
     expect(flowchartSource).toContain("flowExceptionHandling");
     expect(flowchartSource).toContain('exceptionHandling: "Exception handling"');
     expect(flowchartSource).toContain('exceptionHandling: "例外処理"');
+    expect(flowchartSource).toContain('merge: "Merge"');
+    expect(flowchartSource).toContain('output: "Response output"');
+    expect(flowchartSource).toContain("flowchartNodeVisualStyle(themePalette, node.kind)");
     expect(flowchartSource).toContain("flowchartNodeHint(node, text, locale)");
     expect(flowchartSource).toContain("flowchartMermaidClassDefinitions(themePalette)");
     expect(flowchartSource).toContain('type: "copyText"');
@@ -573,21 +1059,27 @@ describe("VS Code extension package", () => {
     expect(flowchartHostSource).toContain("flowchartExportMessageContent(message)");
     expect(flowchartHostSource).toContain("new TextEncoder().encode(content)");
     expect(flowchartHostSource).toContain("exportFailed");
+    expect(flowchartHostSource).toContain("openFailed");
+    expect(flowchartHostSource).toContain(
+      'extensionLocalizerForLocale(locale)("flowchart.openFailed"',
+    );
     expect(flowchartHostSource).toContain('<?xml version="1.0" encoding="UTF-8"?>');
     expect(flowchartHostSource).toContain("initialTargetRange");
     expect(flowchartSource).toContain("__ASP_LSP_FLOWCHART_TARGET_RANGE__");
-    expect(flowchartSource).toContain("maxTextSize: flowchartMaxTextSize(payload)");
-    expect(flowchartSource).toContain("maxEdges: flowchartMaxEdges(payload)");
-    expect(flowchartSource).toContain("const defaultFlowchartMaxTextSize = 2_000_000");
-    expect(flowchartSource).toContain("const defaultFlowchartMaxEdges = 100_000");
-    expect(flowchartSource).toContain("payload.settings?.maxTextSize");
-    expect(flowchartSource).toContain("payload.settings?.maxEdges");
+    expect(flowchartSource).toContain("maxTextSize: Number.POSITIVE_INFINITY");
+    expect(flowchartSource).toContain("maxEdges: Number.POSITIVE_INFINITY");
     expect(flowchartSource).toContain("const defaultMaximumFlowchartZoom = 4");
     expect(flowchartSource).toContain("payload.settings?.minZoom");
     expect(flowchartSource).toContain("payload.settings?.maxZoom");
     expect(flowchartSource).toContain("flowchartFitWidthZoom");
     expect(flowchartSource).toContain("fitWidthDescription");
     expect(flowchartSource).toContain("function FlowchartToolbar");
+    expect(flowchartSource).toContain("WebviewErrorBoundary");
+    expect(flowchartSource).toContain("flowchartErrorBoundaryTitle");
+    expect(flowchartSource).toContain("renderFailureTitle");
+    expect(flowchartSource).toContain("!element || !element.isConnected");
+    expect(flowchartSource).toContain("!Number.isFinite(rect.left)");
+    expect(flowchartSource).toContain("tooltip?.isConnected");
     expect(flowchartSource).toContain('type FlowchartToolbarMode = "full"');
     expect(flowchartSource).toContain("compactExports");
     expect(flowchartSource).toContain("compactAll");
@@ -610,8 +1102,8 @@ describe("VS Code extension package", () => {
     expect(flowchartSource).toContain('selectNode: "Select node"');
     expect(flowchartSource).toContain('selectNode: "ノードを選択"');
     expect(flowchartSource).toContain('exportMenu: "Export"');
-    expect(flowchartSource).toContain('title={section?.label ?? text("title")}');
-    expect(flowchartSource).toContain("<span>{section.label}</span>");
+    expect(flowchartSource).toContain('title={props.section?.label ?? props.text("title")}');
+    expect(flowchartSource).toContain("<span>{props.section.label}</span>");
     expect(flowchartSource).toContain("<span title={node.label}>{node.label}</span>");
     expect(flowchartSource).not.toContain(
       "text-left text-xs font-semibold uppercase tracking-wide text-[#9fb0c5] hover:text-[#f1f5f9]",
@@ -628,11 +1120,9 @@ describe("VS Code extension package", () => {
     expect(flowchartSource).not.toContain("insetSvgCoordinate");
     expect(flowchartSource).toContain("userPannedFlowchartKeyRef");
     expect(flowchartSource).toContain(
-      "style={scaledFlowchartCanvasStyle(svgSize, zoom, viewportSize)}",
+      "scaledFlowchartCanvasStyle(svgSize(), zoom(), viewportSize())",
     );
-    expect(flowchartSource).toContain(
-      "style={flowchartSvgLayerStyle(svgSize, zoom, viewportSize)}",
-    );
+    expect(flowchartSource).toContain("flowchartSvgLayerStyle(svgSize(), zoom(), viewportSize())");
     expect(flowchartSource).not.toContain("style={scaledFlowchartCanvasStyle(svgSize, zoom)}");
     expect(flowchartSource).toContain("beginCanvasPan");
     expect(flowchartSource).toContain("moveCanvasPan");
@@ -640,19 +1130,18 @@ describe("VS Code extension package", () => {
     expect(flowchartSource).toContain("suppressCanvasClickAfterPan");
     expect(flowchartSource).toContain("scrollFlowchartElementIntoViewport");
     expect(flowchartSource).toContain("flowchartNodeForRange");
-    expect(flowchartSource).toContain(
-      "const targetNode = targetRange ? flowchartNodeForRange(payload, targetRange)",
-    );
+    expect(flowchartSource).toContain("flowchartNodeForRange(message.payload, targetRange)");
     expect(flowchartSource).toContain("setFocusedFlowchartNodeId(targetNode?.id)");
     expect(flowchartSource).toContain('type FlowchartSourceActiveKind = "hover"');
     expect(flowchartSource).toContain("flowchartSourceHighlights(");
-    expect(flowchartSource).toContain("flowchartPrimarySourceHighlight(sourceHighlights)");
+    expect(flowchartSource).toContain("flowchartPrimarySourceHighlight(sourceHighlights())");
     expect(flowchartSource).toContain("flowchartSourceScrollTarget(sourceHighlights");
     expect(flowchartSource).toContain("sectionSourceScrollSequence");
-    expect(flowchartSource).toContain("consumedSectionScrollKeysRef");
-    expect(flowchartSource).toContain('previousKind === "hover"');
-    expect(flowchartSource).toContain('previousKind === "selection"');
+    expect(flowchartSource).toContain("consumedScrollKeysRef");
+    expect(flowchartSource).toContain("shouldScrollFlowchartSource");
     expect(flowchartSource).toContain("flowchartSourceHighlightsByPriority(highlights)");
+    expect(flowchartSource).toContain("highlightFlowchartSourceWithSetting(");
+    expect(flowchartSource).not.toContain("await highlight(");
     expect(flowchartSource).toContain("flowchartSourceHighlightPriority");
     expect(flowchartSource).toContain('kind: "hover"');
     expect(flowchartSource).toContain('kind: "selection"');
@@ -660,12 +1149,14 @@ describe("VS Code extension package", () => {
     expect(flowchartSource).toContain("flowchartSourceRangesForSection");
     expect(flowchartSource).toContain('section.kind !== "topLevel"');
     expect(flowchartSource).toContain("mergeFlowchartSourceRanges");
-    expect(flowchartSource).toContain("const selectContextMenuNode = useCallback");
+    expect(flowchartSource).toContain("const selectContextMenuNode = () =>");
     expect(flowchartSource).toContain("onClick={selectContextMenuNode}");
-    expect(flowchartSource).toContain("nodes={payload.nodes}");
+    expect(flowchartSource).toContain("nodes={payload().nodes}");
     expect(flowchartSource).toContain("function flowchartNodeForSourceLine");
-    expect(flowchartSource).toContain("flowchartNodeForSourceLine(nodes, lineNumber)");
+    expect(flowchartSource).toContain("flowchartNodeForSourceLine(props.nodes, lineNumber)");
     expect(flowchartSource).toContain("sourceLineNumberFromEvent(event)");
+    expect(flowchartSource).toContain("handleSourceCodeMouseMove");
+    expect(flowchartSource).toContain("handleSourceCodeDoubleClick");
     expect(flowchartSource).toContain('target?.closest<HTMLElement>("[data-source-line]")');
     expect(flowchartSource).toContain('node.kind !== "start"');
     expect(flowchartSource).toContain('node.kind !== "end"');
@@ -683,7 +1174,7 @@ describe("VS Code extension package", () => {
     expect(flowchartStyles).toContain(
       ".asp-lsp-source-code .asp-lsp-source-line[data-source-line]",
     );
-    expect(flowchartSource).toContain("const [open, setOpen] = useState(false)");
+    expect(flowchartSource).toContain("const [open, setOpen] = createSignal(false)");
     expect(flowchartSource).toContain("shouldAutoOpen");
     expect(flowchartSource).toContain("flowchartNodesById(allNodes)");
     expect(flowchartSource).toContain("svgElementsByFlowchartNodeId(container, payload.nodes)");
@@ -696,12 +1187,14 @@ describe("VS Code extension package", () => {
     expect(flowchartSource).toContain("setClampedZoom");
     expect(flowchartSource).toContain("zoomWithWheel");
     expect(flowchartSource).toContain('vscode.postMessage({ type: "openRange"');
-    expect(flowchartSource).toContain('type: "openGraphLocation"');
-    expect(flowchartSource).toContain('openGraph: "グラフを開く"');
+    expect(flowchartSource).not.toContain('type: "openGraphLocation"');
+    expect(flowchartSource).not.toContain('openGraph: "グラフを開く"');
     expect(flowchartSource).toContain("escapeMermaidEdgeText");
     expect(flowchartSource).toContain('if (node.kind !== "call")');
     expect(flowchartSource).toContain("function flowchartSearchText");
     expect(flowchartSource).toContain("return node.label;");
+    expect(flowchartSource).toContain("node.outputFragments?.length");
+    expect(flowchartSource).toContain("highlightFlowchartOutputFragment(");
     expect(flowchartSource).not.toContain('${node.kind} ${node.label} ${section?.label ?? ""}');
     expect(flowchartSource).not.toContain(
       'vscode.postMessage({ type: "openRange", uri: payload.uri, range: node.range })',
@@ -714,7 +1207,7 @@ describe("VS Code extension package", () => {
         commands?: Array<{ command?: string; title?: string }>;
       };
     };
-    const extensionSource = fs.readFileSync("src/extension.ts", "utf8");
+    const extensionSource = readExtensionSource();
     const buildScript = fs.readFileSync("scripts/build-webview.mjs", "utf8");
     const webviewSource = readWorkspaceFilesWebviewSource();
     const japanesePackageNls = JSON.parse(fs.readFileSync("package.nls.ja.json", "utf8")) as Record<
@@ -771,10 +1264,10 @@ describe("VS Code extension package", () => {
     expect(webviewSource).toContain(
       "grid-template-columns: minmax(0, 1fr) minmax(300px, min(34vw, 420px))",
     );
-    expect(webviewSource).toContain("visibleTreeRows(treeRows(payload), collapsedTreeIds)");
+    expect(webviewSource).toContain("visibleTreeRows(treeRows(payload()), collapsedTreeIds())");
     expect(webviewSource).toContain("function HighlightedText");
-    expect(webviewSource).toContain('className="tree-match"');
-    expect(webviewSource).toContain("aria-expanded={collapsible ? !collapsed : undefined}");
+    expect(webviewSource).toContain('class="tree-match"');
+    expect(webviewSource).toContain("aria-expanded=");
     expect(webviewSource).not.toContain("treeRows(payload, search)");
     expect(webviewSource).not.toContain("root.files.filter");
     expect(webviewSource).toContain('title: "解析ファイル"');
@@ -805,7 +1298,7 @@ describe("VS Code extension package", () => {
         configuration?: { properties?: Record<string, unknown> };
       };
     };
-    const extensionSource = fs.readFileSync("src/extension.ts", "utf8");
+    const extensionSource = readExtensionSource();
     const buildScript = fs.readFileSync("scripts/build-webview.mjs", "utf8");
     const webviewSource = readNavigationGraphWebviewSource();
     const nls = JSON.parse(fs.readFileSync("package.nls.json", "utf8")) as Record<string, string>;
@@ -828,16 +1321,16 @@ describe("VS Code extension package", () => {
     expect(buildScript).toContain("navigation-graph.tsx");
     expect(buildScript).toContain("navigation-graph.js");
     expect(webviewSource).toContain("__ASP_LSP_NAVIGATION_GRAPH__");
-    expect(webviewSource).toContain("React");
-    expect(webviewSource).toContain("@xyflow/react");
+    expect(webviewSource).toContain('from "solid-js"');
+    expect(webviewSource).not.toContain("@xyflow/react");
     expect(webviewSource).toContain("elkjs/lib/elk.bundled.js");
-    expect(webviewSource).toContain("ReactFlow");
+    expect(webviewSource).toContain("NavigationGraphCanvas");
     expect(webviewSource).toContain("layoutNavigationGraphWithElk");
     expect(webviewSource).toContain("navigationGraphToElkGraph");
     expect(webviewSource).toContain("navigationFlowElementsFromElk");
-    expect(webviewSource).toContain("MiniMap");
-    expect(webviewSource).toContain("Controls");
-    expect(webviewSource).toContain("Background");
+    expect(webviewSource).toContain("navigation-minimap");
+    expect(webviewSource).toContain("navigation-viewport-controls");
+    expect(webviewSource).toContain("navigation-component-group");
     expect(webviewSource).toContain("fitView");
     expect(webviewSource).toContain("const navigationFitViewPadding = 0.05");
     expect(webviewSource).not.toContain("padding: 0.18");
@@ -872,25 +1365,31 @@ describe("VS Code extension package", () => {
         group: "navigation",
       }),
     );
-    expect(
-      manifest.contributes?.configuration?.properties?.["aspLsp.navigationGraph.maxNodes"],
-    ).toEqual(expect.objectContaining({ type: "number", minimum: 1, default: 500 }));
-    expect(
-      manifest.contributes?.configuration?.properties?.["aspLsp.navigationGraph.maxEdges"],
-    ).toEqual(expect.objectContaining({ type: "number", minimum: 1, default: 1200 }));
+    expect(manifest.contributes?.menus?.["explorer/context"]).toContainEqual(
+      expect.objectContaining({
+        command: "aspLsp.showWorkspaceNavigationGraph",
+        when: "explorerResourceIsFolder",
+        group: "navigation",
+      }),
+    );
     expect(nls["command.showCurrentFileNavigationGraph.title"]).toBeTruthy();
     expect(nls["command.showFolderNavigationGraph.title"]).toBeTruthy();
-    expect(nls["command.showWorkspaceNavigationGraph.title"]).toBeTruthy();
+    expect(nls["command.showWorkspaceNavigationGraph.title"]).toBe(
+      "Classic ASP: Show Project Navigation Graph",
+    );
     expect(nlsJa["command.showCurrentFileNavigationGraph.title"]).toBeTruthy();
-    expect(nls["configuration.navigationGraph.maxNodes.description"]).toBeTruthy();
-    expect(nlsJa["configuration.navigationGraph.maxEdges.description"]).toBeTruthy();
+    expect(nlsJa["command.showWorkspaceNavigationGraph.title"]).toBe(
+      "Classic ASP: プロジェクト画面遷移グラフを表示",
+    );
+    expect(nls["configuration.navigationGraph.maxNodes.description"]).toBeUndefined();
+    expect(nlsJa["configuration.navigationGraph.maxEdges.description"]).toBeUndefined();
   });
 
-  it("converts navigation graph payloads into ELK and React Flow layout elements", () => {
+  it("converts navigation graph payloads into ELK and framework-independent layout elements", () => {
     const payload = sampleNavigationPayload();
     const elkInput = navigationGraphToElkGraph(payload);
     expect(elkInput.layoutOptions?.["elk.algorithm"]).toBe("org.eclipse.elk.layered");
-    expect(elkInput.layoutOptions?.["elk.direction"]).toBe("RIGHT");
+    expect(elkInput.layoutOptions?.["elk.direction"]).toBe("DOWN");
     expect(elkInput.layoutOptions?.["elk.edgeRouting"]).toBe("ORTHOGONAL");
     const rootNode = elkInput.children?.find((node) => node.id === "file:///workspace/index.asp");
     const externalNode = elkInput.children?.find((node) => node.id === "https://example.com/help");
@@ -906,17 +1405,15 @@ describe("VS Code extension package", () => {
     );
     expect(rootNode?.layoutOptions?.["elk.portConstraints"]).toBe("FIXED_SIDE");
     expect(rootNode?.ports?.map((port) => port.id)).toEqual([
-      "file:///workspace/index.asp:target",
-      "file:///workspace/index.asp:source",
+      "file:///workspace/index.asp:source:edge-search",
     ]);
     expect(rootNode?.ports?.map((port) => port.layoutOptions?.["elk.port.side"])).toEqual([
-      "WEST",
-      "EAST",
+      "SOUTH",
     ]);
     expect(elkInput.edges?.find((edge) => edge.id === "edge-search")).toEqual(
       expect.objectContaining({
-        sources: ["file:///workspace/index.asp:source"],
-        targets: ["file:///workspace/search.asp:target"],
+        sources: ["file:///workspace/index.asp:source:edge-search"],
+        targets: ["file:///workspace/search.asp:target:edge-search"],
       }),
     );
 
@@ -952,8 +1449,8 @@ describe("VS Code extension package", () => {
     ).toBe("unknown");
     const formEdge = flowLayout.edges.find((edge) => edge.id === "edge-search");
     expect(formEdge?.type).toBe("navigationTransition");
-    expect(formEdge?.sourceHandle).toBe("source");
-    expect(formEdge?.targetHandle).toBe("target");
+    expect(formEdge?.sourceHandle).toBe("source:edge-search");
+    expect(formEdge?.targetHandle).toBe("target:edge-search");
     expect(formEdge?.data?.confidence).toBe("certain");
     expect(formEdge?.data?.edgeKind).toBe("htmlForm");
     expect(formEdge?.data?.method).toBe("GET");
@@ -963,6 +1460,66 @@ describe("VS Code extension package", () => {
     expect(formEdge?.data?.path).toContain("L 396");
   });
 
+  it("assigns deterministic unbounded layers through long chains and cycles", () => {
+    const nodes = Array.from({ length: 16 }, (_, index) => ({
+      id: `page-${index.toString().padStart(2, "0")}`,
+      kind: "page" as const,
+      label: `Page ${index}`,
+      isRoot: index === 0,
+    })).concat([
+      { id: "cycle-a", kind: "page" as const, label: "Cycle A", isRoot: false },
+      { id: "cycle-b", kind: "page" as const, label: "Cycle B", isRoot: false },
+      { id: "tail", kind: "page" as const, label: "Tail", isRoot: false },
+    ]);
+    const pairs = Array.from({ length: 15 }, (_, index) => [
+      `page-${index.toString().padStart(2, "0")}`,
+      `page-${(index + 1).toString().padStart(2, "0")}`,
+    ]).concat([
+      ["page-15", "cycle-a"],
+      ["cycle-a", "cycle-b"],
+      ["cycle-b", "cycle-a"],
+      ["cycle-b", "tail"],
+    ]);
+    const edges = pairs.map(([source, target], index) => ({
+      id: `edge-${index}`,
+      source,
+      target,
+      kind: "htmlAnchor" as const,
+      confidence: "certain" as const,
+      ranges: [],
+      evidence: [],
+    }));
+    const payload: AspNavigationGraphPayload = {
+      scope: "workspace",
+      nodes,
+      edges,
+      stats: {
+        documents: nodes.length,
+        nodes: nodes.length,
+        edges: edges.length,
+        certain: edges.length,
+        probable: 0,
+        possible: 0,
+        unknown: 0,
+        external: 0,
+      },
+    };
+    const elkInput = navigationGraphToElkGraph(payload);
+    const layout = navigationFlowElementsFromElk(payload, {
+      ...elkInput,
+      children: elkInput.children?.map((node) => ({ ...node, x: 0, y: 0 })),
+    });
+    const layer = (id: string): number | undefined =>
+      layout.nodes.find((node) => node.id === id)?.data.layer;
+
+    expect(layer("page-15")).toBe(15);
+    expect(layer("cycle-a")).toBe(16);
+    expect(layer("cycle-b")).toBe(16);
+    expect(layer("tail")).toBe(17);
+    expect(layout.nodes).toHaveLength(nodes.length);
+    expect(layout.edges).toHaveLength(edges.length);
+  });
+
   it("does not contribute the removed Classic ASP settings webview", () => {
     const manifest = JSON.parse(fs.readFileSync("package.json", "utf8")) as {
       activationEvents?: string[];
@@ -970,7 +1527,7 @@ describe("VS Code extension package", () => {
         commands?: Array<{ command?: string; title?: string }>;
       };
     };
-    const extensionSource = fs.readFileSync("src/extension.ts", "utf8");
+    const extensionSource = readExtensionSource();
     const buildScript = fs.readFileSync("scripts/build-webview.mjs", "utf8");
     const nls = JSON.parse(fs.readFileSync("package.nls.json", "utf8")) as Record<string, string>;
     const nlsJa = JSON.parse(fs.readFileSync("package.nls.ja.json", "utf8")) as Record<
@@ -1002,73 +1559,77 @@ describe("VS Code extension package", () => {
     }
   });
 
-  it("keeps graph search responsive and keyboard-accessible", () => {
-    const graphWebviewSource = readGraphWebviewSource();
+  it("synchronizes every Classic ASP setting change through one batched path", () => {
+    const extensionSource = readExtensionSource();
 
-    expect(graphWebviewSource).toContain('from "./virtual-list"');
-    expect(graphWebviewSource).toContain("<VirtualList");
-    expect(graphWebviewSource).toContain("grid w-full cursor-pointer");
-    expect(graphWebviewSource).toContain("onVisibleItemsChange={setVisibleItems}");
-    expect(graphWebviewSource).toContain("requestedItems.map(sourceRangeRequestItem)");
-    expect(graphWebviewSource).not.toContain("items.map(sourceRangeRequestItem)");
-    expect(graphWebviewSource).toContain("startTransition");
-    expect(graphWebviewSource).toContain("const [searchInput, setSearchInput] = useState");
-    expect(graphWebviewSource).toContain("const searchInputRef = useRef<HTMLInputElement>");
-    expect(graphWebviewSource).toContain("const highlight = searchHighlight ?? selectionHighlight");
-    expect(graphWebviewSource).toContain(
-      "highlightForSearchTargets(searchTargets, filteredGraphData.links, searchQuery.trim())",
+    expect(extensionSource).toContain("vscode.workspace.onDidChangeConfiguration");
+    expect(extensionSource).toContain('event.affectsConfiguration("aspLsp")');
+    expect(extensionSource).toContain("configurationSyncScheduler?.schedule()");
+    expect(extensionSource).toContain("await synchronizeAspLspConfiguration(nextClient)");
+    expect(extensionSource).not.toContain('configurationSection: "aspLsp"');
+  });
+
+  it("does not authorize external filesystem roots from an untrusted workspace", () => {
+    const extensionSource = readExtensionSource();
+
+    expect(extensionSource).toContain(
+      "vscode.workspace.onDidGrantWorkspaceTrust(() => configurationSyncScheduler?.schedule())",
     );
-    expect(graphWebviewSource).toContain("function isSearchFocusShortcut");
-    expect(graphWebviewSource).toContain("function searchNavigationDirection");
-    expect(graphWebviewSource).toContain('event.key === "F3"');
-    expect(graphWebviewSource).toContain('isPrimaryModifierShortcut(event, "g")');
-    expect(graphWebviewSource).toContain('"toolbar.stats": "List"');
-    expect(graphWebviewSource).toContain('"toolbar.stats": "一覧"');
+    expect(extensionSource).toContain("vscode.workspace.isTrusted");
+    expect(extensionSource).toContain("safe.includePaths = []");
+    expect(extensionSource).toContain('safe.virtualRoot = ""');
+    expect(extensionSource).toContain("safe.virtualRoots = []");
+    expect(extensionSource).toContain("workspaceConfigurationMiddleware");
+    expect(extensionSource).toContain('section === "aspLsp"');
   });
 
-  it("keeps graph accordion hints beside their section titles", () => {
-    const graphWebviewSource = readGraphWebviewSource();
-
-    expect(graphWebviewSource).toContain('role="button"');
-    expect(graphWebviewSource).toContain('className="flex min-w-0 items-center gap-1.5"');
-    expect(graphWebviewSource).toContain("onClick={(event) => event.stopPropagation()}");
-    expect(graphWebviewSource).toContain("onKeyDown={(event) => event.stopPropagation()}");
-    expect(graphWebviewSource).not.toContain("</button>\n        {hint ? (");
-  });
-
-  it("keeps graph layout transitions stable across 2D and 3D views", () => {
-    const graphWebviewSource = readGraphWebviewSource();
-
-    expect(graphWebviewSource).toContain("function initialGraphNodePosition");
-    expect(graphWebviewSource).toContain("forceFitForModeRef");
-    expect(graphWebviewSource).toContain("graph2dCoordsFromScreen(");
-    expect(graphWebviewSource).toContain("graph3dCoordsFromScreen(");
-    expect(graphWebviewSource).toContain("configureGraphForces(");
-    expect(graphWebviewSource).toContain("graphNodeChargeStrength");
-    expect(graphWebviewSource).toContain("d3VelocityDecay={graphForceVelocityDecay}");
-  });
-
-  it("keeps graph node reference totals independent from link filters", () => {
-    const graphWebviewSource = readGraphWebviewSource();
-
-    expect(graphWebviewSource).toContain(
-      "const referenceCounts = graphReferenceCounts(payload.links)",
+  it("releases replaced language clients and file watchers", () => {
+    const extensionSource = readExtensionSource();
+    const startClientSource = extensionSource.slice(
+      extensionSource.indexOf("async function startClient"),
+      extensionSource.indexOf("export async function deactivate"),
     );
-    expect(graphWebviewSource).not.toContain("node.referenceCount = referenceCount");
-    expect(graphWebviewSource).toContain("node.value = nodeValue(referenceCount)");
+    const deactivateSource = extensionSource.slice(
+      extensionSource.indexOf("export async function deactivate"),
+      extensionSource.indexOf("async function synchronizeAspLspConfiguration"),
+    );
+    const restartSource = extensionSource.slice(
+      extensionSource.indexOf("async function restartServerOnce"),
+      extensionSource.indexOf("function updateStatusBar"),
+    );
+
+    expect(extensionSource).toContain(
+      "let fileSystemWatcher: vscode.FileSystemWatcher | undefined",
+    );
+    expect(startClientSource).toContain("fileEvents: nextFileSystemWatcher");
+    expect(startClientSource).toContain("if (fileSystemWatcher === nextFileSystemWatcher)");
+    expect(startClientSource).toContain("nextFileSystemWatcher.dispose()");
+    expect(startClientSource).toContain("await nextClient.dispose()");
+    expect(startClientSource).not.toContain("context.subscriptions.push(nextClient)");
+    expect(deactivateSource).toContain("fileSystemWatcher?.dispose()");
+    expect(deactivateSource).toContain("fileSystemWatcher = undefined");
+    expect(deactivateSource).toContain("await activeClient?.dispose()");
+    expect(deactivateSource).toContain("disposeNavigationGraphPanels()");
+    expect(restartSource).toContain("fileSystemWatcher?.dispose()");
+    expect(restartSource).toContain("fileSystemWatcher = undefined");
+    expect(restartSource).toContain("await activeClient?.dispose()");
+    expect(restartSource).toContain("disposeNavigationGraphPanels()");
+    expect(extensionSource).toContain("tracked.panel.dispose()");
   });
 
-  it("uses one graph category for implicit global variables", () => {
-    const graphHostSource = fs.readFileSync("src/include-graph-webview.ts", "utf8");
-    const graphWebviewSource = readGraphWebviewSource();
+  it("keeps a newer navigation panel registered when an older duplicate is disposed", () => {
+    const extensionSource = readExtensionSource();
+    const showNavigationGraphSource = extensionSource.slice(
+      extensionSource.indexOf("async function showNavigationGraph"),
+      extensionSource.indexOf("function navigationGraphCommandRequest"),
+    );
 
-    expect(graphHostSource).toContain('"implicitGlobalVariable"');
-    expect(graphWebviewSource).toContain('"label.implicitGlobalVariable"');
-    expect(graphWebviewSource).toContain('"node.implicitGlobalVariable.description"');
-    expect(graphHostSource).not.toContain("implicitLocalVariable");
-    expect(graphHostSource).not.toContain("unresolvedGlobalVariable");
-    expect(graphWebviewSource).not.toContain("implicitLocalVariable");
-    expect(graphWebviewSource).not.toContain("unresolvedGlobalVariable");
+    expect(showNavigationGraphSource).toContain(
+      "if (navigationGraphPanelsByKey.get(key)?.panel === panel)",
+    );
+    expect(showNavigationGraphSource).not.toContain(
+      "panel.onDidDispose(() => navigationGraphPanelsByKey.delete(key))",
+    );
   });
 
   it("contributes commands and settings", () => {
@@ -1115,15 +1676,14 @@ describe("VS Code extension package", () => {
     const configuration = manifest.contributes?.configuration?.properties ?? {};
     expect(rootManifest.license).toBe("MIT OR Apache-2.0");
     expect(manifest.license).toBe("MIT OR Apache-2.0");
-    expect(manifest.dependencies?.["@xyflow/react"]).toBe("^12.11.0");
-    expect(manifest.dependencies?.["elkjs"]).toBe("^0.11.1");
-    expect(manifest.dependencies?.["react-force-graph-2d"]).toBe("1.29.1");
-    expect(manifest.dependencies?.["react-force-graph-3d"]).toBe("1.29.1");
-    expect(manifest.dependencies?.["three-spritetext"]).toBe("1.10.0");
+    expect(manifest.dependencies?.["@xyflow/react"]).toBeUndefined();
+    expect(manifest.dependencies?.["elkjs"]).toBe("^0.12.0");
+    expect(manifest.dependencies?.["react-force-graph-2d"]).toBeUndefined();
+    expect(manifest.dependencies?.["react-force-graph-3d"]).toBeUndefined();
+    expect(manifest.dependencies?.["three-spritetext"]).toBeUndefined();
     expect(manifest.dependencies?.["write-excel-file"]).toBeUndefined();
     expect(fs.existsSync("../../LICENSE-MIT")).toBe(true);
     expect(fs.existsSync("../../LICENSE-APACHE")).toBe(true);
-    expect(manifest.dependencies?.["@asp-lsp/core"]).toBe("workspace:*");
     const readme = fs.readFileSync("README.md", "utf8");
     expect(readme).toContain("## License");
     expect(readme).toContain("MIT License");
@@ -1149,7 +1709,7 @@ describe("VS Code extension package", () => {
     const removedAnalysisSetting = "analysis" + "Backend";
     const removedAnalysisEnv = "ASP_LSP_ANALYSIS_" + "BACKEND";
     expect(configuration[`aspLsp.${removedAnalysisSetting}`]).toBeUndefined();
-    const extensionSourceText = fs.readFileSync("src/extension.ts", "utf8");
+    const extensionSourceText = readExtensionSource();
     expect(extensionSourceText).not.toContain(removedAnalysisEnv);
     expect(extensionSourceText).not.toContain(`aspLsp.${removedAnalysisSetting}`);
     expect(configuration["aspLsp.debug.logFile.enabled"]).toEqual(
@@ -1174,9 +1734,7 @@ describe("VS Code extension package", () => {
     expect(nlsJa["configuration.debug.logFile.path.description"]).toBeTruthy();
     expect(extensionSourceText).toContain("ASP_LSP_DEFAULT_DEBUG_LOG_FILE");
     expect(extensionSourceText).toContain('const serverStatusNotificationMethod = "aspLsp/status"');
-    expect(extensionSourceText).toContain(
-      'const graphUpdatedNotificationMethod = "aspLsp/graphUpdated"',
-    );
+    expect(extensionSourceText).not.toContain("aspLsp/graphUpdated");
     const advancedConfigurationSettings = [
       "aspLsp.incremental.mode",
       "aspLsp.incremental.analysis",
@@ -1190,40 +1748,23 @@ describe("VS Code extension package", () => {
       "aspLsp.vbscript.identifierCaseByKind",
       "aspLsp.vbscript.comTypes",
       "aspLsp.vbscript.globals",
+      "aspLsp.vbscript.autoIncludes",
       "aspLsp.vbscript.showUnresolvedSymbolsInCompletion",
       "aspLsp.vbscript.initializedDimQuickFixStyle",
       "aspLsp.vbscript.ifSyntaxDiagnostics",
-      "aspLsp.codeLens.referenceScope",
       "aspLsp.codeLens.includeRelatedIncludeTreesForUnresolved",
       "aspLsp.rename.updateIncludesOnFileRename",
       "aspLsp.rename.workspaceSymbolRename",
-      "aspLsp.flowchart.maxTextSize",
-      "aspLsp.flowchart.maxEdges",
       "aspLsp.flowchart.minZoom",
       "aspLsp.flowchart.maxZoom",
-      "aspLsp.navigationGraph.maxNodes",
-      "aspLsp.navigationGraph.maxEdges",
-      "aspLsp.graph.showIncomingDocumentIncludes",
-      "aspLsp.graph.showIncomingFolderIncludes",
-      "aspLsp.graph.useReverseIncludeIndex",
-      "aspLsp.graph.includeRelatedIncludeTreesForUnresolved",
-      "aspLsp.graph.maxDocuments",
-      "aspLsp.graph.maxTextLength",
-      "aspLsp.graph.maxNodes",
-      "aspLsp.graph.includeTreeMaxDocuments",
-      "aspLsp.graph.includeTreeMaxTextLength",
-      "aspLsp.graph.workerSymbolExtraction",
       "aspLsp.excel.includeRelatedIncludeTreesForUnresolved",
       "aspLsp.excel.skipTypeInference",
-      "aspLsp.excel.maxDocuments",
-      "aspLsp.excel.maxTextLength",
-      "aspLsp.excel.includeTreeMaxDocuments",
-      "aspLsp.excel.includeTreeMaxTextLength",
       "aspLsp.cache.enabled",
       "aspLsp.cache.directory",
       "aspLsp.cache.freshness",
       "aspLsp.cache.ttlHours",
       "aspLsp.cache.maxSizeMb",
+      "aspLsp.cache.gzip",
       "aspLsp.memory.maxCacheBytes",
       "aspLsp.memory.debugTelemetry",
       "aspLsp.network.profile",
@@ -1231,11 +1772,8 @@ describe("VS Code extension package", () => {
       "aspLsp.network.readdirCacheTtlMs",
       "aspLsp.network.includeReadConcurrency",
       "aspLsp.network.caseResolution",
-      "aspLsp.workspace.maxIndexFiles",
       "aspLsp.workspace.scanChunkSize",
       "aspLsp.workspace.busyAnalysisConcurrency",
-      "aspLsp.workspace.vbProjectMaxDocuments",
-      "aspLsp.workspace.vbProjectMaxTextLength",
     ];
     for (const setting of advancedConfigurationSettings) {
       expect(configuration[setting]).toEqual(expect.objectContaining({ tags: ["advanced"] }));
@@ -1244,15 +1782,18 @@ describe("VS Code extension package", () => {
       'const cancelProgressTaskServerCommand = "aspLsp.server.cancelProgressTask"',
     );
     expect(extensionSourceText).toContain("handleServerStatusNotification");
-    expect(extensionSourceText).toContain("handleGraphUpdatedNotification");
-    expect(extensionSourceText).toContain("graphPanelsByCorrelation");
+    expect(extensionSourceText).not.toContain("handleGraphUpdatedNotification");
+    expect(extensionSourceText).not.toContain("graphPanelsByCorrelation");
     expect(extensionSourceText).toContain("showProgressDetails");
     expect(extensionSourceText).toContain('statusBarItem.command = "aspLsp.showProgressDetails"');
     expect(extensionSourceText).toContain("status.loading.text");
     expect(extensionSourceText).toContain("status.analyzing.text");
     expect(extensionSourceText).toContain("progressStatusText");
     expect(extensionSourceText).toContain("progressValueText");
-    expect(extensionSourceText).toContain("Math.round((progress.current / progress.total) * 100)");
+    expect(extensionSourceText).toContain("normalizeProgressValue");
+    expect(extensionSourceText).toContain(
+      "Math.round((normalized.current / normalized.total) * 100)",
+    );
     expect(extensionSourceText).toContain("status.progress.loadingStatusText");
     expect(extensionSourceText).toContain("status.progress.analyzingStatusText");
     expect(extensionSourceText).toContain("status.progress.excel");
@@ -1265,15 +1806,33 @@ describe("VS Code extension package", () => {
     expect(extensionSourceText).toContain("status.progress.excelWorkbook");
     expect(extensionSourceText).toContain("status.progress.excelFile");
     expect(extensionSourceText).toContain("status.progress.excelFileRows");
+    expect(extensionSourceText).toContain("excelGraphProgressStageLabelKey");
     expect(extensionSourceText).toContain("status.progress.graphIndexDocuments");
     expect(extensionSourceText).toContain("status.progress.graphAddUsages");
     expect(extensionSourceText).toContain("status.progress.graphResolveIncludes");
     expect(extensionSourceText).toContain("status.progress.graphFindIncomingIncludes");
     expect(extensionSourceText).toContain("status.progress.graphFilterIncomingIncludes");
     expect(extensionSourceText).toContain("status.progress.workspaceIndexScanFiles");
-    expect(extensionSourceText).toContain("status.progress.referencesWorkspace");
+    expect(extensionSourceText).toContain("progressTasksForActiveDocument");
+    expect(extensionSourceText).toContain("activeProgressDocument");
+    expect(extensionSourceText).toContain("record.documentVersion");
+    expect(extensionSourceText).toContain("vscode.window.onDidChangeActiveTextEditor");
     expect(extensionSourceText).toContain("progressStatusBarDetail");
     expect(extensionSourceText).toContain("progressTaskStatusPriority");
+    expect(extensionSourceText).toContain("withServerTaskProgress");
+    expect(extensionSourceText.match(/withServerTaskProgress\(/g)).toHaveLength(4);
+    expect(extensionSourceText.match(/vscode\.window\.withProgress/g)).toHaveLength(1);
+    expect(extensionSourceText).toContain("reportServerProgressTasks(serverProgressTasks)");
+    expect(extensionSourceText).toContain("claimedServerProgressTaskIds");
+    expect(extensionSourceText).toContain("serverProgressReporterMatchScore");
+    expect(extensionSourceText).toContain("registration.exactLabels.has(task.label)");
+    expect(extensionSourceText).toContain("task.updatedAt >= registration.startedAt");
+    expect(extensionSourceText).toContain("left.id - right.id");
+    expect(extensionSourceText).toContain("progressPercentage(progressFromTask(task))");
+    expect(extensionSourceText).toContain('{ labelPrefixes: ["flowchart."] }');
+    expect(extensionSourceText).toContain('{ labelPrefixes: ["navigationGraph."] }');
+    expect(extensionSourceText).toContain('{ exactLabels: ["workspace.previewFiles"] }');
+    expect(extensionSourceText).toContain('{ labelPrefixes: ["excel."] }');
     expect(extensionSourceText).toContain('task.label.startsWith("excel.")');
     expect(extensionSourceText).toContain('label: "excel.chooseFile"');
     expect(extensionSourceText).toContain('label: "excel.graph"');
@@ -1287,25 +1846,15 @@ describe("VS Code extension package", () => {
     expect(extensionSourceText).toContain("Excel 行を書き込み中");
     expect(extensionSourceText).toContain("フローチャートを生成中");
     expect(extensionSourceText).toContain("Classic ASP 解析ブックを作成中");
-    expect(extensionSourceText).toContain("graphAnalysisLimitSettings");
-    const analysisExcelSource = fs.readFileSync(
-      "../../packages/language-server/src/analysis-excel/sheets.ts",
-      "utf8",
-    );
-    const languageServerSource = fs.readFileSync(
-      "../../packages/language-server/src/server/runtime.ts",
-      "utf8",
-    );
-    const graphBuildSource = fs.readFileSync(
-      "../../packages/language-server/src/asp-graph/build.ts",
-      "utf8",
-    );
+    expect(extensionSourceText).not.toContain("graphAnalysisLimitSettings");
+    const analysisExcelSource = fs.readFileSync("../../internal/excel/export.go", "utf8");
+    const languageServerSource = readLanguageServerSource();
+    const graphBuildSource = fs.readFileSync("../../internal/graph/graph.go", "utf8");
     const graphSource = `${languageServerSource}\n${graphBuildSource}`;
-    expect(analysisExcelSource).toContain("for (const row of rows)");
-    expect(analysisExcelSource).toContain("for (const value of values)");
+    expect(analysisExcelSource).toContain("for rowIndex, row := range rows");
+    expect(analysisExcelSource).toContain("for columnIndex, value := range row");
     expect(analysisExcelSource).not.toContain("Math.max(...rows.map");
-    expect(graphSource).toContain("appendAspGraphDocuments(");
-    expect(languageServerSource).toContain("appendAspGraphRanges(");
+    expect(graphSource).toContain("type Payload struct");
     expect(graphSource).not.toContain("documentsForGraph.push(...indexedGraphDocuments)");
     expect(languageServerSource).not.toContain("existing.push(...references)");
     expect(manifest.contributes).not.toHaveProperty("taskDefinitions");
@@ -1341,6 +1890,13 @@ describe("VS Code extension package", () => {
     expect(
       manifest.contributes?.configuration?.properties?.["aspLsp.vbscript.unusedDiagnostics"],
     ).toBeTruthy();
+    expect(
+      manifest.contributes?.configuration?.properties?.[
+        "aspLsp.vbscript.implicitGlobalDiagnostics"
+      ],
+    ).toEqual(expect.objectContaining({ type: "boolean", default: false }));
+    expect(nls["configuration.vbscript.implicitGlobalDiagnostics.description"]).toBeTruthy();
+    expect(nlsJa["configuration.vbscript.implicitGlobalDiagnostics.description"]).toBeTruthy();
     const removedIncludeSuggestions = "include" + "Suggestions";
     expect(
       manifest.contributes?.configuration?.properties?.[
@@ -1359,6 +1915,18 @@ describe("VS Code extension package", () => {
     expect(
       manifest.contributes?.configuration?.properties?.["aspLsp.vbscript.syntaxKeywords"],
     ).toEqual(expect.objectContaining({ type: "boolean", default: true }));
+    expect(
+      manifest.contributes?.configuration?.properties?.["aspLsp.vbscript.autoIncludes"],
+    ).toEqual(
+      expect.objectContaining({
+        type: "boolean",
+        default: false,
+        description: "%configuration.vbscript.autoIncludes.description%",
+        tags: ["advanced"],
+      }),
+    );
+    expect(nls["configuration.vbscript.autoIncludes.description"]).toBeTruthy();
+    expect(nlsJa["configuration.vbscript.autoIncludes.description"]).toBeTruthy();
     expect(
       manifest.contributes?.configuration?.properties?.[
         "aspLsp.vbscript.initializedDimQuickFixStyle"
@@ -1410,13 +1978,7 @@ describe("VS Code extension package", () => {
     ).toBeUndefined();
     expect(
       manifest.contributes?.configuration?.properties?.["aspLsp.codeLens.referenceScope"],
-    ).toEqual(
-      expect.objectContaining({
-        type: "string",
-        enum: ["analyzed", "workspace"],
-        default: "analyzed",
-      }),
-    );
+    ).toBeUndefined();
     expect(
       manifest.contributes?.configuration?.properties?.[
         "aspLsp.codeLens.includeRelatedIncludeTreesForUnresolved"
@@ -1456,25 +2018,32 @@ describe("VS Code extension package", () => {
       nlsJa["configuration.vbscript.showUnresolvedSymbolsInCompletion.description"],
     ).toBeTruthy();
     expect(
-      manifest.contributes?.configuration?.properties?.["aspLsp.flowchart.maxTextSize"],
+      manifest.contributes?.configuration?.properties?.["aspLsp.vbscript.assumeUndefinedGlobals"],
     ).toEqual(
       expect.objectContaining({
-        type: "number",
-        minimum: 1,
-        default: 2000000,
+        type: "boolean",
+        default: false,
       }),
     );
-    expect(nls["configuration.flowchart.maxTextSize.description"]).toBeTruthy();
-    expect(nlsJa["configuration.flowchart.maxTextSize.description"]).toBeTruthy();
-    expect(manifest.contributes?.configuration?.properties?.["aspLsp.flowchart.maxEdges"]).toEqual(
-      expect.objectContaining({
-        type: "number",
-        minimum: 1,
-        default: 100000,
-      }),
-    );
-    expect(nls["configuration.flowchart.maxEdges.description"]).toBeTruthy();
-    expect(nlsJa["configuration.flowchart.maxEdges.description"]).toBeTruthy();
+    expect(nls["configuration.vbscript.assumeUndefinedGlobals.description"]).toBeTruthy();
+    expect(nlsJa["configuration.vbscript.assumeUndefinedGlobals.description"]).toBeTruthy();
+    expect(
+      manifest.contributes?.configuration?.properties?.["aspLsp.flowchart.maxTextSize"],
+    ).toBeUndefined();
+    expect(
+      manifest.contributes?.configuration?.properties?.["aspLsp.flowchart.maxEdges"],
+    ).toBeUndefined();
+    expect(nls["configuration.flowchart.maxTextSize.description"]).toBeUndefined();
+    expect(nlsJa["configuration.flowchart.maxEdges.description"]).toBeUndefined();
+    for (const setting of ["flowchart", "navigationGraph", "workspaceFiles"]) {
+      expect(
+        manifest.contributes?.configuration?.properties?.[`aspLsp.${setting}.openLocation`],
+      ).toEqual(
+        expect.objectContaining({ type: "string", enum: ["active", "beside"], default: "active" }),
+      );
+      expect(nls[`configuration.${setting}.openLocation.description`]).toBeTruthy();
+      expect(nlsJa[`configuration.${setting}.openLocation.description`]).toBeTruthy();
+    }
     expect(manifest.contributes?.configuration?.properties?.["aspLsp.flowchart.labelMode"]).toEqual(
       expect.objectContaining({
         type: "string",
@@ -1502,28 +2071,6 @@ describe("VS Code extension package", () => {
     expect(nlsJa["configuration.flowchart.minZoom.description"]).toBeTruthy();
     expect(nls["configuration.flowchart.maxZoom.description"]).toBeTruthy();
     expect(nlsJa["configuration.flowchart.maxZoom.description"]).toBeTruthy();
-    expect(
-      manifest.contributes?.configuration?.properties?.["aspLsp.navigationGraph.maxNodes"],
-    ).toEqual(
-      expect.objectContaining({
-        type: "number",
-        minimum: 1,
-        default: 500,
-      }),
-    );
-    expect(
-      manifest.contributes?.configuration?.properties?.["aspLsp.navigationGraph.maxEdges"],
-    ).toEqual(
-      expect.objectContaining({
-        type: "number",
-        minimum: 1,
-        default: 1200,
-      }),
-    );
-    expect(nls["configuration.navigationGraph.maxNodes.description"]).toBeTruthy();
-    expect(nlsJa["configuration.navigationGraph.maxNodes.description"]).toBeTruthy();
-    expect(nls["configuration.navigationGraph.maxEdges.description"]).toBeTruthy();
-    expect(nlsJa["configuration.navigationGraph.maxEdges.description"]).toBeTruthy();
     for (const key of [
       "referenceProcedures",
       "referenceGlobals",
@@ -1534,120 +2081,13 @@ describe("VS Code extension package", () => {
         expect.objectContaining({ type: "boolean", default: true }),
       );
     }
-    const graphDefaults: Record<string, boolean> = {
-      showRootNodes: true,
-      showFileNodes: true,
-      showFunctionNodes: true,
-      showSubNodes: true,
-      showClassNodes: true,
-      showMethodNodes: false,
-      showMethodFunctionNodes: false,
-      showMethodSubNodes: false,
-      showPropertyNodes: false,
-      showMemberNodes: false,
-      showGlobalVariableNodes: true,
-      showGlobalConstantNodes: true,
-      showLocalVariableNodes: false,
-      showLocalConstantNodes: false,
-      showParameterNodes: false,
-      showUnresolvedNodes: true,
-      hideSingleNodes: true,
-      hideUnreferencedGlobalSymbols: true,
-      showOutgoingSelectionLinks: true,
-      showIncludeLinks: true,
-      showDeclareLinks: true,
-      showReferenceLinks: true,
-      showAssignmentLinks: true,
-      showCallLinks: true,
-      showUnresolvedLinks: true,
-      showMemberLinks: true,
-      showIncomingDocumentIncludes: false,
-      showIncomingFolderIncludes: false,
-      useReverseIncludeIndex: true,
-      includeRelatedIncludeTreesForUnresolved: true,
-      workerSymbolExtraction: false,
-    };
-    for (const [name, defaultValue] of Object.entries(graphDefaults)) {
-      const setting = `aspLsp.graph.${name}`;
-      expect(manifest.contributes?.configuration?.properties?.[setting]).toEqual(
-        expect.objectContaining({ type: "boolean", default: defaultValue }),
-      );
-      expect(nls[`configuration.graph.${name}.description`]).toBeTruthy();
-      expect(nlsJa[`configuration.graph.${name}.description`]).toBeTruthy();
-    }
-    for (const removedName of [
-      "showBuiltinSymbols",
-      "showConfiguredGlobals",
-      "showConfiguredComTypes",
-      "showObjectMembers",
-      "showFunctionParameters",
-      "showLocalVariables",
-      "showLocalConstants",
-      "showClassFields",
-      "showClassMethods",
-      "showClassProperties",
-      "showClassConstants",
-      "showClasses",
-      "showFunctions",
-      "showSubs",
-      "showGlobalVariables",
-      "showGlobalConstants",
-      "showFiles",
-      "showMissingFiles",
-      "showDeclarationLinks",
-      "showUnresolvedReferences",
-    ]) {
-      expect(
-        manifest.contributes?.configuration?.properties?.[`aspLsp.graph.${removedName}`],
-      ).toBeUndefined();
-      expect(nls[`configuration.graph.${removedName}.description`]).toBeUndefined();
-      expect(nlsJa[`configuration.graph.${removedName}.description`]).toBeUndefined();
-    }
-    expect(manifest.contributes?.configuration?.properties?.["aspLsp.graph.openLocation"]).toEqual(
-      expect.objectContaining({
-        type: "string",
-        enum: ["active", "beside"],
-        default: "active",
-      }),
-    );
     expect(
-      manifest.contributes?.configuration?.properties?.["aspLsp.graph.includeTreeMaxDocuments"],
-    ).toEqual(expect.objectContaining({ type: "number", minimum: 1, default: 256 }));
-    expect(
-      manifest.contributes?.configuration?.properties?.["aspLsp.graph.includeTreeMaxTextLength"],
-    ).toEqual(expect.objectContaining({ type: "number", minimum: 1, default: 16777216 }));
-    expect(nls["configuration.graph.includeTreeMaxDocuments.description"]).toBeTruthy();
-    expect(nlsJa["configuration.graph.includeTreeMaxDocuments.description"]).toBeTruthy();
-    expect(nls["configuration.graph.includeTreeMaxTextLength.description"]).toBeTruthy();
-    expect(nlsJa["configuration.graph.includeTreeMaxTextLength.description"]).toBeTruthy();
-    expect(manifest.contributes?.configuration?.properties?.["aspLsp.graph.maxDocuments"]).toEqual(
-      expect.objectContaining({ type: "number", minimum: 1, default: 5000 }),
-    );
-    expect(manifest.contributes?.configuration?.properties?.["aspLsp.graph.maxTextLength"]).toEqual(
-      expect.objectContaining({ type: "number", minimum: 1, default: 268435456 }),
-    );
-    expect(manifest.contributes?.configuration?.properties?.["aspLsp.graph.maxNodes"]).toEqual(
-      expect.objectContaining({ type: "number", minimum: 1, default: 5000 }),
-    );
-    expect(nls["configuration.graph.maxDocuments.description"]).toBeTruthy();
-    expect(nlsJa["configuration.graph.maxDocuments.description"]).toBeTruthy();
-    expect(nls["configuration.graph.maxTextLength.description"]).toBeTruthy();
-    expect(nlsJa["configuration.graph.maxTextLength.description"]).toBeTruthy();
-    expect(nls["configuration.graph.maxNodes.description"]).toBeTruthy();
-    expect(nlsJa["configuration.graph.maxNodes.description"]).toBeTruthy();
-    expect(
-      manifest.contributes?.configuration?.properties?.["aspLsp.graph.initialViewMode"],
-    ).toEqual(
-      expect.objectContaining({
-        type: "string",
-        enum: ["2d", "3d"],
-        default: "2d",
-      }),
-    );
-    expect(nls["configuration.graph.initialViewMode.description"]).toBeTruthy();
-    expect(nlsJa["configuration.graph.initialViewMode.description"]).toBeTruthy();
-    expect(nls["configuration.graph.openLocation.description"]).toBeTruthy();
-    expect(nlsJa["configuration.graph.openLocation.description"]).toBeTruthy();
+      Object.keys(manifest.contributes?.configuration?.properties ?? {}).some((key) =>
+        key.startsWith("aspLsp.graph."),
+      ),
+    ).toBe(false);
+    expect(Object.keys(nls).some((key) => key.startsWith("configuration.graph."))).toBe(false);
+    expect(Object.keys(nlsJa).some((key) => key.startsWith("configuration.graph."))).toBe(false);
     expect(
       manifest.contributes?.configuration?.properties?.[
         "aspLsp.excel.includeRelatedIncludeTreesForUnresolved"
@@ -1656,18 +2096,6 @@ describe("VS Code extension package", () => {
     expect(
       manifest.contributes?.configuration?.properties?.["aspLsp.excel.skipTypeInference"],
     ).toEqual(expect.objectContaining({ type: "boolean", default: false }));
-    expect(
-      manifest.contributes?.configuration?.properties?.["aspLsp.excel.includeTreeMaxDocuments"],
-    ).toEqual(expect.objectContaining({ type: "number", minimum: 1, default: 1024 }));
-    expect(
-      manifest.contributes?.configuration?.properties?.["aspLsp.excel.includeTreeMaxTextLength"],
-    ).toEqual(expect.objectContaining({ type: "number", minimum: 1, default: 67108864 }));
-    expect(manifest.contributes?.configuration?.properties?.["aspLsp.excel.maxDocuments"]).toEqual(
-      expect.objectContaining({ type: "number", minimum: 1, default: 8192 }),
-    );
-    expect(manifest.contributes?.configuration?.properties?.["aspLsp.excel.maxTextLength"]).toEqual(
-      expect.objectContaining({ type: "number", minimum: 1, default: 536870912 }),
-    );
     expect(manifest.contributes?.configuration?.properties?.["aspLsp.excel.locale"]).toEqual(
       expect.objectContaining({ type: "string", enum: ["auto", "en", "ja"], default: "auto" }),
     );
@@ -1679,14 +2107,14 @@ describe("VS Code extension package", () => {
     ).toBeTruthy();
     expect(nls["configuration.excel.skipTypeInference.description"]).toBeTruthy();
     expect(nlsJa["configuration.excel.skipTypeInference.description"]).toBeTruthy();
-    expect(nls["configuration.excel.includeTreeMaxDocuments.description"]).toBeTruthy();
-    expect(nlsJa["configuration.excel.includeTreeMaxDocuments.description"]).toBeTruthy();
-    expect(nls["configuration.excel.includeTreeMaxTextLength.description"]).toBeTruthy();
-    expect(nlsJa["configuration.excel.includeTreeMaxTextLength.description"]).toBeTruthy();
-    expect(nls["configuration.excel.maxDocuments.description"]).toBeTruthy();
-    expect(nlsJa["configuration.excel.maxDocuments.description"]).toBeTruthy();
-    expect(nls["configuration.excel.maxTextLength.description"]).toBeTruthy();
-    expect(nlsJa["configuration.excel.maxTextLength.description"]).toBeTruthy();
+    expect(nls["configuration.excel.includeTreeMaxDocuments.description"]).toBeUndefined();
+    expect(nlsJa["configuration.excel.includeTreeMaxDocuments.description"]).toBeUndefined();
+    expect(nls["configuration.excel.includeTreeMaxTextLength.description"]).toBeUndefined();
+    expect(nlsJa["configuration.excel.includeTreeMaxTextLength.description"]).toBeUndefined();
+    expect(nls["configuration.excel.maxDocuments.description"]).toBeUndefined();
+    expect(nlsJa["configuration.excel.maxDocuments.description"]).toBeUndefined();
+    expect(nls["configuration.excel.maxTextLength.description"]).toBeUndefined();
+    expect(nlsJa["configuration.excel.maxTextLength.description"]).toBeUndefined();
     expect(nls["configuration.excel.locale.description"]).toBeTruthy();
     expect(nlsJa["configuration.excel.locale.description"]).toBeTruthy();
     expect(manifest.contributes?.configuration?.properties?.["aspLsp.locale"]).toBeTruthy();
@@ -1727,8 +2155,24 @@ describe("VS Code extension package", () => {
       expect.objectContaining({ type: "number", default: 336, minimum: 1 }),
     );
     expect(manifest.contributes?.configuration?.properties?.["aspLsp.cache.maxSizeMb"]).toEqual(
-      expect.objectContaining({ type: "number", default: 128, minimum: 1 }),
+      expect.objectContaining({ type: "number", default: 16384, minimum: 1 }),
     );
+    expect(manifest.contributes?.configuration?.properties?.["aspLsp.cache.gzip"]).toEqual(
+      expect.objectContaining({ type: "boolean", default: false }),
+    );
+    for (const key of [
+      "configuration.cache.enabled.description",
+      "configuration.cache.directory.description",
+      "configuration.cache.freshness.description",
+      "configuration.cache.ttlHours.description",
+      "configuration.cache.maxSizeMb.description",
+      "configuration.cache.gzip.description",
+    ]) {
+      expect(nls[key]).toContain("analysis database");
+      expect(nls[key]).not.toMatch(/disk (?:analysis )?cache/i);
+      expect(nlsJa[key]).toContain("解析データベース");
+      expect(nlsJa[key]).not.toMatch(/disk|ディスク解析キャッシュ/i);
+    }
     expect(
       manifest.contributes?.configuration?.properties?.["aspLsp.memory.maxCacheBytes"],
     ).toEqual(expect.objectContaining({ type: "number", default: 536870912, minimum: 1 }));
@@ -1917,18 +2361,20 @@ describe("VS Code extension package", () => {
     expect(fs.existsSync(manifest.icon ?? "")).toBe(true);
     expect(manifest.galleryBanner?.color).toBeTruthy();
     expect(manifest.capabilities?.untrustedWorkspaces?.supported).toBe(true);
-    const extensionSource = fs.readFileSync("src/extension.ts", "utf8");
+    const extensionSource = readExtensionSource();
     expect(extensionSource).toContain('registerCommand("aspLsp.restartServer"');
-    expect(extensionSource).toContain("errorHandler: createLanguageClientErrorHandler()");
+    expect(extensionSource).toContain(
+      "errorHandler: progressController.createLanguageClientErrorHandler()",
+    );
     expect(extensionSource).toContain("CloseAction.Restart");
     expect(extensionSource).toContain("ErrorAction.Continue");
     expect(extensionSource).toContain("restartPromise");
     expect(extensionSource).toContain("isDeactivating");
     expect(extensionSource).toContain("isManualRestarting");
     expect(extensionSource).toContain('registerCommand("aspLsp.showReferences"');
-    expect(commands).toContain("aspLsp.showCurrentFileGraph");
-    expect(commands).toContain("aspLsp.showFolderGraph");
-    expect(commands).toContain("aspLsp.showWorkspaceGraph");
+    expect(commands).not.toContain("aspLsp.showCurrentFileGraph");
+    expect(commands).not.toContain("aspLsp.showFolderGraph");
+    expect(commands).not.toContain("aspLsp.showWorkspaceGraph");
     expect(commands).toContain("aspLsp.showCurrentFileNavigationGraph");
     expect(commands).toContain("aspLsp.showFolderNavigationGraph");
     expect(commands).toContain("aspLsp.showWorkspaceNavigationGraph");
@@ -1942,21 +2388,9 @@ describe("VS Code extension package", () => {
     expect(commands).toContain("aspLsp.exportCurrentFileFlowchart");
     expect(
       manifest.contributes?.commands?.find(
-        (command) => command.command === "aspLsp.showCurrentFileGraph",
-      ),
-    ).toEqual(expect.objectContaining({ icon: "$(graph)" }));
-    expect(
-      manifest.contributes?.commands?.find(
         (command) => command.command === "aspLsp.showCurrentFileNavigationGraph",
       ),
     ).toEqual(expect.objectContaining({ icon: "$(graph)" }));
-    expect(manifest.contributes?.menus?.["editor/title"]).toContainEqual(
-      expect.objectContaining({
-        command: "aspLsp.showCurrentFileGraph",
-        when: "editorLangId == classic-asp",
-        group: "navigation",
-      }),
-    );
     expect(manifest.contributes?.menus?.["editor/title"]).toContainEqual(
       expect.objectContaining({
         command: "aspLsp.showCurrentFileNavigationGraph",
@@ -1980,22 +2414,8 @@ describe("VS Code extension package", () => {
     );
     expect(manifest.contributes?.menus?.["explorer/context"]).toContainEqual(
       expect.objectContaining({
-        command: "aspLsp.showFolderGraph",
-        when: "explorerResourceIsFolder",
-        group: "navigation",
-      }),
-    );
-    expect(manifest.contributes?.menus?.["explorer/context"]).toContainEqual(
-      expect.objectContaining({
         command: "aspLsp.showFolderNavigationGraph",
         when: "explorerResourceIsFolder",
-        group: "navigation",
-      }),
-    );
-    expect(manifest.contributes?.menus?.["explorer/context"]).toContainEqual(
-      expect.objectContaining({
-        command: "aspLsp.showCurrentFileGraph",
-        when: "resourceExtname =~ /\\.(asp|asa|inc)$/i",
         group: "navigation",
       }),
     );
@@ -2025,9 +2445,9 @@ describe("VS Code extension package", () => {
         group: "navigation",
       }),
     );
-    expect(nls["command.showCurrentFileGraph.title"]).toBeTruthy();
-    expect(nls["command.showFolderGraph.title"]).toBeTruthy();
-    expect(nls["command.showWorkspaceGraph.title"]).toBeTruthy();
+    expect(nls["command.showCurrentFileGraph.title"]).toBeUndefined();
+    expect(nls["command.showFolderGraph.title"]).toBeUndefined();
+    expect(nls["command.showWorkspaceGraph.title"]).toBeUndefined();
     expect(nls["command.showCurrentFileNavigationGraph.title"]).toBeTruthy();
     expect(nls["command.showFolderNavigationGraph.title"]).toBeTruthy();
     expect(nls["command.showWorkspaceNavigationGraph.title"]).toBeTruthy();
@@ -2038,9 +2458,9 @@ describe("VS Code extension package", () => {
     expect(nls["command.exportWorkspaceAnalysisExcel.title"]).toBeUndefined();
     expect(nls["command.showCurrentFileFlowchart.title"]).toBeTruthy();
     expect(nls["command.exportCurrentFileFlowchart.title"]).toBeTruthy();
-    expect(nlsJa["command.showCurrentFileGraph.title"]).toBeTruthy();
-    expect(nlsJa["command.showFolderGraph.title"]).toBeTruthy();
-    expect(nlsJa["command.showWorkspaceGraph.title"]).toBeTruthy();
+    expect(nlsJa["command.showCurrentFileGraph.title"]).toBeUndefined();
+    expect(nlsJa["command.showFolderGraph.title"]).toBeUndefined();
+    expect(nlsJa["command.showWorkspaceGraph.title"]).toBeUndefined();
     expect(nlsJa["command.showWorkspaceGlobFiles.title"]).toBeTruthy();
     expect(nlsJa["command.openAnalysisExcelExport.title"]).toBeUndefined();
     expect(nlsJa["command.exportCurrentFileAnalysisExcel.title"]).toBeTruthy();
@@ -2049,9 +2469,9 @@ describe("VS Code extension package", () => {
     expect(nlsJa["command.showCurrentFileFlowchart.title"]).toBeTruthy();
     expect(nlsJa["command.exportCurrentFileFlowchart.title"]).toBeTruthy();
     expect(manifest.activationEvents).toBeUndefined();
-    expect(extensionSource).toContain('registerCommand("aspLsp.showCurrentFileGraph"');
-    expect(extensionSource).toContain('registerCommand("aspLsp.showFolderGraph"');
-    expect(extensionSource).toContain('registerCommand("aspLsp.showWorkspaceGraph"');
+    expect(extensionSource).not.toContain('registerCommand("aspLsp.showCurrentFileGraph"');
+    expect(extensionSource).not.toContain('registerCommand("aspLsp.showFolderGraph"');
+    expect(extensionSource).not.toContain('registerCommand("aspLsp.showWorkspaceGraph"');
     expect(extensionSource).toContain('"aspLsp.exportCurrentFileAnalysisExcel"');
     expect(extensionSource).not.toContain('"aspLsp.exportFolderAnalysisExcel"');
     expect(extensionSource).not.toContain('"aspLsp.exportWorkspaceAnalysisExcel"');
@@ -2060,35 +2480,31 @@ describe("VS Code extension package", () => {
     expect(extensionSource).toContain("targetPath: target.fsPath");
     expect(extensionSource).toContain("relatedIncludeTreeAnalysisSetting");
     expect(configuration["aspLsp.excel.locale"]).toBeTruthy();
-    expect(languageServerSource).toContain("excelSettings.locale");
-    expect(languageServerSource).toContain("createAnalysisExcelSheets");
+    expect(languageServerSource).toContain("func (s *Server) exportAnalysisExcel");
+    expect(analysisExcelSource).toContain("func WriteXLSX");
     expect(extensionSource).toContain("includeRelatedIncludeTreesForUnresolved");
-    expect(extensionSource).toContain("forceRelatedIncludeTreeAnalysis");
     expect(extensionSource).toContain("excelSkipTypeInferenceSetting");
     expect(extensionSource).toContain("skipTypeInference");
-    expect(extensionSource).toContain("includeAnalysisTypeDetails");
-    expect(extensionSource).toContain("graphAnalysisLimitSettings");
-    expect(extensionSource).toContain('graphAnalysisLimitSettings("excel")');
-    expect(extensionSource).toContain('graphAnalysisLimitSettings("graph")');
-    expect(extensionSource).toContain("maxDocuments");
-    expect(extensionSource).toContain("maxTextLength");
-    expect(extensionSource).toContain("includeTreeMaxDocuments");
-    expect(extensionSource).toContain("includeTreeMaxTextLength");
+    expect(extensionSource).not.toContain("graphAnalysisLimitSettings");
     expect(extensionSource).not.toContain("writeXlsxFile");
     expect(extensionSource).not.toContain(".toBuffer()");
     expect(extensionSource).not.toContain("vscode.workspace.fs.writeFile(target, workbook)");
     expect(extensionSource).not.toContain(".toFile(target.fsPath)");
     expect(extensionSource).toContain('registerCommand("aspLsp.showCurrentFileFlowchart"');
     expect(extensionSource).toContain('registerCommand("aspLsp.exportCurrentFileFlowchart"');
-    expect(extensionSource).toContain('get<GraphOpenLocation>("graph.openLocation", "active")');
+    expect(extensionSource).toContain('webviewViewColumn("flowchart.openLocation")');
+    expect(extensionSource).toContain('webviewViewColumn("navigationGraph.openLocation")');
+    expect(extensionSource).toContain('webviewViewColumn("workspaceFiles.openLocation")');
     expect(extensionSource).toContain("cancellable: true");
-    expect(extensionSource).toContain("isGraphCancellationError");
+    expect(extensionSource).not.toContain("isGraphCancellationError");
     expect(extensionSource).toContain("vscode.ViewColumn.Active");
     expect(extensionSource).toContain("vscode.ViewColumn.Beside");
-    expect(extensionSource).toContain('"aspLsp.server.buildGraph"');
+    expect(extensionSource).not.toContain('"aspLsp.server.buildGraph"');
     expect(extensionSource).toContain('"aspLsp.server.buildFlowchart"');
     expect(extensionSource).toContain('"editor.action.showReferences"');
     expect(extensionSource).toContain('registerCommand("aspLsp.toggleLineComment"');
+    expect(extensionSource).toContain("onDidChangeTextEditorSelection");
+    expect(extensionSource).toContain("selectionChange.kind !== undefined");
     expect(keybindings).toContainEqual(
       expect.objectContaining({
         command: "aspLsp.toggleLineComment",
@@ -2096,6 +2512,13 @@ describe("VS Code extension package", () => {
         mac: "cmd+/",
         when: "editorTextFocus && editorLangId == classic-asp",
       }),
+    );
+    const contributedCommands = manifest.contributes?.commands ?? [];
+    expect(contributedCommands).toContainEqual(
+      expect.objectContaining({ command: "aspLsp.toggleLineComment" }),
+    );
+    expect(manifest.contributes?.menus?.["editor/context"]).toContainEqual(
+      expect.objectContaining({ command: "aspLsp.toggleLineComment" }),
     );
     const languageConfiguration = JSON.parse(
       fs.readFileSync("language-configuration.json", "utf8"),
@@ -2106,8 +2529,7 @@ describe("VS Code extension package", () => {
       autoClosingPairs?: Array<{ open?: string; close?: string }>;
       surroundingPairs?: Array<{ open?: string; close?: string }>;
     };
-    expect(languageConfiguration.comments?.blockComment).toEqual(["<!--", "-->"]);
-    expect(languageConfiguration.comments?.lineComment).toBeUndefined();
+    expect(languageConfiguration.comments).toBeUndefined();
     expect(languageConfiguration.brackets).not.toContainEqual(["<", ">"]);
     expect(languageConfiguration.brackets).toContainEqual(["(", ")"]);
     expect(languageConfiguration.brackets).toContainEqual(["[", "]"]);
@@ -2173,7 +2595,9 @@ describe("VS Code extension package", () => {
     expect(autoCloseAspBlockSource).toContain(
       "const applied = await vscode.workspace.applyEdit(workspaceEdit)",
     );
-    expect(autoCloseAspBlockSource).toContain("vscode.window.visibleTextEditors.find");
+    expect(extensionSource).toContain("vscode.window.activeTextEditor");
+    expect(extensionSource).toContain("vscode.window.activeTextEditor === editor");
+    expect(extensionSource).not.toContain("vscode.window.visibleTextEditors.find");
     expect(autoCloseAspBlockSource).toContain(
       "editor.selection = new vscode.Selection(position, position)",
     );
@@ -2218,6 +2642,12 @@ describe("VS Code extension package", () => {
         duration?: {
           patterns?: Array<{ match?: string; name?: string }>;
         };
+        state?: {
+          patterns?: Array<{ match?: string; name?: string }>;
+        };
+        step?: {
+          patterns?: Array<{ match?: string; name?: string }>;
+        };
       };
     };
     expect(outputGrammarText).toContain("markup.underline.link.uri.asp-lsp-output");
@@ -2237,6 +2667,21 @@ describe("VS Code extension package", () => {
     expect(durationScope("in 100.1 ms")).toBe("constant.numeric.duration.asp-lsp-output.slow");
     expect(durationScope("in 200.0 ms")).toBe("constant.numeric.duration.asp-lsp-output.slow");
     expect(durationScope("in 200.1 ms")).toBe("constant.numeric.duration.asp-lsp-output.hot");
+    expect(durationScope("durationMs=100000")).toBe("constant.numeric.duration.asp-lsp-output");
+    const stateScope = (text: string) =>
+      outputGrammar.repository?.state?.patterns?.find(
+        (pattern) => pattern.match && new RegExp(pattern.match).test(text),
+      )?.name;
+    const stepScope = (text: string) =>
+      outputGrammar.repository?.step?.patterns?.find(
+        (pattern) => pattern.name && pattern.match && new RegExp(pattern.match).test(text),
+      )?.name;
+    expect(stateScope("requested")).toBe("keyword.control.state.asp-lsp-output");
+    expect(stateScope("complete")).toBe("keyword.control.state.asp-lsp-output");
+    expect(stepScope("workspaceIndex.complete")).toBe("entity.name.function.step.asp-lsp-output");
+    expect(stepScope("vb.references.batch.complete")).toBe(
+      "entity.name.function.step.asp-lsp-output",
+    );
     const outputRules =
       manifest.contributes?.configurationDefaults?.["editor.tokenColorCustomizations"]
         ?.textMateRules ?? [];
@@ -2356,11 +2801,17 @@ describe("VS Code extension package", () => {
     expect(keys).toContain("configuration.locale.description");
     expect(nls["command.restartServer.title"]).toBe("Classic ASP: Restart Language Server");
     expect(nlsJa["command.restartServer.title"]).toBe("Classic ASP: Language Server を再起動");
-    expect(nls["command.clearCache.title"]).toBe("Classic ASP: Clear All Analysis Caches");
-    expect(nls["command.clearDiskCache.title"]).toBe("Classic ASP: Clear Disk Analysis Cache");
+    expect(nls["command.clearCache.title"]).toBe(
+      "Classic ASP: Clear Process Cache and Analysis Database",
+    );
+    expect(nls["command.clearDiskCache.title"]).toBe("Classic ASP: Clear bbolt Analysis Database");
     expect(nls["command.clearProcessCache.title"]).toBe(
       "Classic ASP: Clear Process Analysis Cache",
     );
+    expect(nlsJa["command.clearCache.title"]).toBe(
+      "Classic ASP: プロセスキャッシュと解析データベースを消去",
+    );
+    expect(nlsJa["command.clearDiskCache.title"]).toBe("Classic ASP: bbolt 解析データベースを消去");
     for (const key of keys) {
       expect(nls[key], key).toBeTruthy();
       expect(nlsJa[key], key).toBeTruthy();
@@ -2510,6 +2961,8 @@ describe("VS Code extension package", () => {
       expect.arrayContaining([
         expect.objectContaining({ include: "#style-attribute-double" }),
         expect.objectContaining({ include: "#style-attribute-single" }),
+        expect.objectContaining({ include: "#asp-attribute-double" }),
+        expect.objectContaining({ include: "#asp-attribute-single" }),
         expect.objectContaining({ include: "#asp-expression" }),
         expect.objectContaining({ include: "#asp-directive" }),
         expect.objectContaining({ include: "#asp-block" }),
@@ -2528,7 +2981,7 @@ describe("VS Code extension package", () => {
       expect.arrayContaining([
         expect.objectContaining({
           captures: expect.objectContaining({
-            "1": expect.objectContaining({ name: "support.type.property-name.css" }),
+            "2": expect.objectContaining({ name: "support.type.property-name.css" }),
           }),
         }),
       ]),
@@ -2541,15 +2994,20 @@ describe("VS Code extension package", () => {
         expect.objectContaining({ include: "source.vbscript" }),
       ]),
     );
-    const embeddedInjection = Object.entries(classicAspGrammar.injections ?? {}).find(
-      ([selector]) => selector.includes("source.css") && selector.includes("source.js"),
-    )?.[1];
-    expect(embeddedInjection?.patterns).toEqual(
-      expect.arrayContaining([
-        expect.objectContaining({ include: "#asp-expression" }),
-        expect.objectContaining({ include: "#asp-block" }),
-      ]),
-    );
+    for (const selector of ["L:source.css", "L:source.js"]) {
+      expect(classicAspGrammar.injections?.[selector]?.patterns, selector).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({ include: "#asp-expression" }),
+          expect.objectContaining({ include: "#asp-block" }),
+        ]),
+      );
+    }
+    expect(classicAspGrammar.injections?.["L:source.css"]?.patterns).toContainEqual({
+      include: "#css-property-at-rule",
+    });
+    expect(classicAspGrammar.injections?.["L:source.js"]?.patterns).not.toContainEqual({
+      include: "#css-property-at-rule",
+    });
   });
 
   it("highlights VBScript documentation comments and type annotations", () => {
@@ -2691,6 +3149,126 @@ const next = 1;
     }
   });
 
+  it("keeps tab-indented VBScript comments fully comment-scoped", async () => {
+    const grammar = await loadClassicAspTextMateGrammar();
+    const lines = [
+      "<%",
+      "\t'\tplain comment\tDim value",
+      "\t'''\t<summary>documentation</summary>",
+      "\t'\t@param value As String",
+      "\tREM\tplain comment\tDim value",
+      "%>",
+      "<%\t'\tinline comment %>",
+      "<%\tREM\tinline comment %>",
+    ];
+
+    for (const { line, needle, scope } of [
+      { line: 1, needle: "\t'", scope: "comment.line.apostrophe.vbscript" },
+      { line: 2, needle: "\t'''", scope: "comment.line.documentation.vbscript" },
+      { line: 3, needle: "\t'\t@", scope: "comment.line.annotation.vbscript" },
+      { line: 4, needle: "\tREM", scope: "comment.line.rem.vbscript" },
+      { line: 6, needle: "\t'", scope: "comment.line.apostrophe.vbscript" },
+      { line: 7, needle: "\tREM", scope: "comment.line.rem.vbscript" },
+    ]) {
+      expect(tokenAtText(grammar, lines, line, needle)?.scopes, `${line}:${needle}`).toContain(
+        scope,
+      );
+    }
+
+    for (const { line, needle, scope } of [
+      { line: 1, needle: "Dim", scope: "comment.line.apostrophe.vbscript" },
+      { line: 4, needle: "Dim", scope: "comment.line.rem.vbscript" },
+    ]) {
+      expect(tokenAtText(grammar, lines, line, needle)?.scopes, `${line}:${needle}`).toContain(
+        scope,
+      );
+      expect(tokenAtText(grammar, lines, line, needle)?.scopes).not.toContain(
+        "keyword.control.vbscript",
+      );
+    }
+  });
+
+  it("keeps leading tabs in standalone VBScript comments comment-scoped", async () => {
+    const grammar = await loadVBScriptTextMateGrammar();
+    const lines = [
+      "\t'\tplain comment",
+      "\t'''\t<summary>documentation</summary>",
+      "\t'\t@param value As String",
+      "\tREM\tplain comment",
+    ];
+
+    for (const { line, needle, scope } of [
+      { line: 0, needle: "\t'", scope: "comment.line.apostrophe.vbscript" },
+      { line: 1, needle: "\t'''", scope: "comment.line.documentation.vbscript" },
+      { line: 2, needle: "\t'\t@", scope: "comment.line.annotation.vbscript" },
+      { line: 3, needle: "\tREM", scope: "comment.line.rem.vbscript" },
+    ]) {
+      expect(tokenAtText(grammar, lines, line, needle)?.scopes, `${line}:${needle}`).toContain(
+        scope,
+      );
+    }
+  });
+
+  it("colors ASP but not inline CSS inside HTML comments", async () => {
+    const grammar = await loadClassicAspTextMateGrammar();
+    const lines = [
+      '<!-- <div style="color: red"><%= title %></div> -->',
+      '<!-- <div style="--brand-color: red; -webkit-user-select: none; color: var(--brand-color)">x</div> -->',
+      '<!-- <div style=" -->/* --brand-color: red; -webkit-user-select: none */<!-- ">x</div> -->',
+      '<div style="color: blue"><%= activeTitle %></div>',
+      '<div style="--brand-color: red; -webkit-user-select: none; color: var(--brand-color)">x</div>',
+    ];
+
+    for (const needle of ["color", "red"]) {
+      const token = tokenAtText(grammar, lines, 0, needle);
+      expect(token?.scopes, needle).toContain("comment.block.html");
+      expect(
+        token?.scopes.some((scope) => scope === "source.css.embedded.html"),
+        needle,
+      ).toBe(false);
+    }
+
+    for (const { line, needles, commentScope } of [
+      {
+        line: 1,
+        needles: ["--brand-color", "-webkit-user-select", "var(--brand-color)", "</div>"],
+        commentScope: "comment.block.html",
+      },
+      {
+        line: 2,
+        needles: ["--brand-color", "-webkit-user-select"],
+        commentScope: "comment.block.css",
+      },
+    ]) {
+      for (const needle of needles) {
+        const token = tokenAtText(grammar, lines, line, needle);
+        expect(token?.scopes, needle).toContain(commentScope);
+        expect(token?.scopes, needle).not.toContain("support.type.property-name.css");
+      }
+    }
+
+    for (const needle of ["<%=", "title", "%>"]) {
+      const token = tokenAtText(grammar, lines, 0, needle);
+      expect(token?.scopes, needle).toContain("comment.block.html");
+      expect(
+        token?.scopes.some((scope) => scope.includes("source.vbscript.embedded.asp")),
+        needle,
+      ).toBe(true);
+    }
+
+    expect(tokenAtText(grammar, lines, 3, "color")?.scopes).toContain("source.css.embedded.html");
+    expect(
+      tokenAtText(grammar, lines, 3, "activeTitle")?.scopes.some((scope) =>
+        scope.includes("source.vbscript.embedded.asp"),
+      ),
+    ).toBe(true);
+    for (const needle of ["--brand-color", "-webkit-user-select", "color"]) {
+      expect(tokenAtText(grammar, lines, 4, needle)?.scopes, needle).toContain(
+        "support.type.property-name.css",
+      );
+    }
+  });
+
   it("tokenizes root script tags between ASP procedure blocks as JavaScript", async () => {
     const grammar = await loadClassicAspTextMateGrammar();
     const source = `<% Sub A() %>
@@ -2715,20 +3293,39 @@ console.log(a);
 
   it("tokenizes ASP islands inside HTML attributes as embedded VBScript", async () => {
     const grammar = await loadClassicAspTextMateGrammar();
-    const source = `<input value="<%= Response.Write value %>" <% Response.Write "disabled" %>>`;
-    const lines = source.split("\n");
+    const lines = [
+      `<%= Response.Write value %>`,
+      `<input value="before <%= Response.Write value %> after" data-id='<% Response.Write itemId %>' <% Response.Write "disabled" %>>`,
+    ];
 
-    for (const { needle, scope } of [
-      { needle: "Response.Write value", scope: "source.vbscript.embedded.asp.expression" },
-      { needle: 'Response.Write "disabled"', scope: "source.vbscript.embedded.asp" },
+    for (const { line, needle, scope } of [
+      { line: 1, needle: "Response.Write value", scope: "source.vbscript.embedded.asp.expression" },
+      { line: 1, needle: "Response.Write itemId", scope: "source.vbscript.embedded.asp" },
+      { line: 1, needle: 'Response.Write "disabled"', scope: "source.vbscript.embedded.asp" },
     ]) {
-      const token = tokenAtText(grammar, lines, 0, needle);
+      const token = tokenAtText(grammar, lines, line, needle);
       expect(token?.scopes, needle).toContain(scope);
-      const vbscriptIndex = token?.scopes.indexOf(scope) ?? -1;
-      const stringIndex =
-        token?.scopes.findIndex((scope) => scope.includes("string.quoted.double.html")) ?? -1;
-      expect(vbscriptIndex).toBeGreaterThan(stringIndex);
+      expect(
+        token?.scopes.some(
+          (candidate) =>
+            candidate.includes("string.quoted.double.html") ||
+            candidate.includes("string.quoted.single.html"),
+        ),
+        needle,
+      ).toBe(false);
     }
+
+    const rootVBScopes =
+      tokenAtText(grammar, lines, 0, "Response.Write")?.scopes.filter((scope) =>
+        scope.includes("vbscript"),
+      ) ?? [];
+    const attributeVBScopes =
+      tokenAtText(grammar, lines, 1, "Response.Write")?.scopes.filter((scope) =>
+        scope.includes("vbscript"),
+      ) ?? [];
+    expect(attributeVBScopes).toEqual(rootVBScopes);
+    expect(tokenAtText(grammar, lines, 1, "before")?.scopes).toContain("string.quoted.double.html");
+    expect(tokenAtText(grammar, lines, 1, "after")?.scopes).toContain("string.quoted.double.html");
   });
 
   it("tokenizes ASP directives with directive-specific scopes", async () => {
@@ -2753,6 +3350,20 @@ console.log(a);
     );
     expect(tokenAtText(grammar, lines, 0, "%>")?.scopes).toContain(
       "punctuation.section.embedded.end.asp",
+    );
+  });
+
+  it("tokenizes dotted output lifecycle states with their configured colors", async () => {
+    const grammar = await loadAspLspOutputTextMateGrammar();
+    const line = "[asp-lsp] workspaceIndex.cancelled durationMs=100000";
+    expect(tokenAtText(grammar, [line], 0, "workspaceIndex")?.scopes).toContain(
+      "entity.name.function.step.asp-lsp-output",
+    );
+    expect(tokenAtText(grammar, [line], 0, "cancelled")?.scopes).toContain(
+      "keyword.control.state.asp-lsp-output",
+    );
+    expect(tokenAtText(grammar, [line], 0, "100000")?.scopes).toContain(
+      "constant.numeric.duration.asp-lsp-output",
     );
   });
 
@@ -2835,6 +3446,131 @@ console.log(a);
     expect(property?.scopes).toContain("support.type.property-name.css");
   });
 
+  it("ends CSS @property coloring before following CSS, HTML, JavaScript, and VBScript", async () => {
+    const grammar = await loadClassicAspTextMateGrammar();
+    const source = [
+      "<style>",
+      "@property --accent-color {",
+      '  syntax: "<color>";',
+      "  inherits: false;",
+      "  initial-value: <%= accentColor %>;",
+      "}",
+      "@property --surface-color {",
+      '  syntax: "*";',
+      "  inherits: true;",
+      "  initial-value: #c0ffee;",
+      "}",
+      ".after { color: red; }",
+      "</style>",
+      "<main>after</main>",
+      "<script>",
+      "const afterProperty = true;",
+      "</script>",
+      "<% Response.Write afterProperty %>",
+    ].join("\n");
+    const lines = source.split("\n");
+
+    for (const { line, needle } of [
+      { line: 1, needle: "@property" },
+      { line: 1, needle: "--accent-color" },
+      { line: 2, needle: "syntax" },
+      { line: 3, needle: "inherits" },
+      { line: 4, needle: "initial-value" },
+      { line: 6, needle: "@property" },
+      { line: 6, needle: "--surface-color" },
+      { line: 7, needle: "syntax" },
+      { line: 8, needle: "inherits" },
+      { line: 9, needle: "initial-value" },
+    ]) {
+      const token = tokenAtText(grammar, lines, line, needle);
+      expect(token?.scopes, needle).toContain("meta.at-rule.property.css");
+      expect(
+        token?.scopes.filter((scope) => scope === "meta.at-rule.property.css"),
+        needle,
+      ).toHaveLength(1);
+    }
+
+    expect(tokenAtText(grammar, lines, 2, "syntax")?.scopes).toContain(
+      "support.type.property-name.css",
+    );
+    expect(tokenAtText(grammar, lines, 2, '"<color>"')?.scopes).toContain(
+      "string.quoted.double.css",
+    );
+    expect(tokenAtText(grammar, lines, 3, "inherits")?.scopes).toContain(
+      "support.type.property-name.css",
+    );
+    expect(tokenAtText(grammar, lines, 3, "false")?.scopes).toContain(
+      "constant.language.boolean.css",
+    );
+    expect(tokenAtText(grammar, lines, 4, "initial-value")?.scopes).toContain(
+      "support.type.property-name.css",
+    );
+
+    expect(
+      tokenAtText(grammar, lines, 4, "accentColor")?.scopes.some((scope) =>
+        scope.includes("source.vbscript.embedded.asp"),
+      ),
+    ).toBe(true);
+    expect(tokenAtText(grammar, lines, 7, '"*"')?.scopes).toContain("string.quoted.double.css");
+    expect(tokenAtText(grammar, lines, 8, "true")?.scopes).toContain(
+      "constant.language.boolean.css",
+    );
+    expect(tokenAtText(grammar, lines, 9, "#c0ffee")?.scopes).toContain(
+      "constant.other.color.rgb-value.hex.css",
+    );
+
+    const followingSelector = tokenAtText(grammar, lines, 11, ".after");
+    expect(followingSelector?.scopes).toContain("source.css");
+    expect(followingSelector?.scopes).toContain("entity.other.attribute-name.class.css");
+    expect(followingSelector?.scopes).not.toContain("meta.at-rule.property.css");
+    const followingProperty = tokenAtText(grammar, lines, 11, "color");
+    expect(followingProperty?.scopes).toContain("support.type.property-name.css");
+    expect(followingProperty?.scopes).not.toContain("meta.at-rule.property.css");
+
+    const followingHTML = tokenAtText(grammar, lines, 13, "main");
+    expect(
+      followingHTML?.scopes.some(
+        (scope) => scope === "meta.tag.html" || scope === "meta.tag.structure.main.start.html",
+      ),
+    ).toBe(true);
+    expect(followingHTML?.scopes).not.toContain("source.css");
+    expect(followingHTML?.scopes).not.toContain("meta.at-rule.property.css");
+    const followingJavaScript = tokenAtText(grammar, lines, 15, "const");
+    expect(followingJavaScript?.scopes).toContain("source.js");
+    expect(followingJavaScript?.scopes).not.toContain("meta.at-rule.property.css");
+    const followingVBScript = tokenAtText(grammar, lines, 17, "Response.Write");
+    expect(
+      followingVBScript?.scopes.some((scope) => scope.includes("source.vbscript.embedded.asp")),
+    ).toBe(true);
+    expect(followingVBScript?.scopes).not.toContain("meta.at-rule.property.css");
+  });
+
+  it("recovers an unclosed CSS @property block at the style end tag", async () => {
+    const grammar = await loadClassicAspTextMateGrammar();
+    const lines = [
+      "<style>",
+      "@property --unfinished {",
+      '  syntax: "*";',
+      "</style>",
+      "<main>after</main>",
+      "<script>",
+      "const afterUnfinishedProperty = true;",
+      "</script>",
+    ];
+
+    expect(
+      tokenAtText(grammar, lines, 1, "@property")?.scopes.filter(
+        (scope) => scope === "meta.at-rule.property.css",
+      ),
+    ).toHaveLength(1);
+    const followingHTML = tokenAtText(grammar, lines, 4, "main");
+    expect(followingHTML?.scopes).not.toContain("source.css");
+    expect(followingHTML?.scopes).not.toContain("meta.at-rule.property.css");
+    const followingJavaScript = tokenAtText(grammar, lines, 6, "const");
+    expect(followingJavaScript?.scopes).toContain("source.js");
+    expect(followingJavaScript?.scopes).not.toContain("meta.at-rule.property.css");
+  });
+
   it("describes the COM type catalog schema for settings UI", () => {
     const manifest = JSON.parse(fs.readFileSync("package.json", "utf8")) as {
       contributes?: {
@@ -2896,75 +3632,53 @@ console.log(a);
     );
   });
 
-  it("resolves the packaged language server module path", () => {
-    const root = process.cwd();
-    const serverModule = getServerModulePath({
-      asAbsolutePath: (relativePath) => path.join(root, relativePath),
-    });
-    expect(serverModule).toBe(path.join(root, "server", "language-server", "dist", "server.js"));
-    expect(fs.existsSync(serverModule)).toBe(true);
-  });
-
-  it("bundles TypeScript browser libs for JavaScript language features", async () => {
-    const serverModule = path.join(process.cwd(), "server", "language-server", "dist", "server.js");
-    expect(fs.existsSync(path.join(path.dirname(serverModule), "lib.esnext.d.ts"))).toBe(true);
-    expect(fs.existsSync(path.join(path.dirname(serverModule), "lib.dom.d.ts"))).toBe(true);
-
-    const server = new RpcServer(serverModule);
-    const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "asp-lsp-bundled-js-"));
+  it("prefers the Go language server executable when it exists", () => {
+    const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "asp-lsp-go-resolver-"));
+    const extensionRoot = path.join(tempRoot, "apps", "vscode");
+    const binRoot = path.join(tempRoot, "bin");
+    const executableName = process.platform === "win32" ? "asp-lsp-go.exe" : "asp-lsp-go";
     try {
-      await server.start();
-      const uri = `file://${path.join(tempDir, "default.asp")}`;
-      await server.request("initialize", {
-        processId: process.pid,
-        rootUri: `file://${tempDir}`,
-        capabilities: {},
+      fs.mkdirSync(extensionRoot, { recursive: true });
+      fs.mkdirSync(binRoot, { recursive: true });
+      const executablePath = path.join(binRoot, executableName);
+      fs.writeFileSync(executablePath, "");
+      fs.chmodSync(executablePath, 0o755);
+      const serverPath = getServerExecutablePath({
+        asAbsolutePath: (relativePath) => path.join(extensionRoot, relativePath),
       });
-      server.notify("workspace/didChangeConfiguration", {
-        settings: { aspLsp: { checkJs: true, diagnostics: { debounceMs: 0 } } },
+      expect(serverPath).toEqual({
+        kind: "go",
+        command: path.join(extensionRoot, "..", "..", "bin", executableName),
       });
-      server.notify("textDocument/didOpen", {
-        textDocument: {
-          uri,
-          languageId: "classic-asp",
-          version: 1,
-          text: `<script>
-document.querySelector("#clientClock");
-new Intl.DateTimeFormat("en");
-</script>`,
-        },
-      });
-      await server.waitForNotification("textDocument/publishDiagnostics");
-
-      const diagnostics = await server.request("textDocument/diagnostic", {
-        textDocument: { uri },
-      });
-      const serialized = JSON.stringify(diagnostics);
-      expect(serialized).not.toContain("Cannot find name 'document'");
-      expect(serialized).not.toContain("Cannot find name 'Intl'");
-
-      await server.request("shutdown", null);
-      server.notify("exit", undefined);
+      expect(fs.existsSync(serverPath.kind === "go" ? serverPath.command : "")).toBe(true);
     } finally {
-      server.stop();
-      fs.rmSync(tempDir, { recursive: true, force: true });
+      fs.rmSync(tempRoot, { recursive: true, force: true });
     }
   });
 
-  it("packages a VSIX with the language server entrypoint", () => {
+  it("packages a VSIX with the language server entrypoint", async () => {
     const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "asp-lsp-vsix-"));
     const vsixPath = path.join(tempDir, "classic-asp-lsp.vsix");
     try {
       execFileSync(
-        path.join("node_modules", ".bin", "vsce"),
-        ["package", "--no-dependencies", "--follow-symlinks", "--out", vsixPath],
+        process.execPath,
+        [
+          path.join("node_modules", "@vscode", "vsce", "vsce"),
+          "package",
+          "--no-dependencies",
+          "--follow-symlinks",
+          "--out",
+          vsixPath,
+        ],
         { stdio: "pipe" },
       );
       expect(fs.existsSync(vsixPath)).toBe(true);
-      const listing = execFileSync("unzip", ["-l", vsixPath], { encoding: "utf8" });
+      const listing = (await readZipEntries(vsixPath)).join("\n");
       expect(listing).toContain("extension/dist/extension.js");
-      expect(listing).toContain("extension/dist/webview/include-graph.js");
+      expect(listing).not.toContain("extension/dist/webview/include-graph.js");
+      expect(listing).toContain("extension/dist/webview/flowchart.js");
       expect(listing).toContain("extension/dist/webview/navigation-graph.js");
+      expect(listing).toContain("extension/dist/webview/workspace-files.js");
       expect(listing).not.toContain("extension/dist/webview/settings.js");
       expect(listing).toContain("extension/syntaxes/classic-asp-tag-injection.tmLanguage.json");
       expect(listing).toContain("extension/syntaxes/classic-asp.tmLanguage.json");
@@ -2975,26 +3689,22 @@ new Intl.DateTimeFormat("en");
       expect(listing).toContain("extension/walkthroughs/getting-started-open-file.ja.md");
       expect(listing).toContain("extension/walkthroughs/getting-started-hints-codelens.md");
       expect(listing).toContain("extension/walkthroughs/getting-started-hints-codelens.ja.md");
-      expect(listing).toContain("extension/server/language-server/dist/server.js");
-      expect(listing).toContain("extension/server/language-server/dist/js-diagnostics-worker.js");
-      expect(listing).toContain("extension/server/language-server/dist/vb-diagnostics-worker.js");
-      expect(listing).toContain("extension/server/language-server/dist/vb-references-worker.js");
-      expect(listing).toContain("extension/server/language-server/dist/lib.esnext.d.ts");
-      expect(listing).toContain("extension/server/language-server/dist/lib.dom.d.ts");
+      expect(listing).toContain(
+        process.platform === "win32"
+          ? "extension/server/asp-lsp-go.exe"
+          : "extension/server/asp-lsp-go",
+      );
       expect(listing).not.toMatch(/extension\/.*\.map\b/);
-      expect(listing).not.toContain("extension/server/language-server/" + "nati" + "ve/");
       expect(listing).not.toMatch(/asp-lsp-core(\.exe)?/);
       const removedRuntimeName = "was" + "m";
       expect(listing).not.toContain(`.${removedRuntimeName}`);
-      expect(listing).not.toMatch(
-        new RegExp(`extension/server/language-server/.*${removedRuntimeName}`, "i"),
-      );
-      expect(listing).not.toContain("extension/server/language-server/node_modules/");
+      expect(listing).not.toMatch(new RegExp(`extension/server/.*${removedRuntimeName}`, "i"));
+      expect(listing).not.toContain("extension/server/node_modules/");
       expect(listing).not.toContain("extension/node_modules/");
     } finally {
       fs.rmSync(tempDir, { recursive: true, force: true });
     }
-  });
+  }, 60000);
 });
 
 type TextMateGrammar = NonNullable<Awaited<ReturnType<Registry["loadGrammar"]>>>;
@@ -3033,9 +3743,19 @@ async function loadClassicAspTextMateGrammar(): Promise<TextMateGrammar> {
         "vbscript.tmLanguage.json",
       ),
     ],
-    ["text.html.basic", parseRawGrammar(JSON.stringify(minimalHtmlGrammar()), "html.json")],
-    ["source.css", parseRawGrammar(JSON.stringify(minimalCssGrammar()), "css.json")],
-    ["source.js", parseRawGrammar(JSON.stringify(minimalJavaScriptGrammar()), "javascript.json")],
+    [
+      "text.html.basic",
+      loadHostGrammar("ASP_LSP_TEST_HTML_GRAMMAR", minimalHtmlGrammar(), "html.json"),
+    ],
+    ["source.css", loadHostGrammar("ASP_LSP_TEST_CSS_GRAMMAR", minimalCssGrammar(), "css.json")],
+    [
+      "source.js",
+      loadHostGrammar(
+        "ASP_LSP_TEST_JAVASCRIPT_GRAMMAR",
+        minimalJavaScriptGrammar(),
+        "javascript.json",
+      ),
+    ],
   ]);
   const registry = new Registry({
     onigLib,
@@ -3048,6 +3768,65 @@ async function loadClassicAspTextMateGrammar(): Promise<TextMateGrammar> {
     throw new Error("Failed to load Classic ASP TextMate grammar.");
   }
   return grammar;
+}
+
+async function loadVBScriptTextMateGrammar(): Promise<TextMateGrammar> {
+  const require = createRequire(path.join(process.cwd(), "package.json"));
+  const onigWasm = fs.readFileSync(require.resolve("vscode-oniguruma/release/onig.wasm"));
+  const onigBytes = onigWasm.buffer.slice(
+    onigWasm.byteOffset,
+    onigWasm.byteOffset + onigWasm.byteLength,
+  );
+  const onigLib = loadWASM(onigBytes).then(() => ({
+    createOnigScanner: (sources: string[]) => new OnigScanner(sources),
+    createOnigString: (value: string) => new OnigString(value),
+  }));
+  const rawGrammar = parseRawGrammar(
+    fs.readFileSync("syntaxes/vbscript.tmLanguage.json", "utf8"),
+    "vbscript.tmLanguage.json",
+  );
+  const registry = new Registry({
+    onigLib,
+    loadGrammar: async (scopeName) => (scopeName === "source.vbscript" ? rawGrammar : null),
+  });
+  const grammar = await registry.loadGrammar("source.vbscript");
+  if (!grammar) {
+    throw new Error("Failed to load VBScript TextMate grammar.");
+  }
+  return grammar;
+}
+
+async function loadAspLspOutputTextMateGrammar(): Promise<TextMateGrammar> {
+  const require = createRequire(path.join(process.cwd(), "package.json"));
+  const onigWasm = fs.readFileSync(require.resolve("vscode-oniguruma/release/onig.wasm"));
+  const onigBytes = onigWasm.buffer.slice(
+    onigWasm.byteOffset,
+    onigWasm.byteOffset + onigWasm.byteLength,
+  );
+  const onigLib = loadWASM(onigBytes).then(() => ({
+    createOnigScanner: (sources: string[]) => new OnigScanner(sources),
+    createOnigString: (value: string) => new OnigString(value),
+  }));
+  const rawGrammar = parseRawGrammar(
+    fs.readFileSync("syntaxes/asp-lsp-output.tmLanguage.json", "utf8"),
+    "asp-lsp-output.tmLanguage.json",
+  );
+  const registry = new Registry({
+    onigLib,
+    loadGrammar: async (scopeName) => (scopeName === "source.asp-lsp-output" ? rawGrammar : null),
+  });
+  const grammar = await registry.loadGrammar("source.asp-lsp-output");
+  if (!grammar) {
+    throw new Error("Failed to load ASP LSP output TextMate grammar.");
+  }
+  return grammar;
+}
+
+function loadHostGrammar(environmentName: string, fallback: object, fallbackPath: string) {
+  const grammarPath = process.env[environmentName];
+  return grammarPath
+    ? parseRawGrammar(fs.readFileSync(grammarPath, "utf8"), grammarPath)
+    : parseRawGrammar(JSON.stringify(fallback), fallbackPath);
 }
 
 function tokenAtText(
@@ -3152,6 +3931,23 @@ function minimalCssGrammar() {
       { match: "\\.[A-Za-z_][A-Za-z0-9_-]*", name: "entity.other.attribute-name.class.css" },
       { match: "-?[A-Za-z_][A-Za-z0-9_-]*(?=\\s*:)", name: "support.type.property-name.css" },
     ],
+    repository: {
+      "comment-block": {
+        begin: "/\\*",
+        end: "\\*/",
+        name: "comment.block.css",
+        patterns: aspIslandPatterns(),
+      },
+      "property-values": {
+        patterns: [
+          { begin: '"', end: '"', name: "string.quoted.double.css" },
+          { begin: "'", end: "'", name: "string.quoted.single.css" },
+          { include: "#comment-block" },
+          { match: "#[0-9A-Fa-f]{3,8}\\b", name: "constant.other.color.rgb-value.hex.css" },
+          { match: "\\b(?:true|false)\\b", name: "constant.language.boolean.css" },
+        ],
+      },
+    },
   };
 }
 
@@ -3199,108 +3995,4 @@ function aspIslandPatterns() {
     { include: "text.html.classic-asp#asp-directive" },
     { include: "text.html.classic-asp#asp-block" },
   ];
-}
-
-class RpcServer {
-  private child: ChildProcessWithoutNullStreams | undefined;
-  private nextId = 1;
-  private buffer = Buffer.alloc(0);
-  private stderr = "";
-  private responses = new Map<number, (message: JsonRpcMessage) => void>();
-  private notifications = new Map<string, Array<(message: JsonRpcMessage) => void>>();
-  private pendingNotifications = new Map<string, JsonRpcMessage[]>();
-
-  constructor(private readonly serverModule: string) {}
-
-  async start(): Promise<void> {
-    this.child = spawn(process.execPath, [this.serverModule, "--stdio"], {
-      cwd: process.cwd(),
-      stdio: ["pipe", "pipe", "pipe"],
-    });
-    this.child.stdout.on("data", (chunk: Buffer) => this.read(chunk));
-    this.child.stderr.on("data", (chunk: Buffer) => {
-      this.stderr += chunk.toString("utf8");
-    });
-  }
-
-  request(method: string, params: unknown): Promise<unknown> {
-    const id = this.nextId;
-    this.nextId += 1;
-    this.write({ jsonrpc: "2.0", id, method, params });
-    return new Promise((resolve, reject) => {
-      this.responses.set(id, (message) => resolve(message.result));
-      setTimeout(
-        () => reject(new Error(`Timed out waiting for ${method}: ${this.stderr}`)),
-        30_000,
-      );
-    });
-  }
-
-  notify(method: string, params: unknown): void {
-    this.write({ jsonrpc: "2.0", method, params });
-  }
-
-  waitForNotification(method: string): Promise<JsonRpcMessage> {
-    const pending = this.pendingNotifications.get(method);
-    const message = pending?.shift();
-    if (message) {
-      return Promise.resolve(message);
-    }
-    return new Promise((resolve, reject) => {
-      const callbacks = this.notifications.get(method) ?? [];
-      callbacks.push(resolve);
-      this.notifications.set(method, callbacks);
-      setTimeout(
-        () => reject(new Error(`Timed out waiting for ${method}: ${this.stderr}`)),
-        30_000,
-      );
-    });
-  }
-
-  stop(): void {
-    this.child?.kill();
-  }
-
-  private write(message: unknown): void {
-    const body = JSON.stringify(message);
-    this.child?.stdin.write(`Content-Length: ${Buffer.byteLength(body, "utf8")}\r\n\r\n${body}`);
-  }
-
-  private read(chunk: Buffer): void {
-    this.buffer = Buffer.concat([this.buffer, chunk]);
-    while (true) {
-      const headerEnd = this.buffer.indexOf("\r\n\r\n");
-      if (headerEnd === -1) {
-        return;
-      }
-      const header = this.buffer.slice(0, headerEnd).toString("utf8");
-      const length = /Content-Length:\s*(\d+)/i.exec(header)?.[1];
-      if (!length) {
-        throw new Error(`Missing Content-Length header: ${header}`);
-      }
-      const bodyStart = headerEnd + 4;
-      const bodyEnd = bodyStart + Number(length);
-      if (this.buffer.length < bodyEnd) {
-        return;
-      }
-      const message = JSON.parse(
-        this.buffer.slice(bodyStart, bodyEnd).toString("utf8"),
-      ) as JsonRpcMessage;
-      this.buffer = this.buffer.slice(bodyEnd);
-      if (message.id !== undefined) {
-        this.responses.get(message.id)?.(message);
-        this.responses.delete(message.id);
-      } else if (message.method) {
-        const callbacks = this.notifications.get(message.method) ?? [];
-        const callback = callbacks.shift();
-        if (callback) {
-          callback(message);
-        } else {
-          const pending = this.pendingNotifications.get(message.method) ?? [];
-          pending.push(message);
-          this.pendingNotifications.set(message.method, pending);
-        }
-      }
-    }
-  }
 }

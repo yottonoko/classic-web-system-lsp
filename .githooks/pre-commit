@@ -1,0 +1,37 @@
+#!/bin/sh
+set -eu
+
+if [ -e ".gitmodules" ]; then
+  cat >&2 <<'EOF'
+Refusing to commit .gitmodules.
+
+third_party dependencies are vendored directly in this repository, not tracked
+as git submodules.
+EOF
+  exit 1
+fi
+
+gitlinks="$(git ls-files -s | awk '$1 == "160000" { print $4 }')"
+if [ -n "$gitlinks" ]; then
+  cat >&2 <<'EOF'
+Refusing to commit gitlink entries.
+
+All third_party dependencies must be plain vendored files, not submodules.
+Remove the gitlink entries before committing.
+EOF
+  exit 1
+fi
+
+if [ -d third_party ]; then
+  nested_git_metadata="$(find third_party \( -name .git -o -name .gitmodules \) -print -quit)"
+  if [ -n "$nested_git_metadata" ]; then
+    cat >&2 <<'EOF'
+Refusing to commit vendored dependencies with nested git metadata.
+
+Remove nested .git or .gitmodules files under third_party before committing.
+EOF
+    exit 1
+  fi
+fi
+
+exit 0

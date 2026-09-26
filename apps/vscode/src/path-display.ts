@@ -1,5 +1,6 @@
 import path from "node:path";
 import * as vscode from "vscode";
+import { uriTextForVSCode } from "./uri-encoding";
 
 export function displayPathForUri(uri: vscode.Uri): string {
   if (uri.scheme !== "file") {
@@ -18,7 +19,7 @@ export function displayPathForUriText(uriText: string | undefined): string | und
     return undefined;
   }
   try {
-    return displayPathForUri(vscode.Uri.parse(uriText));
+    return displayPathForUri(vscode.Uri.parse(uriTextForVSCode(uriText)));
   } catch {
     return uriText;
   }

@@ -1,7 +1,7 @@
 {
   "name": "classic-asp-lsp",
   "displayName": "Classic ASP LSP",
-  "version": "0.7.17",
+  "version": "0.8.8",
   "private": true,
   "description": "%extension.description%",
   "categories": [
@@ -27,40 +27,33 @@
   "publisher": "yottonoko",
   "main": "./dist/extension.js",
   "scripts": {
-    "build": "tsc -p tsconfig.json && tsc --noEmit -p tsconfig.webview.json && node scripts/bundle-extension.mjs && node scripts/build-webview.mjs && node scripts/copy-server-runtime.mjs",
+    "build": "node scripts/clean-dist.mjs && tsc --noEmit -p tsconfig.json && tsc --noEmit -p tsconfig.webview.json && node scripts/bundle-extension.mjs && node scripts/build-webview.mjs && node scripts/copy-server-runtime.mjs",
     "typecheck": "tsc --noEmit -p tsconfig.json && tsc --noEmit -p tsconfig.webview.json",
-    "lint": "oxlint src test --deny-warnings --no-error-on-unmatched-pattern",
-    "package:vsix": "pnpm --filter @asp-lsp/core run build && pnpm --filter @asp-lsp/language-server run build && pnpm run build && vsce package --no-dependencies --follow-symlinks",
-    "test": "pnpm --filter @asp-lsp/core run build && pnpm --filter @asp-lsp/language-server run build && pnpm run build && vitest run --passWithNoTests"
+    "lint": "oxlint src test --deny-warnings",
+    "package:vsix": "pnpm run build && node scripts/collect-licenses.mjs && node scripts/clean-vsix.mjs && vsce package --no-dependencies --follow-symlinks",
+    "test": "pnpm run build && vitest run"
   },
   "dependencies": {
-    "@asp-lsp/core": "workspace:*",
-    "@asp-lsp/language-server": "workspace:*",
-    "@tanstack/react-virtual": "^3.14.2",
-    "@xyflow/react": "^12.11.0",
+    "@solidjs/web": "2.0.0-rc.6",
+    "@tanstack/virtual-core": "3.17.7",
     "clsx": "^2.1.1",
-    "codehike": "^1.1.0",
-    "elkjs": "^0.11.1",
-    "mermaid": "^11.15.0",
-    "react": "19.2.7",
-    "react-dom": "19.2.7",
-    "react-force-graph-2d": "1.29.1",
-    "react-force-graph-3d": "1.29.1",
+    "elkjs": "^0.12.0",
+    "mermaid": "^11.16.1",
+    "solid-js": "2.0.0-rc.6",
     "tailwind-merge": "^3.6.0",
-    "three-spritetext": "1.10.0",
-    "vscode-languageclient": "^9.0.1"
+    "vscode-languageclient": "^10.1.0"
   },
   "devDependencies": {
-    "@tailwindcss/vite": "^4.3.0",
-    "@types/react": "19.2.16",
-    "@types/react-dom": "19.2.3",
-    "@vitejs/plugin-react": "6.0.2",
-    "@vscode/vsce": "^3.9.1",
-    "rolldown": "^1.0.1",
-    "tailwindcss": "^4.3.0",
-    "vite": "8.0.16",
+    "@solidjs/vite-plugin": "3.0.0-next.39",
+    "@tailwindcss/vite": "^4.3.3",
+    "@types/yauzl": "^3.4.0",
+    "@vscode/vsce": "^3.9.2",
+    "rolldown": "^1.2.1",
+    "tailwindcss": "^4.3.3",
+    "vite": "8.2.0",
     "vscode-oniguruma": "^2.0.1",
-    "vscode-textmate": "^9.3.2"
+    "vscode-textmate": "^9.3.2",
+    "yauzl": "^3.4.0"
   },
   "contributes": {
     "languages": [
@@ -241,7 +234,6 @@
             },
             "completionEvents": [
               "onCommand:aspLsp.showWorkspaceGlobFiles",
-              "onCommand:aspLsp.showCurrentFileGraph",
               "onCommand:aspLsp.showCurrentFileFlowchart"
             ]
           }
@@ -1292,6 +1284,11 @@
           "default": true,
           "description": "%configuration.vbscript.unusedDiagnostics.description%"
         },
+        "aspLsp.vbscript.implicitGlobalDiagnostics": {
+          "type": "boolean",
+          "default": false,
+          "description": "%configuration.vbscript.implicitGlobalDiagnostics.description%"
+        },
         "aspLsp.vbscript.deadCodeDiagnostics": {
           "type": "boolean",
           "default": true,
@@ -1307,10 +1304,26 @@
           "default": true,
           "description": "%configuration.vbscript.syntaxKeywords.description%"
         },
+        "aspLsp.vbscript.autoIncludes": {
+          "type": "boolean",
+          "default": false,
+          "description": "%configuration.vbscript.autoIncludes.description%",
+          "tags": [
+            "advanced"
+          ]
+        },
         "aspLsp.vbscript.showUnresolvedSymbolsInCompletion": {
           "type": "boolean",
           "default": false,
           "description": "%configuration.vbscript.showUnresolvedSymbolsInCompletion.description%",
+          "tags": [
+            "advanced"
+          ]
+        },
+        "aspLsp.vbscript.assumeUndefinedGlobals": {
+          "type": "boolean",
+          "default": false,
+          "description": "%configuration.vbscript.assumeUndefinedGlobals.description%",
           "tags": [
             "advanced"
           ]
@@ -1400,18 +1413,6 @@
           "default": true,
           "description": "%configuration.codeLens.referenceClassMembers.description%"
         },
-        "aspLsp.codeLens.referenceScope": {
-          "type": "string",
-          "enum": [
-            "analyzed",
-            "workspace"
-          ],
-          "default": "analyzed",
-          "description": "%configuration.codeLens.referenceScope.description%",
-          "tags": [
-            "advanced"
-          ]
-        },
         "aspLsp.codeLens.includeRelatedIncludeTreesForUnresolved": {
           "type": "boolean",
           "default": true,
@@ -1449,24 +1450,6 @@
           ],
           "default": "nearby",
           "description": "%configuration.styleExtraction.insertionMode.description%"
-        },
-        "aspLsp.flowchart.maxTextSize": {
-          "type": "number",
-          "minimum": 1,
-          "default": 2000000,
-          "description": "%configuration.flowchart.maxTextSize.description%",
-          "tags": [
-            "advanced"
-          ]
-        },
-        "aspLsp.flowchart.maxEdges": {
-          "type": "number",
-          "minimum": 1,
-          "default": 100000,
-          "description": "%configuration.flowchart.maxEdges.description%",
-          "tags": [
-            "advanced"
-          ]
         },
         "aspLsp.flowchart.labelLineLength": {
           "type": "number",
@@ -1516,23 +1499,32 @@
           "default": true,
           "description": "%configuration.flowchart.showSourcePanel.description%"
         },
-        "aspLsp.navigationGraph.maxNodes": {
-          "type": "number",
-          "minimum": 1,
-          "default": 500,
-          "description": "%configuration.navigationGraph.maxNodes.description%",
-          "tags": [
-            "advanced"
-          ]
+        "aspLsp.flowchart.openLocation": {
+          "type": "string",
+          "enum": [
+            "active",
+            "beside"
+          ],
+          "default": "active",
+          "description": "%configuration.flowchart.openLocation.description%"
         },
-        "aspLsp.navigationGraph.maxEdges": {
-          "type": "number",
-          "minimum": 1,
-          "default": 1200,
-          "description": "%configuration.navigationGraph.maxEdges.description%",
-          "tags": [
-            "advanced"
-          ]
+        "aspLsp.navigationGraph.openLocation": {
+          "type": "string",
+          "enum": [
+            "active",
+            "beside"
+          ],
+          "default": "active",
+          "description": "%configuration.navigationGraph.openLocation.description%"
+        },
+        "aspLsp.workspaceFiles.openLocation": {
+          "type": "string",
+          "enum": [
+            "active",
+            "beside"
+          ],
+          "default": "active",
+          "description": "%configuration.workspaceFiles.openLocation.description%"
         },
         "aspLsp.webview.theme": {
           "type": "string",
@@ -1543,248 +1535,6 @@
           ],
           "default": "auto",
           "description": "%configuration.webview.theme.description%"
-        },
-        "aspLsp.graph.showRootNodes": {
-          "type": "boolean",
-          "default": true,
-          "description": "%configuration.graph.showRootNodes.description%"
-        },
-        "aspLsp.graph.showFileNodes": {
-          "type": "boolean",
-          "default": true,
-          "description": "%configuration.graph.showFileNodes.description%"
-        },
-        "aspLsp.graph.showFunctionNodes": {
-          "type": "boolean",
-          "default": true,
-          "description": "%configuration.graph.showFunctionNodes.description%"
-        },
-        "aspLsp.graph.showSubNodes": {
-          "type": "boolean",
-          "default": true,
-          "description": "%configuration.graph.showSubNodes.description%"
-        },
-        "aspLsp.graph.showClassNodes": {
-          "type": "boolean",
-          "default": true,
-          "description": "%configuration.graph.showClassNodes.description%"
-        },
-        "aspLsp.graph.showMethodNodes": {
-          "type": "boolean",
-          "default": false,
-          "description": "%configuration.graph.showMethodNodes.description%"
-        },
-        "aspLsp.graph.showMethodFunctionNodes": {
-          "type": "boolean",
-          "default": false,
-          "description": "%configuration.graph.showMethodFunctionNodes.description%"
-        },
-        "aspLsp.graph.showMethodSubNodes": {
-          "type": "boolean",
-          "default": false,
-          "description": "%configuration.graph.showMethodSubNodes.description%"
-        },
-        "aspLsp.graph.showPropertyNodes": {
-          "type": "boolean",
-          "default": false,
-          "description": "%configuration.graph.showPropertyNodes.description%"
-        },
-        "aspLsp.graph.showMemberNodes": {
-          "type": "boolean",
-          "default": false,
-          "description": "%configuration.graph.showMemberNodes.description%"
-        },
-        "aspLsp.graph.showGlobalVariableNodes": {
-          "type": "boolean",
-          "default": true,
-          "description": "%configuration.graph.showGlobalVariableNodes.description%"
-        },
-        "aspLsp.graph.showGlobalConstantNodes": {
-          "type": "boolean",
-          "default": true,
-          "description": "%configuration.graph.showGlobalConstantNodes.description%"
-        },
-        "aspLsp.graph.showLocalVariableNodes": {
-          "type": "boolean",
-          "default": false,
-          "description": "%configuration.graph.showLocalVariableNodes.description%"
-        },
-        "aspLsp.graph.showLocalConstantNodes": {
-          "type": "boolean",
-          "default": false,
-          "description": "%configuration.graph.showLocalConstantNodes.description%"
-        },
-        "aspLsp.graph.showParameterNodes": {
-          "type": "boolean",
-          "default": false,
-          "description": "%configuration.graph.showParameterNodes.description%"
-        },
-        "aspLsp.graph.showUnresolvedNodes": {
-          "type": "boolean",
-          "default": true,
-          "description": "%configuration.graph.showUnresolvedNodes.description%"
-        },
-        "aspLsp.graph.hideSingleNodes": {
-          "type": "boolean",
-          "default": true,
-          "description": "%configuration.graph.hideSingleNodes.description%"
-        },
-        "aspLsp.graph.hideUnreferencedGlobalSymbols": {
-          "type": "boolean",
-          "default": true,
-          "description": "%configuration.graph.hideUnreferencedGlobalSymbols.description%"
-        },
-        "aspLsp.graph.showOutgoingSelectionLinks": {
-          "type": "boolean",
-          "default": true,
-          "description": "%configuration.graph.showOutgoingSelectionLinks.description%"
-        },
-        "aspLsp.graph.showIncludeLinks": {
-          "type": "boolean",
-          "default": true,
-          "description": "%configuration.graph.showIncludeLinks.description%"
-        },
-        "aspLsp.graph.showDeclareLinks": {
-          "type": "boolean",
-          "default": true,
-          "description": "%configuration.graph.showDeclareLinks.description%"
-        },
-        "aspLsp.graph.showReferenceLinks": {
-          "type": "boolean",
-          "default": true,
-          "description": "%configuration.graph.showReferenceLinks.description%"
-        },
-        "aspLsp.graph.showAssignmentLinks": {
-          "type": "boolean",
-          "default": true,
-          "description": "%configuration.graph.showAssignmentLinks.description%"
-        },
-        "aspLsp.graph.showCallLinks": {
-          "type": "boolean",
-          "default": true,
-          "description": "%configuration.graph.showCallLinks.description%"
-        },
-        "aspLsp.graph.showUnresolvedLinks": {
-          "type": "boolean",
-          "default": true,
-          "description": "%configuration.graph.showUnresolvedLinks.description%"
-        },
-        "aspLsp.graph.showMemberLinks": {
-          "type": "boolean",
-          "default": true,
-          "description": "%configuration.graph.showMemberLinks.description%"
-        },
-        "aspLsp.graph.showIncomingDocumentIncludes": {
-          "type": "boolean",
-          "default": false,
-          "description": "%configuration.graph.showIncomingDocumentIncludes.description%",
-          "tags": [
-            "advanced"
-          ]
-        },
-        "aspLsp.graph.showIncomingFolderIncludes": {
-          "type": "boolean",
-          "default": false,
-          "description": "%configuration.graph.showIncomingFolderIncludes.description%",
-          "tags": [
-            "advanced"
-          ]
-        },
-        "aspLsp.graph.useReverseIncludeIndex": {
-          "type": "boolean",
-          "default": true,
-          "description": "%configuration.graph.useReverseIncludeIndex.description%",
-          "tags": [
-            "advanced"
-          ]
-        },
-        "aspLsp.graph.includeRelatedIncludeTreesForUnresolved": {
-          "type": "boolean",
-          "default": true,
-          "description": "%configuration.graph.includeRelatedIncludeTreesForUnresolved.description%",
-          "tags": [
-            "advanced"
-          ]
-        },
-        "aspLsp.graph.maxDocuments": {
-          "type": "number",
-          "minimum": 1,
-          "default": 5000,
-          "description": "%configuration.graph.maxDocuments.description%",
-          "tags": [
-            "advanced"
-          ]
-        },
-        "aspLsp.graph.maxTextLength": {
-          "type": "number",
-          "minimum": 1,
-          "default": 268435456,
-          "description": "%configuration.graph.maxTextLength.description%",
-          "tags": [
-            "advanced"
-          ]
-        },
-        "aspLsp.graph.maxNodes": {
-          "type": "number",
-          "minimum": 1,
-          "default": 5000,
-          "description": "%configuration.graph.maxNodes.description%",
-          "tags": [
-            "advanced"
-          ]
-        },
-        "aspLsp.graph.includeTreeMaxDocuments": {
-          "type": "number",
-          "minimum": 1,
-          "default": 256,
-          "description": "%configuration.graph.includeTreeMaxDocuments.description%",
-          "tags": [
-            "advanced"
-          ]
-        },
-        "aspLsp.graph.includeTreeMaxTextLength": {
-          "type": "number",
-          "minimum": 1,
-          "default": 16777216,
-          "description": "%configuration.graph.includeTreeMaxTextLength.description%",
-          "tags": [
-            "advanced"
-          ]
-        },
-        "aspLsp.graph.workerSymbolExtraction": {
-          "type": "boolean",
-          "default": false,
-          "description": "%configuration.graph.workerSymbolExtraction.description%",
-          "tags": [
-            "advanced"
-          ]
-        },
-        "aspLsp.graph.initialViewMode": {
-          "type": "string",
-          "enum": [
-            "2d",
-            "3d"
-          ],
-          "default": "2d",
-          "description": "%configuration.graph.initialViewMode.description%"
-        },
-        "aspLsp.graph.infoPanelPosition": {
-          "type": "string",
-          "enum": [
-            "left",
-            "right"
-          ],
-          "default": "right",
-          "description": "%configuration.graph.infoPanelPosition.description%"
-        },
-        "aspLsp.graph.openLocation": {
-          "type": "string",
-          "enum": [
-            "active",
-            "beside"
-          ],
-          "default": "active",
-          "description": "%configuration.graph.openLocation.description%"
         },
         "aspLsp.excel.includeRelatedIncludeTreesForUnresolved": {
           "type": "boolean",
@@ -1798,42 +1548,6 @@
           "type": "boolean",
           "default": false,
           "description": "%configuration.excel.skipTypeInference.description%",
-          "tags": [
-            "advanced"
-          ]
-        },
-        "aspLsp.excel.maxDocuments": {
-          "type": "number",
-          "minimum": 1,
-          "default": 8192,
-          "description": "%configuration.excel.maxDocuments.description%",
-          "tags": [
-            "advanced"
-          ]
-        },
-        "aspLsp.excel.maxTextLength": {
-          "type": "number",
-          "minimum": 1,
-          "default": 536870912,
-          "description": "%configuration.excel.maxTextLength.description%",
-          "tags": [
-            "advanced"
-          ]
-        },
-        "aspLsp.excel.includeTreeMaxDocuments": {
-          "type": "number",
-          "minimum": 1,
-          "default": 1024,
-          "description": "%configuration.excel.includeTreeMaxDocuments.description%",
-          "tags": [
-            "advanced"
-          ]
-        },
-        "aspLsp.excel.includeTreeMaxTextLength": {
-          "type": "number",
-          "minimum": 1,
-          "default": 67108864,
-          "description": "%configuration.excel.includeTreeMaxTextLength.description%",
           "tags": [
             "advanced"
           ]
@@ -1889,8 +1603,16 @@
         "aspLsp.cache.maxSizeMb": {
           "type": "number",
           "minimum": 1,
-          "default": 128,
+          "default": 16384,
           "description": "%configuration.cache.maxSizeMb.description%",
+          "tags": [
+            "advanced"
+          ]
+        },
+        "aspLsp.cache.gzip": {
+          "type": "boolean",
+          "default": false,
+          "description": "%configuration.cache.gzip.description%",
           "tags": [
             "advanced"
           ]
@@ -1988,15 +1710,6 @@
           "default": false,
           "description": "%configuration.workspace.respectGitIgnore.description%"
         },
-        "aspLsp.workspace.maxIndexFiles": {
-          "type": "number",
-          "minimum": 1,
-          "default": 5000,
-          "description": "%configuration.workspace.maxIndexFiles.description%",
-          "tags": [
-            "advanced"
-          ]
-        },
         "aspLsp.workspace.scanChunkSize": {
           "type": "number",
           "minimum": 1,
@@ -2011,24 +1724,6 @@
           "minimum": 0,
           "default": 0,
           "description": "%configuration.workspace.busyAnalysisConcurrency.description%",
-          "tags": [
-            "advanced"
-          ]
-        },
-        "aspLsp.workspace.vbProjectMaxDocuments": {
-          "type": "number",
-          "minimum": 1,
-          "default": 256,
-          "description": "%configuration.workspace.vbProjectMaxDocuments.description%",
-          "tags": [
-            "advanced"
-          ]
-        },
-        "aspLsp.workspace.vbProjectMaxTextLength": {
-          "type": "number",
-          "minimum": 1,
-          "default": 16777216,
-          "description": "%configuration.workspace.vbProjectMaxTextLength.description%",
           "tags": [
             "advanced"
           ]
@@ -2061,22 +1756,12 @@
         "title": "%command.openOutput.title%"
       },
       {
+        "command": "aspLsp.toggleLineComment",
+        "title": "%command.toggleLineComment.title%"
+      },
+      {
         "command": "aspLsp.showProgressDetails",
         "title": "%command.showProgressDetails.title%"
-      },
-      {
-        "command": "aspLsp.showCurrentFileGraph",
-        "title": "%command.showCurrentFileGraph.title%",
-        "icon": "$(graph)"
-      },
-      {
-        "command": "aspLsp.showFolderGraph",
-        "title": "%command.showFolderGraph.title%",
-        "icon": "$(graph)"
-      },
-      {
-        "command": "aspLsp.showWorkspaceGraph",
-        "title": "%command.showWorkspaceGraph.title%"
       },
       {
         "command": "aspLsp.showCurrentFileNavigationGraph",
@@ -2110,6 +1795,10 @@
       {
         "command": "aspLsp.exportCurrentFileFlowchart",
         "title": "%command.exportCurrentFileFlowchart.title%"
+      },
+      {
+        "command": "aspLsp.analyzeDebugLog",
+        "title": "%command.analyzeDebugLog.title%"
       }
     ],
     "keybindings": [
@@ -2121,12 +1810,14 @@
       }
     ],
     "menus": {
-      "editor/title": [
+      "editor/context": [
         {
-          "command": "aspLsp.showCurrentFileGraph",
-          "when": "editorLangId == classic-asp",
-          "group": "navigation"
-        },
+          "command": "aspLsp.toggleLineComment",
+          "when": "editorTextFocus && editorLangId == classic-asp",
+          "group": "1_modification"
+        }
+      ],
+      "editor/title": [
         {
           "command": "aspLsp.showCurrentFileNavigationGraph",
           "when": "editorLangId == classic-asp",
@@ -2145,18 +1836,13 @@
       ],
       "explorer/context": [
         {
-          "command": "aspLsp.showFolderGraph",
-          "when": "explorerResourceIsFolder",
-          "group": "navigation"
-        },
-        {
           "command": "aspLsp.showFolderNavigationGraph",
           "when": "explorerResourceIsFolder",
           "group": "navigation"
         },
         {
-          "command": "aspLsp.showCurrentFileGraph",
-          "when": "resourceExtname =~ /\\.(asp|asa|inc)$/i",
+          "command": "aspLsp.showWorkspaceNavigationGraph",
+          "when": "explorerResourceIsFolder",
           "group": "navigation"
         },
         {
@@ -2183,7 +1869,7 @@
     "theme": "dark"
   },
   "engines": {
-    "vscode": "^1.96.0"
+    "vscode": "^1.125.0"
   },
   "capabilities": {
     "untrustedWorkspaces": {

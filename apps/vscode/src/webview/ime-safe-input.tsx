@@ -1,4 +1,6 @@
-import React, { useEffect, useRef } from "react";
+import { createEffect, omit, type Accessor } from "solid-js";
+import { Dynamic, type JSX } from "@solidjs/web";
+import type { WebviewEvent, WebviewRef } from "./webview-dom-types";
 
 type TextControlElement = HTMLInputElement | HTMLTextAreaElement;
 
@@ -8,28 +10,22 @@ export interface ImeCompositionSnapshot {
   value: string;
 }
 
-function assignForwardedRef<T>(ref: React.ForwardedRef<T>, value: T | null): void {
-  if (typeof ref === "function") {
-    ref(value);
-  } else if (ref) {
-    ref.current = value;
-  }
-}
-
-function nativeEventIsComposing(event: React.ChangeEvent<TextControlElement>): boolean {
-  return (event.nativeEvent as Event & { isComposing?: boolean }).isComposing === true;
+function nativeEventIsComposing(event: WebviewEvent<Event, TextControlElement>): boolean {
+  return (event as Event & { isComposing?: boolean }).isComposing === true;
 }
 
 export function imeSafeKeyboardEventIsComposing(
-  event: KeyboardEvent | React.KeyboardEvent<Element>,
+  event: KeyboardEvent | WebviewEvent<KeyboardEvent, Element>,
 ): boolean {
-  const nativeEvent = "nativeEvent" in event ? event.nativeEvent : event;
+  const nativeEvent = event;
   const keyboardEvent = nativeEvent as KeyboardEvent & { isComposing?: boolean };
   return keyboardEvent.isComposing === true || keyboardEvent.keyCode === 229;
 }
 
-function inputEventCompositionText(event: React.FormEvent<TextControlElement>): string | undefined {
-  const nativeEvent = event.nativeEvent as Event & {
+function inputEventCompositionText(
+  event: WebviewEvent<Event, TextControlElement>,
+): string | undefined {
+  const nativeEvent = event as Event & {
     data?: string | null;
     inputType?: string;
     isComposing?: boolean;
@@ -250,48 +246,52 @@ export function imeSafeShouldWriteExternalValue(
   return !(lastEmittedValue !== undefined && currentValue === lastEmittedValue);
 }
 
-function useImeSafeTextControl<T extends TextControlElement>(
-  value: string,
+function createImeSafeTextControl<T extends TextControlElement>(
+  value: Accessor<string>,
   onValueChange: (value: string) => void,
 ): {
-  elementRef: React.RefObject<T | null>;
-  onBeforeInput(event: React.FormEvent<T>): void;
-  onChange(event: React.ChangeEvent<T>): void;
-  onCompositionEnd(event: React.CompositionEvent<T>): void;
-  onCompositionStart(event: React.CompositionEvent<T>): void;
-  onCompositionUpdate(event: React.CompositionEvent<T>): void;
-  onSelect(event: React.SyntheticEvent<T>): void;
+  elementRef: WebviewRef<T | null>;
+  onBeforeInput(event: WebviewEvent<Event, T>): void;
+  onChange(event: WebviewEvent<Event, T>): void;
+  onCompositionEnd(event: WebviewEvent<CompositionEvent, T>): void;
+  onCompositionStart(event: WebviewEvent<CompositionEvent, T>): void;
+  onCompositionUpdate(event: WebviewEvent<CompositionEvent, T>): void;
+  onSelect(event: WebviewEvent<Event, T>): void;
 } {
-  const elementRef = useRef<T>(null);
-  const isComposingRef = useRef(false);
-  const compositionSnapshotRef = useRef<ImeCompositionSnapshot | undefined>(undefined);
-  const latestCompositionTextRef = useRef<string | undefined>(undefined);
-  const lastEmittedValueRef = useRef<string | undefined>(undefined);
-  const previousSelectionSnapshotRef = useRef<ImeCompositionSnapshot | undefined>(undefined);
+  const elementRef: { current: T | null } = { current: null };
+  const isComposingRef = { current: false };
+  const compositionSnapshotRef: { current: ImeCompositionSnapshot | undefined } = {
+    current: undefined,
+  };
+  const latestCompositionTextRef: { current: string | undefined } = { current: undefined };
+  const lastEmittedValueRef: { current: string | undefined } = { current: undefined };
+  const previousSelectionSnapshotRef: { current: ImeCompositionSnapshot | undefined } = {
+    current: undefined,
+  };
   const emitValueChange = (nextValue: string): void => {
     lastEmittedValueRef.current = nextValue;
     onValueChange(nextValue);
   };
 
-  useEffect(() => {
+  createEffect(value, (currentValue) => {
     const element = elementRef.current;
     if (!element) {
       return;
     }
-    if (lastEmittedValueRef.current === value) {
+    if (lastEmittedValueRef.current === currentValue) {
       lastEmittedValueRef.current = undefined;
     }
     if (
       imeSafeShouldWriteExternalValue(
         element.value,
-        value,
+        currentValue,
         lastEmittedValueRef.current,
         isComposingRef.current,
       )
     ) {
-      element.value = value;
+      element.value = currentValue;
     }
-  }, [value]);
+  });
 
   return {
     elementRef,
@@ -344,116 +344,90 @@ function useImeSafeTextControl<T extends TextControlElement>(
   };
 }
 
-type ImeSafeInputProps = Omit<
-  React.InputHTMLAttributes<HTMLInputElement>,
-  "defaultValue" | "onChange" | "value"
-> & {
-  onValueChange(value: string): void;
+type TextControlProps = {
   value: string;
+  onValueChange(value: string): void;
 };
-
-export const ImeSafeInput = React.forwardRef<HTMLInputElement, ImeSafeInputProps>(
-  function ImeSafeInput(
-    {
-      onBeforeInput,
-      onCompositionEnd,
-      onCompositionStart,
-      onCompositionUpdate,
-      onSelect,
-      onValueChange,
-      value,
-      ...props
-    },
-    forwardedRef,
-  ): React.ReactElement {
-    const textControl = useImeSafeTextControl<HTMLInputElement>(value, onValueChange);
-    return (
-      <input
-        {...props}
-        defaultValue={value}
-        onBeforeInput={(event) => {
-          textControl.onBeforeInput(event);
-          onBeforeInput?.(event);
-        }}
-        onChange={textControl.onChange}
-        onCompositionEnd={(event) => {
-          textControl.onCompositionEnd(event);
-          onCompositionEnd?.(event);
-        }}
-        onCompositionStart={(event) => {
-          textControl.onCompositionStart(event);
-          onCompositionStart?.(event);
-        }}
-        onCompositionUpdate={(event) => {
-          textControl.onCompositionUpdate(event);
-          onCompositionUpdate?.(event);
-        }}
-        onSelect={(event) => {
-          textControl.onSelect(event);
-          onSelect?.(event);
-        }}
-        ref={(element) => {
-          textControl.elementRef.current = element;
-          assignForwardedRef(forwardedRef, element);
-        }}
-      />
-    );
-  },
-);
-
+type ImeSafeInputProps = Omit<JSX.IntrinsicElements["input"], "value" | "onInput" | "onChange"> &
+  TextControlProps;
 type ImeSafeTextareaProps = Omit<
-  React.TextareaHTMLAttributes<HTMLTextAreaElement>,
-  "defaultValue" | "onChange" | "value"
-> & {
-  onValueChange(value: string): void;
-  value: string;
-};
+  JSX.IntrinsicElements["textarea"],
+  "value" | "onInput" | "onChange"
+> &
+  TextControlProps;
 
-export const ImeSafeTextarea = React.forwardRef<HTMLTextAreaElement, ImeSafeTextareaProps>(
-  function ImeSafeTextarea(
-    {
-      onBeforeInput,
-      onCompositionEnd,
-      onCompositionStart,
-      onCompositionUpdate,
-      onSelect,
-      onValueChange,
-      value,
-      ...props
-    },
-    forwardedRef,
-  ): React.ReactElement {
-    const textControl = useImeSafeTextControl<HTMLTextAreaElement>(value, onValueChange);
-    return (
-      <textarea
-        {...props}
-        defaultValue={value}
-        onBeforeInput={(event) => {
-          textControl.onBeforeInput(event);
-          onBeforeInput?.(event);
-        }}
-        onChange={textControl.onChange}
-        onCompositionEnd={(event) => {
-          textControl.onCompositionEnd(event);
-          onCompositionEnd?.(event);
-        }}
-        onCompositionStart={(event) => {
-          textControl.onCompositionStart(event);
-          onCompositionStart?.(event);
-        }}
-        onCompositionUpdate={(event) => {
-          textControl.onCompositionUpdate(event);
-          onCompositionUpdate?.(event);
-        }}
-        onSelect={(event) => {
-          textControl.onSelect(event);
-          onSelect?.(event);
-        }}
-        ref={(element) => {
-          textControl.elementRef.current = element;
-          assignForwardedRef(forwardedRef, element);
-        }}
-      />
-    );
-  },
-);
+/** Preserve native composition text while applying external value changes after composition. */
+export function ImeSafeInput(props: ImeSafeInputProps): JSX.Element {
+  return <ImeTextControl kind="input" control={props} />;
+}
+
+/** Multiline input with the same composition and selection guarantees as ImeSafeInput. */
+export function ImeSafeTextarea(props: ImeSafeTextareaProps): JSX.Element {
+  return <ImeTextControl kind="textarea" control={props} />;
+}
+
+function ImeTextControl(props: {
+  kind: "input" | "textarea";
+  control: ImeSafeInputProps | ImeSafeTextareaProps;
+}): JSX.Element {
+  const control = createImeSafeTextControl<TextControlElement>(
+    () => props.control.value,
+    (value) => props.control.onValueChange(value),
+  );
+  const rest = omit(
+    props.control,
+    "value",
+    "onValueChange",
+    "ref",
+    "onBeforeInput",
+    "onCompositionStart",
+    "onCompositionUpdate",
+    "onCompositionEnd",
+    "onSelect",
+  );
+  const forward = (
+    name:
+      | "onBeforeInput"
+      | "onCompositionStart"
+      | "onCompositionUpdate"
+      | "onCompositionEnd"
+      | "onSelect",
+    event: Event,
+  ) => {
+    const handler = props.control[name];
+    if (typeof handler === "function") (handler as (event: Event) => void)(event);
+  };
+  return (
+    <Dynamic
+      component={props.kind}
+      {...rest}
+      onInput={control.onChange}
+      onBeforeInput={(event: WebviewEvent<Event, TextControlElement>) => {
+        control.onBeforeInput(event);
+        forward("onBeforeInput", event);
+      }}
+      onCompositionStart={(event: WebviewEvent<CompositionEvent, TextControlElement>) => {
+        control.onCompositionStart(event);
+        forward("onCompositionStart", event);
+      }}
+      onCompositionUpdate={(event: WebviewEvent<CompositionEvent, TextControlElement>) => {
+        control.onCompositionUpdate(event);
+        forward("onCompositionUpdate", event);
+      }}
+      onCompositionEnd={(event: WebviewEvent<CompositionEvent, TextControlElement>) => {
+        control.onCompositionEnd(event);
+        forward("onCompositionEnd", event);
+      }}
+      onSelect={(event: WebviewEvent<Event, TextControlElement>) => {
+        control.onSelect(event);
+        forward("onSelect", event);
+      }}
+      ref={(element: TextControlElement) => {
+        control.elementRef.current = element;
+        element.value = props.control.value;
+        if (typeof props.control.ref === "function")
+          (props.control.ref as (element: TextControlElement) => void)(element);
+      }}
+    />
+  );
+}

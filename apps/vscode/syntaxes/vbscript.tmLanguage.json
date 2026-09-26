@@ -17,7 +17,7 @@
         { "include": "#documentation-comment" },
         { "include": "#annotation-comment" },
         {
-          "match": "'[^\\n\\r]*",
+          "match": "(?:^[\\t ]*)?'[^\\n\\r]*",
           "name": "comment.line.apostrophe.vbscript"
         },
         {
@@ -59,11 +59,12 @@
       ]
     },
     "documentation-comment": {
-      "begin": "(''')\\s?",
+      "begin": "(?:^[\\t ]*)?(''')[\\t ]?",
       "beginCaptures": {
         "1": { "name": "comment.line.documentation.vbscript" }
       },
       "end": "$",
+      "name": "comment.line.documentation.vbscript",
       "patterns": [
         { "include": "#documentation-tag" },
         { "include": "#documentation-entity" },
@@ -100,11 +101,12 @@
       "name": "constant.character.entity.documentation.vbscript"
     },
     "annotation-comment": {
-      "begin": "(')\\s*(?=@(?:type|param|returns|member)\\b)",
+      "begin": "(?:^[\\t ]*)?(')[\\t ]*(?=@(?:type|param|returns|member)\\b)",
       "beginCaptures": {
         "1": { "name": "comment.line.annotation.vbscript" }
       },
       "end": "$",
+      "name": "comment.line.annotation.vbscript",
       "patterns": [
         {
           "match": "(?i)(@type)\\s+([A-Za-z_][A-Za-z0-9_]*)\\s+(As)\\s+([^\\n\\r]+)",

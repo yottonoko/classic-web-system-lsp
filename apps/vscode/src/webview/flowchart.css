@@ -106,6 +106,50 @@
   --asp-lsp-active-shadow: rgb(2 132 199 / 25%);
 }
 
+.asp-lsp-flowchart-shell[data-asp-lsp-theme-source="vscode"] {
+  --asp-lsp-bg: var(--vscode-editor-background, #101419);
+  --asp-lsp-surface: var(--vscode-sideBar-background, var(--vscode-editor-background, #151b23));
+  --asp-lsp-card: var(--vscode-editorWidget-background, var(--vscode-editor-background, #101820));
+  --asp-lsp-canvas: var(--vscode-editor-background, #0d1117);
+  --asp-lsp-input: var(--vscode-input-background, var(--vscode-editor-background, #0c1117));
+  --asp-lsp-hover: var(--vscode-list-hoverBackground, #172131);
+  --asp-lsp-hover-strong: var(--vscode-list-activeSelectionBackground, #223044);
+  --asp-lsp-search-active: var(--vscode-editor-selectionBackground, #17324a);
+  --asp-lsp-search-match: var(--vscode-editor-findMatchHighlightBackground, #2b2b18);
+  --asp-lsp-source-section-bg: var(--vscode-editor-selectionHighlightBackground, #1f322b);
+  --asp-lsp-source-section-stroke: var(--vscode-charts-green, #63e6be);
+  --asp-lsp-source-selection-bg: var(--vscode-editor-selectionBackground, #17324a);
+  --asp-lsp-source-selection-stroke: var(--vscode-focusBorder, #7dd3fc);
+  --asp-lsp-source-hover-bg: var(--vscode-list-hoverBackground, #3a2431);
+  --asp-lsp-source-hover-stroke: var(--vscode-charts-red, #ff9fb4);
+  --asp-lsp-border: var(--vscode-panel-border, var(--vscode-input-border, #263140));
+  --asp-lsp-border-muted: var(--vscode-widget-border, var(--vscode-panel-border, #2f3d50));
+  --asp-lsp-border-strong: var(--vscode-input-border, var(--vscode-panel-border, #334255));
+  --asp-lsp-border-action: var(--vscode-button-border, var(--vscode-input-border, #3b4a5f));
+  --asp-lsp-border-tooltip: var(--vscode-widget-border, #405068);
+  --asp-lsp-text: var(--vscode-editor-foreground, #d9e0ea);
+  --asp-lsp-text-strong: var(--vscode-foreground, var(--vscode-editor-foreground, #f1f5f9));
+  --asp-lsp-text-muted: var(--vscode-descriptionForeground, #9fb0c5);
+  --asp-lsp-text-subtle: var(
+    --vscode-disabledForeground,
+    var(--vscode-descriptionForeground, #8190a4)
+  );
+  --asp-lsp-text-control: var(--vscode-input-foreground, var(--vscode-foreground, #c4d4e8));
+  --asp-lsp-text-disabled: var(--vscode-disabledForeground, #5f6d7e);
+  --asp-lsp-link: var(--vscode-textLink-foreground, #8ec7ff);
+  --asp-lsp-accent: var(--vscode-focusBorder, var(--vscode-textLink-foreground, #7dd3fc));
+  --asp-lsp-success: var(--vscode-charts-green, #63e6be);
+  --asp-lsp-warning: var(--vscode-charts-yellow, #f6c177);
+  --asp-lsp-error-bg: var(--vscode-inputValidation-errorBackground, #291416);
+  --asp-lsp-error-border: var(--vscode-inputValidation-errorBorder, #7f3434);
+  --asp-lsp-error-text: var(--vscode-errorForeground, #ffd2cc);
+  --asp-lsp-missing: var(--vscode-errorForeground, #ffb4a8);
+  --asp-lsp-match-stroke: var(--vscode-charts-yellow, #f6c177);
+  --asp-lsp-active-stroke: var(--vscode-focusBorder, #7dd3fc);
+  --asp-lsp-active-shadow: color-mix(in srgb, var(--vscode-focusBorder, #7dd3fc) 55%, transparent);
+}
+
+.asp-lsp-flowchart-shell.bg-\[\#101419\],
 .asp-lsp-flowchart-shell .bg-\[\#101419\] {
   background-color: var(--asp-lsp-bg);
 }
@@ -186,6 +230,7 @@
   border-color: var(--asp-lsp-error-border);
 }
 
+.asp-lsp-flowchart-shell.text-\[\#d9e0ea\],
 .asp-lsp-flowchart-shell .text-\[\#d9e0ea\] {
   color: var(--asp-lsp-text);
 }
@@ -334,4 +379,14 @@
   border-left-color: transparent;
   background: transparent;
   box-shadow: none;
+}
+
+/* Override the default VS Code webview body inset. */
+html,
+body,
+#root {
+  margin: 0;
+  padding: 0;
+  width: 100%;
+  height: 100%;
 }

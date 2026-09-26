@@ -1,0 +1,59 @@
+{
+    "private": true,
+    "name": "typescript-go",
+    "version": "0.0.0",
+    "license": "Apache-2.0",
+    "engines": {
+        "node": ">=20.19"
+    },
+    "devDependencies": {
+        "@types/adm-zip": "^0.5.8",
+        "@types/node": "latest",
+        "@types/tmp": "^0.2.6",
+        "@types/which": "^3.0.4",
+        "@unicode/unicode-15.1.0": "^1.6.17",
+        "adm-zip": "^0.6.0",
+        "chokidar": "^5.0.0",
+        "dprint": "^0.55.1",
+        "execa": "^9.6.1",
+        "glob": "^13.0.6",
+        "hereby": "^1.15.1",
+        "p-limit": "^7.3.0",
+        "picocolors": "^1.1.1",
+        "tmp": "^0.2.7",
+        "typescript": "^7.0.2",
+        "which": "^7.0.0"
+    },
+    "scripts": {
+        "build": "hereby build",
+        "build:watch": "hereby build:watch",
+        "build:watch:debug": "hereby build:watch --debug",
+        "test": "hereby test",
+        "api:build": "npm run -w @typescript/api build",
+        "extension:build": "npm run -w _extension build",
+        "extension:watch": "npm run -w _extension watch",
+        "convertfourslash": "node --experimental-strip-types --no-warnings internal/fourslash/_scripts/convertFourslash.mts",
+        "updatefailing": "node --experimental-strip-types --no-warnings internal/fourslash/_scripts/updateFailing.mts",
+        "makemanual": "node --experimental-strip-types --no-warnings internal/fourslash/_scripts/makeManual.mts"
+    },
+    "workspaces": [
+        "./_extension",
+        "./_packages/*"
+    ],
+    "overrides": {
+        "@microsoft/applicationinsights-web-basic": "3.3.11",
+        "@microsoft/1ds-core-js": "4.3.11",
+        "@microsoft/1ds-post-js": "4.3.11"
+    },
+    "packageManager": "npm@12.0.1",
+    "volta": {
+        "node": "22.22.0",
+        "npm": "12.0.1"
+    },
+    "allowScripts": {
+        "dprint@0.55.1": true,
+        "esbuild@0.28.1": true,
+        "@vscode/vsce-sign@2.0.9": true,
+        "keytar@7.9.0": true
+    }
+}

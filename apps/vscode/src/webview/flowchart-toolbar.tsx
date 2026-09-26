@@ -1,5 +1,7 @@
-import React, { useCallback, useEffect, useRef, useState } from "react";
-import type { AspFlowchartLabelMode } from "@asp-lsp/core";
+import { createSignal, createMemo, createEffect } from "solid-js";
+import { type JSX } from "@solidjs/web";
+import { webviewStyle } from "./webview-dom-types";
+import type { AspFlowchartLabelMode } from "../protocol-types";
 import { flowchartLabelModeTitleSuffix } from "./flowchart-model";
 import { useElementSize } from "./flowchart-dom";
 import { cn } from "../lib/utils";
@@ -8,29 +10,8 @@ import type {
   FlowchartToolbarMenuState,
   FlowchartToolbarMode,
 } from "./flowchart-types";
-
 const flowchartLabelModes: AspFlowchartLabelMode[] = ["raw", "normal", "description"];
-
-export function FlowchartToolbar({
-  canExportSvg,
-  canFitFlowchartWidth,
-  canOpenSection,
-  labelMode,
-  text,
-  zoom,
-  onLabelModeChange,
-  onCopyMermaid,
-  onExportMermaid,
-  onExportSvg,
-  onFitFlowchartWidth,
-  onOpenCode,
-  onOpenGraph,
-  onResetZoom,
-  sourcePanelVisible,
-  onSourcePanelVisibleChange,
-  onZoomIn,
-  onZoomOut,
-}: {
+export function FlowchartToolbar(props: {
   canExportSvg: boolean;
   canFitFlowchartWidth: boolean;
   canOpenSection: boolean;
@@ -43,234 +24,255 @@ export function FlowchartToolbar({
   onExportSvg(): void;
   onFitFlowchartWidth(): void;
   onOpenCode(): void;
-  onOpenGraph(): void;
   onResetZoom(): void;
   sourcePanelVisible: boolean;
   onSourcePanelVisibleChange(value: boolean): void;
   onZoomIn(): void;
   onZoomOut(): void;
-}): React.ReactElement {
+}): JSX.Element {
   const [toolbarRef, toolbarSize] = useElementSize<HTMLDivElement>();
-  const menuRef = useRef<HTMLDivElement | null>(null);
-  const [menu, setMenu] = useState<FlowchartToolbarMenuState>();
-  const toolbarMode = flowchartToolbarMode(toolbarSize.width);
-  const compactExports = toolbarMode === "compactExports" || toolbarMode === "compactAll";
-  const compactAll = toolbarMode === "compactAll";
-  const closeMenu = useCallback(() => setMenu(undefined), []);
-  const openMenu = useCallback((kind: FlowchartToolbarMenuKind, button: HTMLButtonElement) => {
+  const menuRef = { current: null } as {
+    current: (HTMLDivElement | null) | null;
+  };
+  const [menu, setMenu] = createSignal<FlowchartToolbarMenuState>();
+  const toolbarMode = createMemo(() => flowchartToolbarMode(toolbarSize().width));
+  const compactExports = createMemo(
+    () => toolbarMode() === "compactExports" || toolbarMode() === "compactAll",
+  );
+  const compactAll = createMemo(() => toolbarMode() === "compactAll");
+  const closeMenu = () => setMenu(undefined);
+  const openMenu = (kind: FlowchartToolbarMenuKind, button: HTMLButtonElement) => {
+    if (!button.isConnected) {
+      return;
+    }
     const rect = button.getBoundingClientRect();
+    if (!Number.isFinite(rect.left) || !Number.isFinite(rect.bottom)) {
+      return;
+    }
     setMenu({
       kind,
       left: Math.max(8, Math.min(rect.left, window.innerWidth - flowchartToolbarMenuWidth - 8)),
       top: Math.min(rect.bottom + 6, window.innerHeight - 8),
     });
-  }, []);
-  const runMenuAction = useCallback(
-    (action: () => void) => {
-      action();
-      closeMenu();
+  };
+  const runMenuAction = (action: () => void) => {
+    action();
+    closeMenu();
+  };
+  createEffect(
+    () => [closeMenu, menu(), toolbarRef],
+    () => {
+      if (!menu()) {
+        return undefined;
+      }
+      const closeOnEscape = (event: KeyboardEvent): void => {
+        if (event.key === "Escape") {
+          closeMenu();
+        }
+      };
+      const closeOnOutsidePointerDown = (event: PointerEvent): void => {
+        const target = event.target;
+        if (!(target instanceof Node)) {
+          closeMenu();
+          return;
+        }
+        if (toolbarRef.current?.contains(target) || menuRef.current?.contains(target)) {
+          return;
+        }
+        closeMenu();
+      };
+      window.addEventListener("keydown", closeOnEscape);
+      window.addEventListener("pointerdown", closeOnOutsidePointerDown);
+      window.addEventListener("blur", closeMenu);
+      return () => {
+        window.removeEventListener("keydown", closeOnEscape);
+        window.removeEventListener("pointerdown", closeOnOutsidePointerDown);
+        window.removeEventListener("blur", closeMenu);
+      };
     },
-    [closeMenu],
   );
-
-  useEffect(() => {
-    if (!menu) {
-      return undefined;
-    }
-    const closeOnEscape = (event: KeyboardEvent): void => {
-      if (event.key === "Escape") {
-        closeMenu();
-      }
-    };
-    const closeOnOutsidePointerDown = (event: PointerEvent): void => {
-      const target = event.target;
-      if (!(target instanceof Node)) {
-        closeMenu();
-        return;
-      }
-      if (toolbarRef.current?.contains(target) || menuRef.current?.contains(target)) {
-        return;
-      }
-      closeMenu();
-    };
-    window.addEventListener("keydown", closeOnEscape);
-    window.addEventListener("pointerdown", closeOnOutsidePointerDown);
-    window.addEventListener("blur", closeMenu);
-    return () => {
-      window.removeEventListener("keydown", closeOnEscape);
-      window.removeEventListener("pointerdown", closeOnOutsidePointerDown);
-      window.removeEventListener("blur", closeMenu);
-    };
-  }, [closeMenu, menu, toolbarRef]);
-
   return (
-    <div ref={toolbarRef} className="min-w-0 max-w-full overflow-x-auto">
-      <div className="flex min-w-max items-center gap-2 pb-px">
+    <div
+      ref={(element) => (toolbarRef.current = element)}
+      class="min-w-0 max-w-full overflow-x-auto"
+    >
+      <div class={cn("flex items-center gap-2 pb-px", compactAll() ? "flex-wrap" : "min-w-max")}>
         <div
-          className="flex items-center overflow-hidden rounded border border-[#3b4a5f]"
-          title={text("zoomWithWheel")}
+          class="flex items-center overflow-hidden rounded border border-[#3b4a5f]"
+          title={props.text("zoomWithWheel")}
         >
           <button
-            className="h-7 min-w-7 border-r border-[#3b4a5f] px-2 text-xs text-[#c4d4e8] hover:bg-[#172131] hover:text-white"
-            title={text("zoomOut")}
+            class="h-7 min-w-7 border-r border-[#3b4a5f] px-2 text-xs text-[#c4d4e8] hover:bg-[#172131] hover:text-white"
+            title={props.text("zoomOut")}
             type="button"
-            onClick={onZoomOut}
+            onClick={props.onZoomOut}
           >
             -
           </button>
           <button
-            className="h-7 min-w-[52px] border-r border-[#3b4a5f] px-2 text-xs text-[#c4d4e8] hover:bg-[#172131] hover:text-white"
-            title={text("resetZoom")}
+            class="h-7 min-w-[52px] border-r border-[#3b4a5f] px-2 text-xs text-[#c4d4e8] hover:bg-[#172131] hover:text-white"
+            title={props.text("resetZoom")}
             type="button"
-            onClick={onResetZoom}
+            onClick={props.onResetZoom}
           >
-            {Math.round(zoom * 100)}%
+            {Math.round(props.zoom * 100)}%
           </button>
           <button
-            className="h-7 min-w-7 border-r border-[#3b4a5f] px-2 text-xs text-[#c4d4e8] hover:bg-[#172131] hover:text-white"
-            title={text("zoomIn")}
+            class="h-7 min-w-7 border-r border-[#3b4a5f] px-2 text-xs text-[#c4d4e8] hover:bg-[#172131] hover:text-white"
+            title={props.text("zoomIn")}
             type="button"
-            onClick={onZoomIn}
+            onClick={props.onZoomIn}
           >
             +
           </button>
           <button
-            className="h-7 min-w-[42px] px-2 text-xs text-[#c4d4e8] hover:bg-[#172131] hover:text-white disabled:cursor-not-allowed disabled:text-[#5f6d7e]"
-            disabled={!canFitFlowchartWidth}
-            title={text("fitWidthDescription")}
+            class="h-7 min-w-[42px] px-2 text-xs text-[#c4d4e8] hover:bg-[#172131] hover:text-white disabled:cursor-not-allowed disabled:text-[#5f6d7e]"
+            disabled={!props.canFitFlowchartWidth}
+            title={props.text("fitWidthDescription")}
             type="button"
-            onClick={onFitFlowchartWidth}
+            onClick={props.onFitFlowchartWidth}
           >
-            {text("fitWidth")}
+            {props.text("fitWidth")}
           </button>
         </div>
-        <div
-          className="flex items-center overflow-hidden rounded border border-[#3b4a5f]"
-          title={text("labelMode")}
-        >
-          {flowchartLabelModes.map((mode) => (
-            <button
-              key={mode}
-              aria-pressed={labelMode === mode}
-              className={cn(
-                "h-7 min-w-[58px] border-r border-[#3b4a5f] px-2 text-xs last:border-r-0",
-                labelMode === mode
-                  ? "bg-[#17324a] text-white"
-                  : "text-[#c4d4e8] hover:bg-[#172131] hover:text-white",
-              )}
-              title={text(`labelMode${flowchartLabelModeTitleSuffix(mode)}`)}
-              type="button"
-              onClick={() => onLabelModeChange(mode)}
-            >
-              {text(`labelMode${flowchartLabelModeTitleSuffix(mode)}`)}
-            </button>
-          ))}
-        </div>
+        {compactAll() ? (
+          <select
+            class="h-7 rounded border border-[#3b4a5f] bg-[#101820] px-2 text-xs text-[#c4d4e8]"
+            aria-label={props.text("labelMode")}
+            value={props.labelMode}
+            onChange={(event) =>
+              props.onLabelModeChange(event.currentTarget.value as AspFlowchartLabelMode)
+            }
+          >
+            {flowchartLabelModes.map((mode) => (
+              <option value={mode}>
+                {props.text(`labelMode${flowchartLabelModeTitleSuffix(mode)}`)}
+              </option>
+            ))}
+          </select>
+        ) : (
+          <div
+            class="flex items-center overflow-hidden rounded border border-[#3b4a5f]"
+            title={props.text("labelMode")}
+          >
+            {flowchartLabelModes.map((mode) => (
+              <button
+                aria-pressed={props.labelMode === mode ? "true" : "false"}
+                class={cn(
+                  "h-7 min-w-[58px] border-r border-[#3b4a5f] px-2 text-xs last:border-r-0",
+                  props.labelMode === mode
+                    ? "bg-[#17324a] text-white"
+                    : "text-[#c4d4e8] hover:bg-[#172131] hover:text-white",
+                )}
+                title={props.text(`labelMode${flowchartLabelModeTitleSuffix(mode)}`)}
+                type="button"
+                onClick={() => props.onLabelModeChange(mode)}
+              >
+                {props.text(`labelMode${flowchartLabelModeTitleSuffix(mode)}`)}
+              </button>
+            ))}
+          </div>
+        )}
         <button
-          aria-pressed={sourcePanelVisible}
-          className={cn(
+          aria-pressed={
+            props.sourcePanelVisible == null
+              ? undefined
+              : props.sourcePanelVisible
+                ? "true"
+                : "false"
+          }
+          class={cn(
             flowchartToolbarButtonClass,
-            sourcePanelVisible && "bg-[#17324a] text-white",
+            props.sourcePanelVisible && "bg-[#17324a] text-white",
           )}
-          title={sourcePanelVisible ? text("hideSource") : text("showSource")}
+          title={props.sourcePanelVisible ? props.text("hideSource") : props.text("showSource")}
           type="button"
-          onClick={() => onSourcePanelVisibleChange(!sourcePanelVisible)}
+          onClick={() => props.onSourcePanelVisibleChange(!props.sourcePanelVisible)}
         >
-          {text("source")}
+          {props.text("source")}
         </button>
-        {compactAll ? (
+        {compactAll() ? (
           <button
-            aria-expanded={menu?.kind === "open"}
+            aria-expanded={menu()?.kind === "open" ? "true" : "false"}
             aria-haspopup="menu"
-            className={flowchartToolbarButtonClass}
-            title={text("openMenu")}
+            class={flowchartToolbarButtonClass}
+            title={props.text("openMenu")}
             type="button"
             onClick={(event) => openMenu("open", event.currentTarget)}
           >
-            {text("openMenu")}
+            {props.text("openMenu")}
           </button>
         ) : (
           <>
             <FlowchartToolbarButton
-              disabled={!canOpenSection}
-              label="Code"
-              title={text("openCode")}
-              onClick={onOpenCode}
-            />
-            <FlowchartToolbarButton
-              disabled={!canOpenSection}
-              label="Graph"
-              title={text("openGraph")}
-              onClick={onOpenGraph}
+              disabled={!props.canOpenSection}
+              label={props.text("code")}
+              title={props.text("openCode")}
+              onClick={props.onOpenCode}
             />
           </>
         )}
-        {compactExports ? (
+        {compactExports() ? (
           <button
-            aria-expanded={menu?.kind === "export"}
+            aria-expanded={menu()?.kind === "export" ? "true" : "false"}
             aria-haspopup="menu"
-            className={flowchartToolbarButtonClass}
-            title={text("exportMenu")}
+            class={flowchartToolbarButtonClass}
+            title={props.text("exportMenu")}
             type="button"
             onClick={(event) => openMenu("export", event.currentTarget)}
           >
-            {text("exportMenu")}
+            {props.text("exportMenu")}
           </button>
         ) : (
           <>
             <FlowchartToolbarButton
-              label={text("copyMermaid")}
-              title={text("copyMermaid")}
-              onClick={onCopyMermaid}
+              label={props.text("copyMermaid")}
+              title={props.text("copyMermaid")}
+              onClick={props.onCopyMermaid}
             />
             <FlowchartToolbarButton
-              label={text("exportMermaid")}
-              title={text("exportMermaid")}
-              onClick={onExportMermaid}
+              label={props.text("exportMermaid")}
+              title={props.text("exportMermaid")}
+              onClick={props.onExportMermaid}
             />
             <FlowchartToolbarButton
-              disabled={!canExportSvg}
-              label={text("exportSvg")}
-              title={text("exportSvg")}
-              onClick={onExportSvg}
+              disabled={!props.canExportSvg}
+              label={props.text("exportSvg")}
+              title={props.text("exportSvg")}
+              onClick={props.onExportSvg}
             />
           </>
         )}
       </div>
-      {menu ? (
+      {menu() ? (
         <div
-          ref={menuRef}
-          className="fixed z-50 grid w-[180px] overflow-hidden rounded-md border border-[#3b4a5f] bg-[#151b23] py-1 text-xs text-[#d9e0ea] shadow-[0_12px_28px_rgb(0_0_0_/_32%)]"
+          ref={(element) => (menuRef.current = element)}
+          class="fixed z-50 grid w-[180px] overflow-hidden rounded-md border border-[#3b4a5f] bg-[#151b23] py-1 text-xs text-[#d9e0ea] shadow-[0_12px_28px_rgb(0_0_0_/_32%)]"
           role="menu"
-          style={{ left: menu.left, top: menu.top }}
+          style={webviewStyle({ left: menu()!.left, top: menu()!.top })}
         >
-          {menu.kind === "open" ? (
+          {menu()!.kind === "open" ? (
             <>
               <FlowchartToolbarMenuItem
-                disabled={!canOpenSection}
-                label="Code"
-                onClick={() => runMenuAction(onOpenCode)}
-              />
-              <FlowchartToolbarMenuItem
-                disabled={!canOpenSection}
-                label="Graph"
-                onClick={() => runMenuAction(onOpenGraph)}
+                disabled={!props.canOpenSection}
+                label={props.text("code")}
+                onClick={() => runMenuAction(props.onOpenCode)}
               />
             </>
           ) : (
             <>
               <FlowchartToolbarMenuItem
-                label={text("copyMermaid")}
-                onClick={() => runMenuAction(onCopyMermaid)}
+                label={props.text("copyMermaid")}
+                onClick={() => runMenuAction(props.onCopyMermaid)}
               />
               <FlowchartToolbarMenuItem
-                label={text("exportMermaid")}
-                onClick={() => runMenuAction(onExportMermaid)}
+                label={props.text("exportMermaid")}
+                onClick={() => runMenuAction(props.onExportMermaid)}
               />
               <FlowchartToolbarMenuItem
-                disabled={!canExportSvg}
-                label={text("exportSvg")}
-                onClick={() => runMenuAction(onExportSvg)}
+                disabled={!props.canExportSvg}
+                label={props.text("exportSvg")}
+                onClick={() => runMenuAction(props.onExportSvg)}
               />
             </>
           )}
@@ -279,53 +281,41 @@ export function FlowchartToolbar({
     </div>
   );
 }
-
-function FlowchartToolbarButton({
-  disabled,
-  label,
-  title,
-  onClick,
-}: {
+function FlowchartToolbarButton(props: {
   disabled?: boolean;
   label: string;
   title: string;
   onClick(): void;
-}): React.ReactElement {
+}): JSX.Element {
   return (
     <button
-      className={flowchartToolbarButtonClass}
-      disabled={disabled}
-      title={title}
+      class={flowchartToolbarButtonClass}
+      disabled={props.disabled}
+      title={props.title}
       type="button"
-      onClick={onClick}
+      onClick={props.onClick}
     >
-      {label}
+      {props.label}
     </button>
   );
 }
-
-function FlowchartToolbarMenuItem({
-  disabled,
-  label,
-  onClick,
-}: {
+function FlowchartToolbarMenuItem(props: {
   disabled?: boolean;
   label: string;
   onClick(): void;
-}): React.ReactElement {
+}): JSX.Element {
   return (
     <button
-      className="px-3 py-1.5 text-left hover:bg-[#172131] disabled:cursor-not-allowed disabled:text-[#5f6d7e]"
-      disabled={disabled}
+      class="px-3 py-1.5 text-left hover:bg-[#172131] disabled:cursor-not-allowed disabled:text-[#5f6d7e]"
+      disabled={props.disabled}
       role="menuitem"
       type="button"
-      onClick={onClick}
+      onClick={props.onClick}
     >
-      {label}
+      {props.label}
     </button>
   );
 }
-
 function flowchartToolbarMode(width: number): FlowchartToolbarMode {
   if (width > 0 && width < 520) {
     return "compactAll";
@@ -335,7 +325,6 @@ function flowchartToolbarMode(width: number): FlowchartToolbarMode {
   }
   return "full";
 }
-
 const flowchartToolbarButtonClass =
   "rounded border border-[#3b4a5f] px-3 py-1 text-xs text-[#c4d4e8] hover:border-[#7dd3fc] hover:text-white disabled:cursor-not-allowed disabled:border-[#263140] disabled:text-[#5f6d7e]";
 const flowchartToolbarMenuWidth = 180;

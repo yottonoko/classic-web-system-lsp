@@ -3,7 +3,7 @@ import type {
   AspFlowchartNode,
   AspFlowchartNodeLink,
   AspFlowchartPayload,
-} from "@asp-lsp/core";
+} from "../protocol-types";
 
 export type FlowchartLocale = "en" | "ja";
 export type WebviewTheme = "light" | "dark";
@@ -27,8 +27,6 @@ export interface FlowchartSourceScrollTarget {
 export interface FlowchartPayload extends AspFlowchartPayload {
   locale?: FlowchartLocale;
   settings?: {
-    maxTextSize?: number;
-    maxEdges?: number;
     labelLineLength?: number;
     labelMode?: AspFlowchartLabelMode;
     minZoom?: number;

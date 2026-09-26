@@ -1,9 +1,11 @@
 node_modules/
+bin/
 dist/
 out/
 coverage/
 target/
 apps/vscode/server/
+apps/vscode/third_party_licenses/
 packages/core/native/
 packages/core/wasm/
 *.tsbuildinfo

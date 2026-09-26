@@ -63,21 +63,22 @@ button:disabled {
 }
 
 .workspace-files-app {
-  --asp-lsp-bg: #111820;
-  --asp-lsp-surface: #17202b;
-  --asp-lsp-surface-muted: #151c25;
-  --asp-lsp-panel: #121923;
-  --asp-lsp-border: #2f3a49;
-  --asp-lsp-border-muted: #273240;
-  --asp-lsp-text: #d8dee9;
-  --asp-lsp-text-strong: #f4f7fb;
-  --asp-lsp-text-muted: #9aa7b8;
-  --asp-lsp-accent: #63b3ff;
-  --asp-lsp-active: #173a5a;
-  --asp-lsp-chip: #182a52;
-  --asp-lsp-chip-border: #294a8b;
-  --asp-lsp-danger-chip: #3a222a;
-  --asp-lsp-danger-border: #7a3841;
+  --asp-lsp-bg: var(--vscode-editor-background, #111820);
+  --asp-lsp-surface: var(--vscode-sideBar-background, #17202b);
+  --asp-lsp-surface-muted: var(--vscode-editorWidget-background, #151c25);
+  --asp-lsp-panel: var(--vscode-editorWidget-background, #121923);
+  --asp-lsp-border: var(--vscode-panel-border, #2f3a49);
+  --asp-lsp-border-muted: var(--vscode-panel-border, #273240);
+  --asp-lsp-text: var(--vscode-editor-foreground, #d8dee9);
+  --asp-lsp-text-strong: var(--vscode-foreground, #f4f7fb);
+  --asp-lsp-text-muted: var(--vscode-descriptionForeground, #9aa7b8);
+  --asp-lsp-accent: var(--vscode-focusBorder, #63b3ff);
+  --asp-lsp-active: var(--vscode-list-activeSelectionBackground, #173a5a);
+  --asp-lsp-chip: var(--vscode-badge-background, #182a52);
+  --asp-lsp-chip-border: var(--vscode-focusBorder, #294a8b);
+  --asp-lsp-danger-chip: var(--vscode-inputValidation-errorBackground, #3a222a);
+  --asp-lsp-danger-border: var(--vscode-inputValidation-errorBorder, #7a3841);
+  color-scheme: normal;
   background:
     linear-gradient(180deg, rgb(255 255 255 / 2.5%), transparent 120px), var(--asp-lsp-bg);
   color: var(--asp-lsp-text);
@@ -89,7 +90,7 @@ button:disabled {
   width: 100%;
 }
 
-.workspace-files-app[data-asp-lsp-theme="light"] {
+.workspace-files-app[data-asp-lsp-theme-setting="light"] {
   --asp-lsp-bg: #f8fafc;
   --asp-lsp-surface: #ffffff;
   --asp-lsp-surface-muted: #f1f5f9;
@@ -104,6 +105,47 @@ button:disabled {
   --asp-lsp-chip-border: #bfdbfe;
   --asp-lsp-danger-chip: #fff1f2;
   --asp-lsp-danger-border: #fecdd3;
+  --vscode-input-background: #ffffff;
+  --vscode-input-foreground: #1f2937;
+  --vscode-input-border: #cbd5e1;
+  --vscode-focusBorder: #2563eb;
+  --vscode-button-background: #2563eb;
+  --vscode-button-foreground: #ffffff;
+  --vscode-button-hoverBackground: #1d4ed8;
+  color-scheme: light;
+}
+
+.workspace-files-app[data-asp-lsp-theme-setting="dark"] {
+  --asp-lsp-bg: #111820;
+  --asp-lsp-surface: #17202b;
+  --asp-lsp-surface-muted: #151c25;
+  --asp-lsp-panel: #121923;
+  --asp-lsp-border: #2f3a49;
+  --asp-lsp-border-muted: #273240;
+  --asp-lsp-text: #d8dee9;
+  --asp-lsp-text-strong: #f4f7fb;
+  --asp-lsp-text-muted: #9aa7b8;
+  --asp-lsp-active: #173a5a;
+  --asp-lsp-chip: #182a52;
+  --asp-lsp-chip-border: #294a8b;
+  --asp-lsp-danger-chip: #3a222a;
+  --asp-lsp-danger-border: #7a3841;
+  --vscode-input-background: #141b24;
+  --vscode-input-foreground: #d8dee9;
+  --vscode-input-border: #354052;
+  --vscode-focusBorder: #4e94ce;
+  --vscode-button-background: #2563c9;
+  --vscode-button-foreground: #ffffff;
+  --vscode-button-hoverBackground: #2f73df;
+  color-scheme: dark;
+}
+
+.workspace-files-app[data-asp-lsp-theme-setting="auto"][data-asp-lsp-theme="light"] {
+  color-scheme: light;
+}
+
+.workspace-files-app[data-asp-lsp-theme-setting="auto"][data-asp-lsp-theme="dark"] {
+  color-scheme: dark;
 }
 
 .workspace-files-toolbar {
@@ -618,4 +660,14 @@ button:disabled {
   .tree-modified {
     display: none;
   }
+}
+
+/* Override the default VS Code webview body inset. */
+html,
+body,
+#root {
+  margin: 0;
+  padding: 0;
+  width: 100%;
+  height: 100%;
 }

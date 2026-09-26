@@ -1,6 +1,7 @@
 packages:
-  - "packages/*"
   - "apps/*"
+overrides:
+  dompurify: ^3.4.13
 allowBuilds:
   "@vscode/vsce-sign": false
   cbor-extract: false

@@ -1,0 +1,12 @@
+*.orig
+.DS_Store
+
+.cache/
+bin/
+build/
+dist/
+target/
+
+.idea/
+.vscode/
+

@@ -1,0 +1,9 @@
+go 1.26.6
+
+use (
+	.
+	./third_party/js-beautify-go
+	./third_party/typescript-go
+	./third_party/vscode-css-languageservice-go
+	./third_party/vscode-html-languageservice-go
+)

@@ -1,108 +1,39 @@
+import { execFileSync } from "node:child_process";
 import fs from "node:fs";
-import { builtinModules, createRequire } from "node:module";
 import path from "node:path";
-import { rolldown } from "rolldown";
 
 const extensionRoot = path.resolve(import.meta.dirname, "..");
 const repoRoot = path.resolve(extensionRoot, "..", "..");
-const serverRoot = path.join(extensionRoot, "server", "language-server");
-const serverEntry = path.join(repoRoot, "packages", "language-server", "dist", "server.js");
-const workerEntry = path.join(
-  repoRoot,
-  "packages",
-  "language-server",
-  "dist",
-  "vb-diagnostics-worker.js",
-);
-const jsWorkerEntry = path.join(
-  repoRoot,
-  "packages",
-  "language-server",
-  "dist",
-  "js-diagnostics-worker.js",
-);
-const referencesWorkerEntry = path.join(
-  repoRoot,
-  "packages",
-  "language-server",
-  "dist",
-  "vb-references-worker.js",
-);
-const nodeBuiltins = new Set([...builtinModules, ...builtinModules.map((name) => `node:${name}`)]);
-const require = createRequire(import.meta.url);
-const languageServerManifest = JSON.parse(
-  fs.readFileSync(path.join(repoRoot, "packages", "language-server", "package.json"), "utf8"),
-);
+const targetGOOS = process.env.ASP_LSP_SERVER_GOOS || process.env.GOOS || process.platform;
+const targetGOARCH = process.env.ASP_LSP_SERVER_GOARCH || process.env.GOARCH || process.arch;
+const executableName =
+  targetGOOS === "windows" || targetGOOS === "win32" ? "asp-lsp-go.exe" : "asp-lsp-go";
+const sourceBinary = path.join(repoRoot, "bin", executableName);
+const targetRoot = path.join(extensionRoot, "server");
+const targetBinary = path.join(targetRoot, executableName);
+const goBuildArgs = [
+  "build",
+  "-trimpath",
+  "-buildvcs=false",
+  "-ldflags=-s -w -buildid=",
+  "-o",
+  sourceBinary,
+  "./cmd/asp-lsp-go",
+];
 
-if (!fs.existsSync(serverEntry)) {
-  throw new Error(`Build @asp-lsp/language-server before packaging: ${serverEntry}`);
-}
-if (!fs.existsSync(workerEntry)) {
-  throw new Error(`Build @asp-lsp/language-server before packaging: ${workerEntry}`);
-}
-if (!fs.existsSync(jsWorkerEntry)) {
-  throw new Error(`Build @asp-lsp/language-server before packaging: ${jsWorkerEntry}`);
-}
-if (!fs.existsSync(referencesWorkerEntry)) {
-  throw new Error(`Build @asp-lsp/language-server before packaging: ${referencesWorkerEntry}`);
-}
+fs.mkdirSync(path.dirname(sourceBinary), { recursive: true });
+execFileSync("go", goBuildArgs, {
+  cwd: repoRoot,
+  env: {
+    ...process.env,
+    CGO_ENABLED: "0",
+    GOOS: targetGOOS === "win32" ? "windows" : targetGOOS,
+    GOARCH: targetGOARCH === "x64" ? "amd64" : targetGOARCH,
+  },
+  stdio: "inherit",
+});
 
-fs.rmSync(path.join(extensionRoot, "server"), { recursive: true, force: true });
-const distRoot = path.join(serverRoot, "dist");
-fs.mkdirSync(distRoot, { recursive: true });
-
-await bundleNodeEntry(serverEntry, path.join(distRoot, "server.js"));
-await bundleNodeEntry(jsWorkerEntry, path.join(distRoot, "js-diagnostics-worker.js"));
-await bundleNodeEntry(workerEntry, path.join(distRoot, "vb-diagnostics-worker.js"));
-await bundleNodeEntry(referencesWorkerEntry, path.join(distRoot, "vb-references-worker.js"));
-fs.chmodSync(path.join(distRoot, "server.js"), 0o755);
-fs.chmodSync(path.join(distRoot, "js-diagnostics-worker.js"), 0o755);
-fs.chmodSync(path.join(distRoot, "vb-diagnostics-worker.js"), 0o755);
-fs.chmodSync(path.join(distRoot, "vb-references-worker.js"), 0o755);
-copyTypeScriptLibs(distRoot);
-fs.writeFileSync(
-  path.join(serverRoot, "package.json"),
-  `${JSON.stringify(
-    {
-      name: "@asp-lsp/language-server-bundled",
-      version: languageServerManifest.version,
-      private: true,
-      main: "dist/server.js",
-    },
-    null,
-    2,
-  )}\n`,
-);
-
-async function bundleNodeEntry(input, output) {
-  const bundle = await rolldown({
-    input,
-    platform: "node",
-    resolve: {
-      mainFields: ["module", "main"],
-    },
-    external: (id) => nodeBuiltins.has(id),
-  });
-
-  try {
-    await bundle.write({
-      file: output,
-      format: "cjs",
-      sourcemap: false,
-      minify: true,
-      exports: "auto",
-    });
-  } finally {
-    await bundle.close();
-  }
-}
-
-function copyTypeScriptLibs(targetDirectory) {
-  const typescriptPackage = require.resolve("typescript/package.json", { paths: [repoRoot] });
-  const sourceDirectory = path.join(path.dirname(typescriptPackage), "lib");
-  for (const entry of fs.readdirSync(sourceDirectory)) {
-    if (/^lib\..*\.d\.ts$/.test(entry)) {
-      fs.copyFileSync(path.join(sourceDirectory, entry), path.join(targetDirectory, entry));
-    }
-  }
-}
+fs.rmSync(targetRoot, { recursive: true, force: true });
+fs.mkdirSync(targetRoot, { recursive: true });
+fs.copyFileSync(sourceBinary, targetBinary);
+fs.chmodSync(targetBinary, 0o755);
