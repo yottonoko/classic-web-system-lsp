@@ -9,7 +9,8 @@ import (
 	"github.com/yottonoko/classic-web-system-lsp/internal/tsgoadapter"
 )
 
-func FormatJavaScript(source string, options core.FormattingOptions, language core.EmbeddedLanguage) (string, error) {
+func FormatJavaScript(source string, options core.FormattingOptions, language core.EmbeddedLanguage) (guardedText string, guardedErr error) {
+	defer recoverFormat("FormatJavaScript", &guardedText, &guardedErr)
 	options = core.SanitizeFormattingOptions(options)
 	tabSize, insertSpaces := javascriptIndentOptions(options, language)
 	changes := tsgoadapter.FormatJavaScript(source, typeScriptFormattingOptions(options, tabSize, insertSpaces))
@@ -51,7 +52,8 @@ func applyTypeScriptChanges(source string, changes []tsgoadapter.TextChange) str
 	return formatted
 }
 
-func FormatCSS(source string, options core.FormattingOptions) (string, error) {
+func FormatCSS(source string, options core.FormattingOptions) (guardedText string, guardedErr error) {
+	defer recoverFormat("FormatCSS", &guardedText, &guardedErr)
 	options = core.SanitizeFormattingOptions(options)
 	tabSize, insertSpaces := cssIndentOptions(options)
 	beautifyOptions := beautify.Options{

@@ -20,7 +20,8 @@ func NewCSS() CSS {
 	return CSS{service: cssls.GetCSSLanguageService()}
 }
 
-func (c CSS) Hover(parsed *core.ParsedDocument, position lsp.Position) *lsp.Hover {
+func (c CSS) Hover(parsed *core.ParsedDocument, position lsp.Position) (guarded *lsp.Hover) {
+	defer recoverService("css.Hover", &guarded)
 	cache := c.cachedCSSDocument(parsed)
 	virtual, source := cache.virtual, cache.source
 	virtualPosition, ok := virtual.ToVirtualPosition(position, source)
@@ -43,7 +44,8 @@ func (c CSS) Hover(parsed *core.ParsedDocument, position lsp.Position) *lsp.Hove
 }
 
 // Definition returns the CSS language service definition mapped to the ASP source document.
-func (c CSS) Definition(parsed *core.ParsedDocument, position lsp.Position) *lsp.Location {
+func (c CSS) Definition(parsed *core.ParsedDocument, position lsp.Position) (guarded *lsp.Location) {
+	defer recoverService("css.Definition", &guarded)
 	virtual, source, doc, stylesheet, virtualPosition, ok := c.contextAt(parsed, position)
 	if !ok {
 		return nil
@@ -59,7 +61,8 @@ func (c CSS) Definition(parsed *core.ParsedDocument, position lsp.Position) *lsp
 	return &lsp.Location{URI: parsed.URI, Range: r}
 }
 
-func (c CSS) Complete(ctx context.Context, parsed *core.ParsedDocument, position lsp.Position) lsp.CompletionList {
+func (c CSS) Complete(ctx context.Context, parsed *core.ParsedDocument, position lsp.Position) (guarded lsp.CompletionList) {
+	defer recoverService("css.Complete", &guarded)
 	cache := c.cachedCSSDocument(parsed)
 	virtual, source := cache.virtual, cache.source
 	virtualPosition, ok := virtual.ToVirtualPosition(position, source)
@@ -263,7 +266,8 @@ func cssKeyframeValueCompletionContext(text string, offset int) bool {
 // CSS region. Whole-document CSS analysis remains available to diagnostics and
 // cross-region queries, while typing in one style block does not reparse every
 // unrelated style block in the ASP file.
-func (c CSS) CompleteDocument(ctx context.Context, parsed *core.ParsedDocument, source *core.TextDocument, position lsp.Position) lsp.CompletionList {
+func (c CSS) CompleteDocument(ctx context.Context, parsed *core.ParsedDocument, source *core.TextDocument, position lsp.Position) (guarded lsp.CompletionList) {
+	defer recoverService("css.CompleteDocument", &guarded)
 	if parsed == nil || source == nil || source.Text != parsed.Text {
 		return c.Complete(ctx, parsed, position)
 	}
@@ -486,7 +490,8 @@ func cssCompletionBoundary(text string, offset int) (int, int) {
 	return lastBoundary, lastColon
 }
 
-func (c CSS) Diagnostics(parsed *core.ParsedDocument) []lsp.Diagnostic {
+func (c CSS) Diagnostics(parsed *core.ParsedDocument) (guarded []lsp.Diagnostic) {
+	defer recoverService("css.Diagnostics", &guarded)
 	cache := c.cachedCSSDocument(parsed)
 	virtual := cache.virtual
 	if virtual.Text == "" {
@@ -516,7 +521,8 @@ func (c CSS) Diagnostics(parsed *core.ParsedDocument) []lsp.Diagnostic {
 }
 
 // DocumentColors returns CSS language service colors mapped to the ASP source document.
-func (c CSS) DocumentColors(parsed *core.ParsedDocument) []lsp.ColorInformation {
+func (c CSS) DocumentColors(parsed *core.ParsedDocument) (guarded []lsp.ColorInformation) {
+	defer recoverService("css.DocumentColors", &guarded)
 	cache := c.cachedCSSDocument(parsed)
 	virtual := cache.virtual
 	if strings.TrimSpace(virtual.Text) == "" {
@@ -541,7 +547,8 @@ func (c CSS) DocumentColors(parsed *core.ParsedDocument) []lsp.ColorInformation 
 }
 
 // ColorPresentations returns CSS language service presentations mapped to the ASP source document.
-func (c CSS) ColorPresentations(parsed *core.ParsedDocument, color lsp.Color, r lsp.Range) []lsp.ColorPresentation {
+func (c CSS) ColorPresentations(parsed *core.ParsedDocument, color lsp.Color, r lsp.Range) (guarded []lsp.ColorPresentation) {
+	defer recoverService("css.ColorPresentations", &guarded)
 	cache := c.cachedCSSDocument(parsed)
 	virtual, source := cache.virtual, cache.source
 	start, startOK := virtual.ToVirtualPosition(r.Start, source)
@@ -568,7 +575,8 @@ func (c CSS) ColorPresentations(parsed *core.ParsedDocument, color lsp.Color, r 
 }
 
 // CodeActions returns CSS language service actions mapped to the ASP source document.
-func (c CSS) CodeActions(parsed *core.ParsedDocument, r lsp.Range, diagnostics []lsp.Diagnostic, only []string) []lsp.CodeAction {
+func (c CSS) CodeActions(parsed *core.ParsedDocument, r lsp.Range, diagnostics []lsp.Diagnostic, only []string) (guarded []lsp.CodeAction) {
+	defer recoverService("css.CodeActions", &guarded)
 	cache := c.cachedCSSDocument(parsed)
 	virtual, source := cache.virtual, cache.source
 	start, startOK := virtual.ToVirtualPosition(r.Start, source)
@@ -680,7 +688,8 @@ func remapCSSCodeAction(virtual core.VirtualDocument, source *core.TextDocument,
 	return result, true
 }
 
-func (c CSS) Highlights(parsed *core.ParsedDocument, position lsp.Position) []lsp.DocumentHighlight {
+func (c CSS) Highlights(parsed *core.ParsedDocument, position lsp.Position) (guarded []lsp.DocumentHighlight) {
+	defer recoverService("css.Highlights", &guarded)
 	virtual, source, doc, stylesheet, virtualPosition, ok := c.contextAt(parsed, position)
 	if !ok {
 		return nil
@@ -695,7 +704,8 @@ func (c CSS) Highlights(parsed *core.ParsedDocument, position lsp.Position) []ls
 	return result
 }
 
-func (c CSS) DocumentSymbols(parsed *core.ParsedDocument) []lsp.DocumentSymbol {
+func (c CSS) DocumentSymbols(parsed *core.ParsedDocument) (guarded []lsp.DocumentSymbol) {
+	defer recoverService("css.DocumentSymbols", &guarded)
 	cache := c.cachedCSSDocument(parsed)
 	virtual := cache.virtual
 	if strings.TrimSpace(virtual.Text) == "" {
@@ -712,7 +722,8 @@ func (c CSS) DocumentSymbols(parsed *core.ParsedDocument) []lsp.DocumentSymbol {
 	return result
 }
 
-func (c CSS) FoldingRanges(parsed *core.ParsedDocument) []lsp.FoldingRange {
+func (c CSS) FoldingRanges(parsed *core.ParsedDocument) (guarded []lsp.FoldingRange) {
+	defer recoverService("css.FoldingRanges", &guarded)
 	cache := c.cachedCSSSource(parsed)
 	virtual := cache.virtual
 	if strings.TrimSpace(virtual.Text) == "" {
@@ -742,7 +753,8 @@ func (c CSS) FoldingRanges(parsed *core.ParsedDocument) []lsp.FoldingRange {
 	return result
 }
 
-func (c CSS) SelectionRange(parsed *core.ParsedDocument, position lsp.Position) *lsp.SelectionRange {
+func (c CSS) SelectionRange(parsed *core.ParsedDocument, position lsp.Position) (guarded *lsp.SelectionRange) {
+	defer recoverService("css.SelectionRange", &guarded)
 	virtual, source, doc, stylesheet, virtualPosition, ok := c.contextAt(parsed, position)
 	if !ok {
 		return nil
@@ -758,7 +770,8 @@ func (c CSS) SelectionRange(parsed *core.ParsedDocument, position lsp.Position) 
 	return &result
 }
 
-func (c CSS) PrepareRename(parsed *core.ParsedDocument, position lsp.Position) *lsp.Range {
+func (c CSS) PrepareRename(parsed *core.ParsedDocument, position lsp.Position) (guarded *lsp.Range) {
+	defer recoverService("css.PrepareRename", &guarded)
 	virtual, source, doc, stylesheet, virtualPosition, ok := c.contextAt(parsed, position)
 	if !ok {
 		return nil
@@ -774,7 +787,8 @@ func (c CSS) PrepareRename(parsed *core.ParsedDocument, position lsp.Position) *
 	return &mapped
 }
 
-func (c CSS) Rename(parsed *core.ParsedDocument, position lsp.Position, newName string) *lsp.WorkspaceEdit {
+func (c CSS) Rename(parsed *core.ParsedDocument, position lsp.Position, newName string) (guarded *lsp.WorkspaceEdit) {
+	defer recoverService("css.Rename", &guarded)
 	virtual, source, doc, stylesheet, virtualPosition, ok := c.contextAt(parsed, position)
 	if !ok {
 		return nil

@@ -279,6 +279,7 @@ func (s *Server) Serve(ctx context.Context) error {
 		s.debugLogWriter.closeRoots()
 	}()
 	defer s.shutdownRuntimeCaches()
+	defer s.installEmbeddedPanicReporter()()
 	serveCtx, cancelServe := context.WithCancel(ctx)
 	defer cancelServe()
 	fatalSignal := s.writeFatalSignal()

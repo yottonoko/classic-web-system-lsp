@@ -17,7 +17,8 @@ func NewHTML() HTML {
 	return HTML{service: htmlservice.GetLanguageService()}
 }
 
-func (h HTML) Complete(parsed *core.ParsedDocument, position lsp.Position) lsp.CompletionList {
+func (h HTML) Complete(parsed *core.ParsedDocument, position lsp.Position) (guarded lsp.CompletionList) {
+	defer recoverService("html.Complete", &guarded)
 	cache := h.cachedHTMLDocument(parsed)
 	virtual, source := cache.virtual, cache.source
 	virtualPosition, ok := virtual.ToVirtualPosition(position, source)
@@ -56,7 +57,8 @@ func remapHTMLCompletionTextEdit(virtual core.VirtualDocument, source *core.Text
 	return lsp.TextEdit{Range: r, NewText: edit.NewText}, true
 }
 
-func (h HTML) Hover(parsed *core.ParsedDocument, position lsp.Position) *lsp.Hover {
+func (h HTML) Hover(parsed *core.ParsedDocument, position lsp.Position) (guarded *lsp.Hover) {
+	defer recoverService("html.Hover", &guarded)
 	cache := h.cachedHTMLDocument(parsed)
 	virtual, source := cache.virtual, cache.source
 	virtualPosition, ok := virtual.ToVirtualPosition(position, source)
@@ -76,7 +78,8 @@ func (h HTML) Hover(parsed *core.ParsedDocument, position lsp.Position) *lsp.Hov
 	return hover
 }
 
-func (h HTML) Diagnostics(parsed *core.ParsedDocument) []lsp.Diagnostic {
+func (h HTML) Diagnostics(parsed *core.ParsedDocument) (guarded []lsp.Diagnostic) {
+	defer recoverService("html.Diagnostics", &guarded)
 	cache := h.cachedHTMLSource(parsed)
 	virtual, source := cache.virtual, cache.source
 	scanner := h.service.CreateScanner(virtual.Text)
@@ -100,7 +103,8 @@ func (h HTML) Diagnostics(parsed *core.ParsedDocument) []lsp.Diagnostic {
 	return diagnostics
 }
 
-func (h HTML) Highlights(parsed *core.ParsedDocument, position lsp.Position) []lsp.DocumentHighlight {
+func (h HTML) Highlights(parsed *core.ParsedDocument, position lsp.Position) (guarded []lsp.DocumentHighlight) {
+	defer recoverService("html.Highlights", &guarded)
 	virtual, source, doc, htmlDoc, virtualPosition, ok := h.contextAt(parsed, position)
 	if !ok {
 		return nil
@@ -115,7 +119,8 @@ func (h HTML) Highlights(parsed *core.ParsedDocument, position lsp.Position) []l
 	return result
 }
 
-func (h HTML) DocumentSymbols(parsed *core.ParsedDocument) []lsp.DocumentSymbol {
+func (h HTML) DocumentSymbols(parsed *core.ParsedDocument) (guarded []lsp.DocumentSymbol) {
+	defer recoverService("html.DocumentSymbols", &guarded)
 	cache := h.cachedHTMLDocument(parsed)
 	virtual := cache.virtual
 	if strings.TrimSpace(virtual.Text) == "" {
@@ -132,7 +137,8 @@ func (h HTML) DocumentSymbols(parsed *core.ParsedDocument) []lsp.DocumentSymbol 
 	return result
 }
 
-func (h HTML) FoldingRanges(parsed *core.ParsedDocument) []lsp.FoldingRange {
+func (h HTML) FoldingRanges(parsed *core.ParsedDocument) (guarded []lsp.FoldingRange) {
+	defer recoverService("html.FoldingRanges", &guarded)
 	cache := h.cachedHTMLSource(parsed)
 	virtual := cache.virtual
 	if strings.TrimSpace(virtual.Text) == "" {
@@ -152,7 +158,8 @@ func (h HTML) FoldingRanges(parsed *core.ParsedDocument) []lsp.FoldingRange {
 	return result
 }
 
-func (h HTML) SelectionRange(parsed *core.ParsedDocument, position lsp.Position) *lsp.SelectionRange {
+func (h HTML) SelectionRange(parsed *core.ParsedDocument, position lsp.Position) (guarded *lsp.SelectionRange) {
+	defer recoverService("html.SelectionRange", &guarded)
 	virtual, source, doc, _, virtualPosition, ok := h.contextAt(parsed, position)
 	if !ok {
 		return nil
@@ -168,7 +175,8 @@ func (h HTML) SelectionRange(parsed *core.ParsedDocument, position lsp.Position)
 	return &result
 }
 
-func (h HTML) LinkedEditingRanges(parsed *core.ParsedDocument, position lsp.Position) []lsp.Range {
+func (h HTML) LinkedEditingRanges(parsed *core.ParsedDocument, position lsp.Position) (guarded []lsp.Range) {
+	defer recoverService("html.LinkedEditingRanges", &guarded)
 	virtual, source, doc, htmlDoc, virtualPosition, ok := h.contextAt(parsed, position)
 	if !ok {
 		return nil
@@ -183,7 +191,8 @@ func (h HTML) LinkedEditingRanges(parsed *core.ParsedDocument, position lsp.Posi
 	return result
 }
 
-func (h HTML) Rename(parsed *core.ParsedDocument, position lsp.Position, newName string) *lsp.WorkspaceEdit {
+func (h HTML) Rename(parsed *core.ParsedDocument, position lsp.Position, newName string) (guarded *lsp.WorkspaceEdit) {
+	defer recoverService("html.Rename", &guarded)
 	virtual, source, doc, htmlDoc, virtualPosition, ok := h.contextAt(parsed, position)
 	if !ok {
 		return nil
@@ -206,7 +215,8 @@ func (h HTML) Rename(parsed *core.ParsedDocument, position lsp.Position, newName
 	return &lsp.WorkspaceEdit{Changes: changes}
 }
 
-func (h HTML) PrepareRename(parsed *core.ParsedDocument, position lsp.Position) *lsp.Range {
+func (h HTML) PrepareRename(parsed *core.ParsedDocument, position lsp.Position) (guarded *lsp.Range) {
+	defer recoverService("html.PrepareRename", &guarded)
 	edit := h.Rename(parsed, position, "asp-lsp-rename-probe")
 	if edit == nil {
 		return nil
@@ -220,7 +230,8 @@ func (h HTML) PrepareRename(parsed *core.ParsedDocument, position lsp.Position) 
 	return nil
 }
 
-func (h HTML) TagComplete(parsed *core.ParsedDocument, position lsp.Position) string {
+func (h HTML) TagComplete(parsed *core.ParsedDocument, position lsp.Position) (guarded string) {
+	defer recoverService("html.TagComplete", &guarded)
 	_, _, doc, htmlDoc, virtualPosition, ok := h.contextAt(parsed, position)
 	if !ok {
 		return ""
@@ -289,7 +300,8 @@ func intValue(value *int) int {
 	return *value
 }
 
-func (h HTML) Format(text string, options lspFormattingOptions) []lsp.TextEdit {
+func (h HTML) Format(text string, options lspFormattingOptions) (guarded []lsp.TextEdit) {
+	defer recoverService("html.Format", &guarded)
 	doc := htmlservice.NewTextDocument("file:///format.html", "html", 0, text)
 	tabSize := options.TabSize
 	config := htmlservice.HTMLFormatConfiguration{TabSize: tabSize, InsertSpaces: options.InsertSpaces}
