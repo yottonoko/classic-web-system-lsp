@@ -10,6 +10,7 @@ import (
 	"runtime"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -618,5 +619,58 @@ func TestProjectCachesDiagnosticResponseBytesAndInvalidatesOnUpdate(t *testing.T
 	}
 	if len(project.diagnosticResponses) != 0 {
 		t.Fatalf("diagnostic cache was not invalidated: %d", len(project.diagnosticResponses))
+	}
+}
+
+// lateCancelContext reports cancellation only after Err has been polled a
+// fixed number of times, so a request is canceled while the checker is running.
+type lateCancelContext struct {
+	context.Context
+	remaining *atomic.Int64
+}
+
+func (c lateCancelContext) Err() error {
+	if c.remaining.Add(-1) >= 0 {
+		return nil
+	}
+	return context.Canceled
+}
+
+func TestProjectServesRequestsAfterCanceledCheck(t *testing.T) {
+	project := NewProject("/project")
+	var source strings.Builder
+	for index := range 400 {
+		fmt.Fprintf(&source, "function f%d(value) { return missingName%d + value; }\n", index, index)
+	}
+	if _, err := project.Update(map[string]string{"/project/file.js": source.String()}, ProjectOptions{CompilerOptions: map[string]any{"checkJs": true}}); err != nil {
+		t.Fatal(err)
+	}
+	params := []byte(`{"textDocument":{"uri":"file:///project/file.js"}}`)
+	for _, polls := range []int64{3, 6, 12, 40} {
+		remaining := &atomic.Int64{}
+		remaining.Store(polls)
+		_, _ = project.Request(lateCancelContext{Context: context.Background(), remaining: remaining}, "textDocument/semanticDiagnostic", params)
+	}
+	raw, err := project.Request(context.Background(), "textDocument/semanticDiagnostic", params)
+	if err != nil {
+		t.Fatalf("request after canceled checks failed: %v", err)
+	}
+	if !bytes.Contains(raw, []byte("missingName399")) {
+		t.Fatalf("diagnostics after canceled checks are incomplete: %.200s", raw)
+	}
+}
+
+func TestProjectRequestForMissingFileReturnsError(t *testing.T) {
+	project := NewProject("/project")
+	if _, err := project.UpdateFiles(map[string]string{"/project/present.js": "const value = 1;\n"}); err != nil {
+		t.Fatal(err)
+	}
+	for _, method := range []string{"textDocument/foldingRange", "textDocument/documentSymbol", "textDocument/semanticTokens/full", "textDocument/semanticDiagnostic"} {
+		if _, err := project.Request(context.Background(), method, []byte(`{"textDocument":{"uri":"file:///project/missing.js"}}`)); err == nil {
+			t.Fatalf("%s for a missing file returned no error", method)
+		}
+	}
+	if _, err := project.Request(context.Background(), "textDocument/foldingRange", []byte(`{"textDocument":{"uri":"file:///project/present.js"}}`)); err != nil {
+		t.Fatalf("request after missing-file errors failed: %v", err)
 	}
 }

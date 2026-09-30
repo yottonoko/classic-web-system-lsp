@@ -31,6 +31,12 @@ type CheckerPool struct {
 
 var _ compiler.CheckerPool = (*CheckerPool)(nil)
 
+// NewCheckerPool creates a checker pool that disposes checkers whose requests
+// were canceled, so later requests never reuse a poisoned checker.
+func NewCheckerPool(maxCheckers int, program *compiler.Program) *CheckerPool {
+	return newCheckerPool(maxCheckers, program, nil)
+}
+
 func newCheckerPool(maxCheckers int, program *compiler.Program, log func(msg string)) *CheckerPool {
 	pool := &CheckerPool{
 		program:                program,

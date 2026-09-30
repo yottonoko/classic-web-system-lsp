@@ -21,6 +21,7 @@ import (
 	"github.com/microsoft/typescript-go/internal/ls/lsconv"
 	"github.com/microsoft/typescript-go/internal/ls/lsutil"
 	"github.com/microsoft/typescript-go/internal/lsp/lsproto"
+	"github.com/microsoft/typescript-go/internal/project"
 	"github.com/microsoft/typescript-go/internal/sourcemap"
 	"github.com/microsoft/typescript-go/internal/tsoptions"
 	"github.com/microsoft/typescript-go/internal/tspath"
@@ -300,6 +301,16 @@ func (p *Project) Request(ctx context.Context, method string, params []byte) ([]
 		return nil, errors.New("typescript project has not been initialized")
 	}
 	ctx = lsproto.WithClientCapabilities(ctx, &p.capabilities)
+	var document struct {
+		TextDocument *struct {
+			Uri lsproto.DocumentUri `json:"uri"`
+		} `json:"textDocument"`
+	}
+	if err := tsjson.Unmarshal(params, &document); err == nil && document.TextDocument != nil {
+		if fileName := document.TextDocument.Uri.FileName(); p.service.GetProgram().GetSourceFile(fileName) == nil {
+			return nil, fmt.Errorf("typescript file not found: %s", fileName)
+		}
+	}
 	var diagnosticKey diagnosticResponseCacheKey
 	var diagnosticParams lsproto.DocumentDiagnosticParams
 	if diagnosticCacheable {
@@ -316,156 +327,166 @@ func (p *Project) Request(ctx context.Context, method string, params []byte) ([]
 			p.diagnosticMu.Unlock()
 		}
 	}
-	var result any
-	var err error
-	switch method {
-	case "textDocument/completion":
-		var value lsproto.CompletionParams
-		if err = tsjson.Unmarshal(params, &value); err == nil {
-			result, err = p.service.ProvideCompletion(ctx, value.TextDocument.Uri, value.Position, value.Context)
-		}
-	case "completionItem/resolve":
-		var value lsproto.CompletionItem
-		if err = tsjson.Unmarshal(params, &value); err == nil {
-			result, err = p.service.ResolveCompletionItem(ctx, &value, value.Data)
-		}
-	case "textDocument/hover":
-		var value lsproto.HoverParams
-		if err = tsjson.Unmarshal(params, &value); err == nil {
-			result, err = p.service.ProvideHover(ctx, &value)
-		}
-	case "textDocument/diagnostic":
-		value := diagnosticParams
-		if !diagnosticCacheable {
-			err = tsjson.Unmarshal(params, &value)
-		}
-		if err == nil {
-			result, err = p.service.ProvideDiagnostics(ctx, value.TextDocument.Uri)
-		}
-	case "textDocument/syntacticDiagnostic", "textDocument/semanticDiagnostic", "textDocument/suggestionDiagnostic":
-		value := diagnosticParams
-		if !diagnosticCacheable {
-			err = tsjson.Unmarshal(params, &value)
-		}
-		if err == nil {
-			program := p.service.GetProgram()
-			file := program.GetSourceFile(value.TextDocument.Uri.FileName())
-			if file == nil {
-				err = fmt.Errorf("typescript file not found: %s", value.TextDocument.Uri.FileName())
-				break
+	result, err := func() (result any, err error) {
+		// The TypeScript language service reports some invalid states, such as a
+		// file missing from the program, by panicking. Surface them as request
+		// errors so one bad request cannot terminate the language server.
+		defer func() {
+			if recovered := recover(); recovered != nil {
+				result = nil
+				err = fmt.Errorf("typescript language service %s failed: %v", method, recovered)
 			}
-			var diagnostics []*ast.Diagnostic
-			if method == "textDocument/syntacticDiagnostic" {
-				diagnostics = program.GetSyntacticDiagnostics(ctx, file)
-			} else if method == "textDocument/semanticDiagnostic" {
-				diagnostics = program.GetSemanticDiagnostics(ctx, file)
-			} else {
-				diagnostics = program.GetSuggestionDiagnostics(ctx, file)
+		}()
+		switch method {
+		case "textDocument/completion":
+			var value lsproto.CompletionParams
+			if err = tsjson.Unmarshal(params, &value); err == nil {
+				result, err = p.service.ProvideCompletion(ctx, value.TextDocument.Uri, value.Position, value.Context)
 			}
-			items := make([]*lsproto.Diagnostic, 0, len(diagnostics))
-			for _, diagnostic := range diagnostics {
-				items = append(items, lsconv.DiagnosticToLSPPull(ctx, p.host.converters, diagnostic, false))
+		case "completionItem/resolve":
+			var value lsproto.CompletionItem
+			if err = tsjson.Unmarshal(params, &value); err == nil {
+				result, err = p.service.ResolveCompletionItem(ctx, &value, value.Data)
 			}
-			result = lsproto.RelatedFullDocumentDiagnosticReportOrUnchangedDocumentDiagnosticReport{
-				FullDocumentDiagnosticReport: &lsproto.RelatedFullDocumentDiagnosticReport{Items: items},
+		case "textDocument/hover":
+			var value lsproto.HoverParams
+			if err = tsjson.Unmarshal(params, &value); err == nil {
+				result, err = p.service.ProvideHover(ctx, &value)
 			}
-		}
-	case "textDocument/definition":
-		var value lsproto.DefinitionParams
-		if err = tsjson.Unmarshal(params, &value); err == nil {
-			result, err = p.service.ProvideDefinition(ctx, value.TextDocument.Uri, value.Position)
-		}
-	case "textDocument/typeDefinition":
-		var value lsproto.TypeDefinitionParams
-		if err = tsjson.Unmarshal(params, &value); err == nil {
-			result, err = p.service.ProvideTypeDefinition(ctx, value.TextDocument.Uri, value.Position)
-		}
-	case "textDocument/implementation":
-		var value lsproto.ImplementationParams
-		if err = tsjson.Unmarshal(params, &value); err == nil {
-			result, err = p.service.ProvideImplementations(ctx, &value, nil)
-		}
-	case "textDocument/references":
-		var value lsproto.ReferenceParams
-		if err = tsjson.Unmarshal(params, &value); err == nil {
-			result, err = p.service.ProvideReferences(ctx, &value, nil)
-		}
-	case "textDocument/rename":
-		var value lsproto.RenameParams
-		if err = tsjson.Unmarshal(params, &value); err == nil {
-			result, err = p.service.ProvideRename(ctx, &value, nil)
-		}
-	case "textDocument/prepareRename":
-		var value lsproto.PrepareRenameParams
-		if err = tsjson.Unmarshal(params, &value); err == nil {
-			info := p.service.GetRenameInfo(ctx, "", value.TextDocument.Uri, value.Position)
-			if info.CanRename {
-				result = info.TriggerSpan
+		case "textDocument/diagnostic":
+			value := diagnosticParams
+			if !diagnosticCacheable {
+				err = tsjson.Unmarshal(params, &value)
 			}
+			if err == nil {
+				result, err = p.service.ProvideDiagnostics(ctx, value.TextDocument.Uri)
+			}
+		case "textDocument/syntacticDiagnostic", "textDocument/semanticDiagnostic", "textDocument/suggestionDiagnostic":
+			value := diagnosticParams
+			if !diagnosticCacheable {
+				err = tsjson.Unmarshal(params, &value)
+			}
+			if err == nil {
+				program := p.service.GetProgram()
+				file := program.GetSourceFile(value.TextDocument.Uri.FileName())
+				if file == nil {
+					err = fmt.Errorf("typescript file not found: %s", value.TextDocument.Uri.FileName())
+					break
+				}
+				var diagnostics []*ast.Diagnostic
+				if method == "textDocument/syntacticDiagnostic" {
+					diagnostics = program.GetSyntacticDiagnostics(ctx, file)
+				} else if method == "textDocument/semanticDiagnostic" {
+					diagnostics = program.GetSemanticDiagnostics(ctx, file)
+				} else {
+					diagnostics = program.GetSuggestionDiagnostics(ctx, file)
+				}
+				items := make([]*lsproto.Diagnostic, 0, len(diagnostics))
+				for _, diagnostic := range diagnostics {
+					items = append(items, lsconv.DiagnosticToLSPPull(ctx, p.host.converters, diagnostic, false))
+				}
+				result = lsproto.RelatedFullDocumentDiagnosticReportOrUnchangedDocumentDiagnosticReport{
+					FullDocumentDiagnosticReport: &lsproto.RelatedFullDocumentDiagnosticReport{Items: items},
+				}
+			}
+		case "textDocument/definition":
+			var value lsproto.DefinitionParams
+			if err = tsjson.Unmarshal(params, &value); err == nil {
+				result, err = p.service.ProvideDefinition(ctx, value.TextDocument.Uri, value.Position)
+			}
+		case "textDocument/typeDefinition":
+			var value lsproto.TypeDefinitionParams
+			if err = tsjson.Unmarshal(params, &value); err == nil {
+				result, err = p.service.ProvideTypeDefinition(ctx, value.TextDocument.Uri, value.Position)
+			}
+		case "textDocument/implementation":
+			var value lsproto.ImplementationParams
+			if err = tsjson.Unmarshal(params, &value); err == nil {
+				result, err = p.service.ProvideImplementations(ctx, &value, nil)
+			}
+		case "textDocument/references":
+			var value lsproto.ReferenceParams
+			if err = tsjson.Unmarshal(params, &value); err == nil {
+				result, err = p.service.ProvideReferences(ctx, &value, nil)
+			}
+		case "textDocument/rename":
+			var value lsproto.RenameParams
+			if err = tsjson.Unmarshal(params, &value); err == nil {
+				result, err = p.service.ProvideRename(ctx, &value, nil)
+			}
+		case "textDocument/prepareRename":
+			var value lsproto.PrepareRenameParams
+			if err = tsjson.Unmarshal(params, &value); err == nil {
+				info := p.service.GetRenameInfo(ctx, "", value.TextDocument.Uri, value.Position)
+				if info.CanRename {
+					result = info.TriggerSpan
+				}
+			}
+		case "textDocument/signatureHelp":
+			var value lsproto.SignatureHelpParams
+			if err = tsjson.Unmarshal(params, &value); err == nil {
+				result, err = p.service.ProvideSignatureHelp(ctx, value.TextDocument.Uri, value.Position, value.Context)
+			}
+		case "textDocument/documentHighlight":
+			var value lsproto.DocumentHighlightParams
+			if err = tsjson.Unmarshal(params, &value); err == nil {
+				result, err = p.service.ProvideDocumentHighlights(ctx, value.TextDocument.Uri, value.Position)
+			}
+		case "textDocument/documentSymbol":
+			var value lsproto.DocumentSymbolParams
+			if err = tsjson.Unmarshal(params, &value); err == nil {
+				result, err = p.service.ProvideDocumentSymbols(ctx, value.TextDocument.Uri)
+			}
+		case "textDocument/foldingRange":
+			var value lsproto.FoldingRangeParams
+			if err = tsjson.Unmarshal(params, &value); err == nil {
+				result, err = p.service.ProvideFoldingRange(ctx, value.TextDocument.Uri)
+			}
+		case "textDocument/selectionRange":
+			var value lsproto.SelectionRangeParams
+			if err = tsjson.Unmarshal(params, &value); err == nil {
+				result, err = p.service.ProvideSelectionRanges(ctx, &value)
+			}
+		case "textDocument/codeAction":
+			var value lsproto.CodeActionParams
+			if err = tsjson.Unmarshal(params, &value); err == nil {
+				result, err = p.service.ProvideCodeActions(ctx, &value)
+			}
+		case "textDocument/prepareCallHierarchy":
+			var value lsproto.CallHierarchyPrepareParams
+			if err = tsjson.Unmarshal(params, &value); err == nil {
+				result, err = p.service.ProvidePrepareCallHierarchy(ctx, value.TextDocument.Uri, value.Position)
+			}
+		case "callHierarchy/incomingCalls":
+			var value lsproto.CallHierarchyIncomingCallsParams
+			if err = tsjson.Unmarshal(params, &value); err == nil {
+				result, err = p.service.ProvideCallHierarchyIncomingCalls(ctx, value.Item, nil)
+			}
+		case "callHierarchy/outgoingCalls":
+			var value lsproto.CallHierarchyOutgoingCallsParams
+			if err = tsjson.Unmarshal(params, &value); err == nil {
+				result, err = p.service.ProvideCallHierarchyOutgoingCalls(ctx, value.Item)
+			}
+		case "textDocument/inlayHint":
+			var value lsproto.InlayHintParams
+			if err = tsjson.Unmarshal(params, &value); err == nil {
+				result, err = p.service.ProvideInlayHint(ctx, &value)
+			}
+		case "textDocument/semanticTokens/full":
+			var value lsproto.SemanticTokensParams
+			if err = tsjson.Unmarshal(params, &value); err == nil {
+				result, err = p.service.ProvideSemanticTokens(ctx, value.TextDocument.Uri)
+			}
+		case "textDocument/semanticTokens/range":
+			var value lsproto.SemanticTokensRangeParams
+			if err = tsjson.Unmarshal(params, &value); err == nil {
+				result, err = p.service.ProvideSemanticTokensRange(ctx, value.TextDocument.Uri, value.Range)
+			}
+		default:
+			return nil, fmt.Errorf("unsupported typescript language-service method %q", method)
 		}
-	case "textDocument/signatureHelp":
-		var value lsproto.SignatureHelpParams
-		if err = tsjson.Unmarshal(params, &value); err == nil {
-			result, err = p.service.ProvideSignatureHelp(ctx, value.TextDocument.Uri, value.Position, value.Context)
-		}
-	case "textDocument/documentHighlight":
-		var value lsproto.DocumentHighlightParams
-		if err = tsjson.Unmarshal(params, &value); err == nil {
-			result, err = p.service.ProvideDocumentHighlights(ctx, value.TextDocument.Uri, value.Position)
-		}
-	case "textDocument/documentSymbol":
-		var value lsproto.DocumentSymbolParams
-		if err = tsjson.Unmarshal(params, &value); err == nil {
-			result, err = p.service.ProvideDocumentSymbols(ctx, value.TextDocument.Uri)
-		}
-	case "textDocument/foldingRange":
-		var value lsproto.FoldingRangeParams
-		if err = tsjson.Unmarshal(params, &value); err == nil {
-			result, err = p.service.ProvideFoldingRange(ctx, value.TextDocument.Uri)
-		}
-	case "textDocument/selectionRange":
-		var value lsproto.SelectionRangeParams
-		if err = tsjson.Unmarshal(params, &value); err == nil {
-			result, err = p.service.ProvideSelectionRanges(ctx, &value)
-		}
-	case "textDocument/codeAction":
-		var value lsproto.CodeActionParams
-		if err = tsjson.Unmarshal(params, &value); err == nil {
-			result, err = p.service.ProvideCodeActions(ctx, &value)
-		}
-	case "textDocument/prepareCallHierarchy":
-		var value lsproto.CallHierarchyPrepareParams
-		if err = tsjson.Unmarshal(params, &value); err == nil {
-			result, err = p.service.ProvidePrepareCallHierarchy(ctx, value.TextDocument.Uri, value.Position)
-		}
-	case "callHierarchy/incomingCalls":
-		var value lsproto.CallHierarchyIncomingCallsParams
-		if err = tsjson.Unmarshal(params, &value); err == nil {
-			result, err = p.service.ProvideCallHierarchyIncomingCalls(ctx, value.Item, nil)
-		}
-	case "callHierarchy/outgoingCalls":
-		var value lsproto.CallHierarchyOutgoingCallsParams
-		if err = tsjson.Unmarshal(params, &value); err == nil {
-			result, err = p.service.ProvideCallHierarchyOutgoingCalls(ctx, value.Item)
-		}
-	case "textDocument/inlayHint":
-		var value lsproto.InlayHintParams
-		if err = tsjson.Unmarshal(params, &value); err == nil {
-			result, err = p.service.ProvideInlayHint(ctx, &value)
-		}
-	case "textDocument/semanticTokens/full":
-		var value lsproto.SemanticTokensParams
-		if err = tsjson.Unmarshal(params, &value); err == nil {
-			result, err = p.service.ProvideSemanticTokens(ctx, value.TextDocument.Uri)
-		}
-	case "textDocument/semanticTokens/range":
-		var value lsproto.SemanticTokensRangeParams
-		if err = tsjson.Unmarshal(params, &value); err == nil {
-			result, err = p.service.ProvideSemanticTokensRange(ctx, value.TextDocument.Uri, value.Range)
-		}
-	default:
-		return nil, fmt.Errorf("unsupported typescript language-service method %q", method)
-	}
+		return result, err
+	}()
 	if err != nil {
 		return nil, err
 	}
@@ -527,7 +548,7 @@ func (p *Project) rebuildLocked(changedFile string, canUpdateIncrementally bool)
 			if oldProgram.GetSourceFile(changedFile) != nil {
 				changedPath := tspath.ToPath(changedFile, p.root, p.fs.UseCaseSensitiveFileNames())
 				host := compiler.NewCompilerHost(p.root, p.fs, bundled.LibPath(), nil, nil)
-				program, _, incremental := oldProgram.UpdateProgram(changedPath, host, nil)
+				program, _, incremental := oldProgram.UpdateProgram(changedPath, host, newProjectCheckerPool)
 				if program != nil {
 					p.service = ls.NewLanguageService(
 						tspath.Path(filepath.ToSlash(filepath.Join(p.root, "jsconfig.json"))),
@@ -567,13 +588,20 @@ func (p *Project) rebuildLocked(changedFile string, canUpdateIncrementally bool)
 	compare := tspath.ComparePathsOptions{UseCaseSensitiveFileNames: true, CurrentDirectory: p.root}
 	config := tsoptions.NewParsedCommandLine(options, fileNames, compare)
 	host := compiler.NewCompilerHost(p.root, fs, bundled.LibPath(), nil, nil)
-	program := compiler.NewProgram(compiler.ProgramOptions{Host: host, Config: config, SingleThreaded: core.TSFalse})
+	program := compiler.NewProgram(compiler.ProgramOptions{Host: host, Config: config, SingleThreaded: core.TSFalse, CreateCheckerPool: newProjectCheckerPool})
 	lsHost := newProjectHost(fs)
 	p.fs = fs
 	p.rootFiles = slices.Clone(fileNames)
 	p.host = lsHost
 	p.service = ls.NewLanguageService(tspath.Path(filepath.ToSlash(filepath.Join(p.root, "jsconfig.json"))), program, lsHost, firstOrEmpty(fileNames))
 	return false, nil
+}
+
+// newProjectCheckerPool uses the language-server checker pool instead of the
+// compiler's batch pool. Language-service requests are canceled routinely, and
+// a canceled checker panics on reuse unless the pool disposes it.
+func newProjectCheckerPool(program *compiler.Program) compiler.CheckerPool {
+	return project.NewCheckerPool(4, program)
 }
 
 func ensureBrowserJavaScriptLibs(libs []string) []string {
