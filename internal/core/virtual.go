@@ -650,7 +650,8 @@ func nestedRegionsForOwner(owner Region, sorted []Region) []Region {
 		return nil
 	}
 	var result []Region
-	for _, nested := range sorted {
+	first := sort.Search(len(sorted), func(index int) bool { return sorted[index].Start >= owner.ContentStart })
+	for _, nested := range sorted[first:] {
 		if nested.Start >= owner.ContentEnd {
 			break
 		}

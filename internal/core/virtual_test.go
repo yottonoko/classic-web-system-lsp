@@ -490,3 +490,15 @@ func TestRegionAtUsesHalfOpenContentAndRegionBoundaries(t *testing.T) {
 		t.Fatal("negative offset unexpectedly matched a region")
 	}
 }
+
+func TestBuildVirtualDocumentManyScriptsKeepsNestedMasks(t *testing.T) {
+	text := strings.Repeat("<script>var a = '<%= x %>';</script>\n", 4000)
+	parsed := ParseDocument("file:///many.asp", text, Settings{DefaultLanguage: "VBScript"})
+	virtual := BuildVirtualDocument(parsed, LanguageJavaScript)
+	if strings.Contains(virtual.Text, "<%") {
+		t.Fatal("nested ASP expression leaked into JavaScript virtual document")
+	}
+	if got := strings.Count(virtual.Text, "var a = "); got != 4000 {
+		t.Fatalf("script count = %d, want 4000", got)
+	}
+}
