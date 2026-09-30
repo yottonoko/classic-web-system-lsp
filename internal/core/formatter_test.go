@@ -457,3 +457,22 @@ func TestNestedASPSkipModeDoesNotTreatClientLiteralAsServerRegion(t *testing.T) 
 		t.Fatalf("literal formatting = called:%v edits:%#v", called, edits)
 	}
 }
+
+func TestFormatVBLinePreservesPlaceholderShapedStringContent(t *testing.T) {
+	for _, line := range []string{
+		`a = "__ASP_LSP_VB_LITERAL_1__" & "x"`,
+		`a = "__ASP_LSP_VB_LITERAL_01__" & "x" ' __ASP_LSP_VB_LITERAL_0__`,
+		`b = "__ASP_LSP_VB_LITERAL_" & "__"`,
+	} {
+		if got := formatVBLine(line, FormattingOptions{}); got != line {
+			t.Fatalf("formatVBLine(%q) = %q", line, got)
+		}
+	}
+}
+
+func TestFormatVBLineRestoresManyLiterals(t *testing.T) {
+	line := strings.Repeat(`"x" & `, 3000) + `"y"`
+	if got := formatVBLine(line, FormattingOptions{}); got != line {
+		t.Fatalf("literal restoration changed a %d-byte line", len(line))
+	}
+}

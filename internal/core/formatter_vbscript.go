@@ -54,10 +54,39 @@ func protectVBLineLiterals(line string) (string, func(string) string) {
 		out.WriteString(placeholder)
 	}
 	return out.String(), func(formatted string) string {
-		for i, replacement := range replacements {
-			formatted = strings.ReplaceAll(formatted, vbLiteralPlaceholder(i), replacement)
-		}
+		return restoreVBLineLiterals(formatted, replacements)
+	}
+}
+
+// restoreVBLineLiterals substitutes placeholders in one pass so restored
+// literal text is never rescanned for placeholder-shaped content.
+func restoreVBLineLiterals(formatted string, replacements []string) string {
+	const prefix = "__ASP_LSP_VB_LITERAL_"
+	if !strings.Contains(formatted, prefix) {
 		return formatted
+	}
+	var out strings.Builder
+	out.Grow(len(formatted))
+	for {
+		start := strings.Index(formatted, prefix)
+		if start < 0 {
+			out.WriteString(formatted)
+			return out.String()
+		}
+		digits := start + len(prefix)
+		end := digits
+		for end < len(formatted) && formatted[end] >= '0' && formatted[end] <= '9' {
+			end++
+		}
+		index, err := strconv.Atoi(formatted[digits:end])
+		if err != nil || index >= len(replacements) || (end-digits > 1 && formatted[digits] == '0') || !strings.HasPrefix(formatted[end:], "__") {
+			out.WriteString(formatted[:digits])
+			formatted = formatted[digits:]
+			continue
+		}
+		out.WriteString(formatted[:start])
+		out.WriteString(replacements[index])
+		formatted = formatted[end+2:]
 	}
 }
 
