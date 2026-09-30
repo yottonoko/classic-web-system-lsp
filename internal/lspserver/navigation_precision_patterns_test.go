@@ -25,7 +25,7 @@ func TestNavigationRecognizesCommonClassicASPTransitions(t *testing.T) {
 		{"onclick location", `<input type="button" onclick="location.href='next.asp'">`, []string{"next.asp javascriptLocation probable"}},
 		{"onclick with entities", `<button type="button" onclick="location.href=&quot;next.asp&quot;">b</button>`, []string{"next.asp javascriptLocation probable"}},
 		{"onclick rendered server literal", `<% nextPage = "next.asp" %><button type="button" onclick="location.href='<%= nextPage %>'">b</button>`, []string{"next.asp javascriptLocation probable"}},
-		{"onclick calls page function", `<script>function goPage(p){ location.href = p; }</script><input type="button" onclick="goPage('next.asp')">`, []string{"next.asp javascriptLocation probable", "p javascriptLocation unknown"}},
+		{"onclick calls page function", `<script>function goPage(p){ location.href = p; }</script><input type="button" onclick="goPage('next.asp')">`, []string{"next.asp javascriptLocation probable"}},
 		{"onclick submits form", `<form name="f1" method="post" action="save.asp"><input type="button" onclick="document.f1.action='list.asp'; document.f1.submit();"></form>`, []string{"list.asp javascriptFormSubmit probable", "save.asp htmlForm certain"}},
 		{"javascript href", `<a href="javascript:location.href='next.asp'">x</a>`, []string{"next.asp javascriptLocation probable"}},
 		{"javascript void href", `<a href="javascript:void(0)">x</a>`, nil},

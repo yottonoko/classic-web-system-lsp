@@ -117,6 +117,9 @@ type NavigationSink struct {
 	// Range continues to describe the containing source statement.
 	occurrence SourceRange
 	called     bool
+	// parameterOf is the function whose parameter is the whole unresolved
+	// destination, as in location.href = page inside function go(page).
+	parameterOf *ast.Node
 }
 
 // NavigationAnalysis is the result of analyzing one virtual JavaScript text.
@@ -535,6 +538,7 @@ type navigationAnalyzer struct {
 	work                      *navigationWorkBudget
 	unknownFallbackDone       bool
 	collectingUnknownFallback bool
+	invokedFunctions          map[*ast.Node]bool
 }
 
 type navigationWorkBudget struct {
@@ -4272,6 +4276,12 @@ func (a *navigationAnalyzer) evaluateNavigationFunction(function *ast.Node, argu
 		return navigationCallResult{value: unknownNavigationSet(), global: cloneNavigationState(a.globalState), env: environment}
 	}
 	environment := a.navigationFunctionEnvironment(function)
+	if function != nil {
+		if a.invokedFunctions == nil {
+			a.invokedFunctions = make(map[*ast.Node]bool)
+		}
+		a.invokedFunctions[function] = true
+	}
 	if function == nil || !isNavigationCallable(function) || a.callDepth >= navigationCallDepthLimit || a.callStack[function] {
 		return navigationCallResult{value: unknownNavigationSet(), global: cloneNavigationState(a.globalState), env: environment}
 	}
@@ -5793,6 +5803,10 @@ func (a *navigationAnalyzer) navigationSink(node *ast.Node) (NavigationSink, boo
 	} else {
 		expression = a.expressionResult(valueExpr)
 	}
+	var parameterOf *ast.Node
+	if a.navigationSinkForwardsParameter(valueExpr, expression) {
+		parameterOf = a.currentFunction
+	}
 	controlDependencies := a.navigationExpressionControlDependencies(node)
 	for index := range expression.Values {
 		expression.Values[index].Dependencies = mergeNavigationDependencies(expression.Values[index].Dependencies, controlDependencies)
@@ -5801,7 +5815,29 @@ func (a *navigationAnalyzer) navigationSink(node *ast.Node) (NavigationSink, boo
 		Kind: kind, Range: a.statementRange(node), Expression: expression,
 		TargetFrame: targetFrame, FormName: formName, Method: method,
 		Snippet: a.sourceText(a.statementRange(node)), occurrence: occurrence,
+		parameterOf: parameterOf,
 	}, true
+}
+
+func (a *navigationAnalyzer) navigationSinkForwardsParameter(valueExpr *ast.Node, expression NavigationExpression) bool {
+	if a.callSite != nil || a.currentFunction == nil || a.collectingUnknownFallback {
+		return false
+	}
+	for _, value := range expression.Values {
+		if value.Kind != NavigationValueUnknown {
+			return false
+		}
+	}
+	valueExpr = a.skipNavigationOuterExpressions(valueExpr)
+	if valueExpr == nil || valueExpr.Kind != ast.KindIdentifier {
+		return false
+	}
+	for _, parameter := range a.currentFunction.Parameters() {
+		if name := parameter.Name(); name != nil && name.Kind == ast.KindIdentifier && name.Text() == valueExpr.Text() {
+			return true
+		}
+	}
+	return false
 }
 
 func (a *navigationAnalyzer) navigationExpressionControlDependencies(node *ast.Node) []string {
@@ -6133,6 +6169,18 @@ func AnalyzeJavaScriptNavigation(ctx context.Context, source string) (Navigation
 			return NavigationAnalysis{Cancelled: true}, err
 		}
 		return NavigationAnalysis{}, err
+	}
+	// A function that forwards its parameter to a navigation sink and is never
+	// called here gets its destination from callers elsewhere, such as inline
+	// event handlers; its definition alone would add an unknown target.
+	if len(analyzer.sinks) > 0 {
+		kept := analyzer.sinks[:0]
+		for _, sink := range analyzer.sinks {
+			if sink.parameterOf == nil || analyzer.invokedFunctions[sink.parameterOf] {
+				kept = append(kept, sink)
+			}
+		}
+		analyzer.sinks = kept
 	}
 	calledOccurrences := make(map[SourceRange]bool)
 	for _, sink := range analyzer.sinks {
