@@ -186,6 +186,9 @@ type navigationVBState struct {
 	cancelContext        context.Context
 	cancelled            bool
 	expressionBudget     *navigationVBExpressionBudget
+	// withTargets holds the member path of each enclosing With block; an empty
+	// entry marks a With target that is not a plain member path.
+	withTargets []string
 }
 
 type navigationVBCallEvidence struct {
@@ -582,10 +585,44 @@ func extractVBScriptNavigationCandidatesWithState(content string, baseOffset int
 	return candidates
 }
 
+// navigationApplyVBWith tracks With blocks so ".Redirect" inside
+// "With Response" resolves to Response.Redirect.
+func navigationApplyVBWith(tokens []vbscript.Token, state *navigationVBState) bool {
+	first, second := navigationVBLower(tokens, 0), navigationVBLower(tokens, 1)
+	switch {
+	case first == "with":
+		target := ""
+		if path, cursor, ok := navigationVBMemberPath(tokens, 1); ok && cursor == len(tokens) {
+			target = strings.Join(path, ".")
+		}
+		state.withTargets = append(append([]string(nil), state.withTargets...), target)
+		return true
+	case first == "end" && second == "with":
+		if len(state.withTargets) > 0 {
+			state.withTargets = state.withTargets[:len(state.withTargets)-1]
+		}
+		return true
+	}
+	return false
+}
+
 func navigationVBSinkCandidate(tokens []vbscript.Token, state *navigationVBState, evidence navigationVBCallEvidence) (navigationVBCandidate, bool) {
-	path, cursor, ok := navigationVBMemberPath(tokens, navigationVBCallOffset(tokens))
+	start := navigationVBCallOffset(tokens)
+	var withPath []string
+	if start < len(tokens) && tokens[start].Text == "." && state != nil && len(state.withTargets) > 0 {
+		target := state.withTargets[len(state.withTargets)-1]
+		if target == "" {
+			return navigationVBCandidate{}, false
+		}
+		withPath = strings.Split(target, ".")
+		start++
+	}
+	path, cursor, ok := navigationVBMemberPath(tokens, start)
 	if !ok {
 		return navigationVBCandidate{}, false
+	}
+	if len(withPath) > 0 {
+		path = append(withPath, path...)
 	}
 	if cursor < len(tokens) && tokens[cursor].Text == "=" {
 		return navigationVBCandidate{}, false
@@ -891,6 +928,9 @@ func navigationVBFunctionParameters(tokens []vbscript.Token) []navigationVBParam
 
 func updateNavigationVBState(tokens []vbscript.Token, state *navigationVBState) {
 	if state == nil || navigationVBCancelled(state) {
+		return
+	}
+	if navigationApplyVBWith(tokens, state) {
 		return
 	}
 	if navigationApplyVBControlFlow(tokens, state) {
@@ -3070,8 +3110,16 @@ func combineNavigationVBValues(values []navigationVBValue) navigationVBValue {
 		}
 		candidates = filtered
 		if len(candidates) == 0 {
-			choices = nil
-			continue
+			if !navigationVBChoicesHaveText(choices) {
+				choices = nil
+				continue
+			}
+			// A wholly unknown operand still leaves the literal parts known, as in
+			// "list.asp?id=" & id. Keep it as a template placeholder so the
+			// destination path survives; a placeholder inside the path keeps the
+			// target dynamic.
+			candidates = []navigationVBValue{{Kind: navigationVBValueTemplate, Primitive: navigationPrimitiveString, Text: navigationVBUnknownOperandPlaceholder, Parameters: cloneNavigationParameterMaps(unknownParameters)}}
+			truncated = navigationVBValuesHaveFiniteAlternative(values)
 		}
 		if len(candidates) > navigationVBFiniteValueLimit {
 			candidates = candidates[:navigationVBFiniteValueLimit]
@@ -3119,6 +3167,46 @@ func combineNavigationVBValues(values []navigationVBValue) navigationVBValue {
 		combined = append(combined, navigationVBValue{Kind: navigationVBValueUnknown, Text: "{unknown}", Parameters: cloneNavigationParameterMaps(unknownParameters)})
 	}
 	return navigationMergeVBValueList(combined)
+}
+
+const navigationVBUnknownOperandPlaceholder = "{value}"
+
+// navigationVBChoicesHaveText reports whether every accumulated prefix already
+// contains literal text, so an unknown operand cannot start the destination.
+func navigationVBChoicesHaveText(choices [][]navigationVBValue) bool {
+	if len(choices) == 0 {
+		return false
+	}
+	for _, choice := range choices {
+		text := ""
+		for _, value := range choice {
+			text += navigationVBStringifiedText(value)
+		}
+		if strings.TrimSpace(text) == "" {
+			return false
+		}
+	}
+	return true
+}
+
+// navigationVBValuesHaveFiniteAlternative reports whether an operand mixes known
+// and unknown alternatives, which still needs an unknown fallback candidate.
+func navigationVBValuesHaveFiniteAlternative(values []navigationVBValue) bool {
+	for _, value := range values {
+		candidates := value.finiteCandidates()
+		hasKnown, hasUnknown := false, false
+		for _, candidate := range candidates {
+			if candidate.Kind == navigationVBValueUnknown {
+				hasUnknown = true
+			} else {
+				hasKnown = true
+			}
+		}
+		if hasKnown && hasUnknown {
+			return true
+		}
+	}
+	return false
 }
 
 func navigationVBStringifiedText(value navigationVBValue) string {

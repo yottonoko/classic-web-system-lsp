@@ -468,23 +468,36 @@ func concatenateNavigationSets(left, right navigationFiniteSet) navigationFinite
 	result.mergeDependencies(right)
 	for _, leftValue := range left.values {
 		for _, rightValue := range right.values {
-			if leftValue.kind == NavigationValueUnknown || rightValue.kind == NavigationValueUnknown {
+			if leftValue.kind == NavigationValueUnknown {
 				result.add(navigationCandidate{text: "{unknown}", kind: NavigationValueUnknown})
 				continue
 			}
-			text := leftValue.text + rightValue.text
+			rightText, rightKind := rightValue.text, rightValue.kind
+			if rightKind == NavigationValueUnknown {
+				// A known prefix such as "list.asp?id=" + id keeps its destination;
+				// only the unknown operand becomes a placeholder. An unknown operand
+				// with no literal prefix still leaves the whole value unknown.
+				if strings.TrimSpace(leftValue.text) == "" {
+					result.add(navigationCandidate{text: "{unknown}", kind: NavigationValueUnknown})
+					continue
+				}
+				rightText, rightKind = navigationUnknownOperandPlaceholder, NavigationValueTemplate
+			}
+			text := leftValue.text + rightText
 			result.add(navigationCandidate{
 				text:    text,
-				kind:    navigationCandidateKind(leftValue.kind, rightValue.kind),
+				kind:    navigationCandidateKind(leftValue.kind, rightKind),
 				truth:   navigationTruthinessForString(text),
 				nullish: navigationNullishNo,
 			})
 		}
 	}
-	result.unknown = left.unknown || right.unknown || result.unknown
+	result.unknown = left.unknown || result.unknown
 	result.ensureUnknownCandidate()
 	return result
 }
+
+const navigationUnknownOperandPlaceholder = "{value}"
 
 type navigationAnalyzer struct {
 	ctx                       context.Context
@@ -5367,16 +5380,51 @@ func (a *navigationAnalyzer) navigationExpressionPath(node *ast.Node) []string {
 				return nil
 			}
 			argument = a.skipNavigationOuterExpressions(argument)
-			if argument == nil || (argument.Kind != ast.KindStringLiteral && argument.Kind != ast.KindNoSubstitutionTemplateLiteral) {
+			if argument == nil || (argument.Kind != ast.KindStringLiteral && argument.Kind != ast.KindNoSubstitutionTemplateLiteral && argument.Kind != ast.KindNumericLiteral) {
 				return nil
 			}
 			path = append(path, argument.Text())
 			node = node.AsElementAccessExpression().Expression
+		case ast.KindCallExpression:
+			// document.getElementById("form1") names a form as reliably as
+			// document.form1, so treat the lookup as the root of the path.
+			id, ok := a.navigationElementLookupID(node.AsCallExpression())
+			if !ok {
+				return nil
+			}
+			path = append(path, "#"+id)
+			if !a.reverseNavigationStrings(path) {
+				return nil
+			}
+			return path
 		default:
 			return nil
 		}
 	}
 	return nil
+}
+
+func (a *navigationAnalyzer) navigationElementLookupID(call *ast.CallExpression) (string, bool) {
+	if call == nil || call.Arguments == nil || len(call.Arguments.Nodes) != 1 {
+		return "", false
+	}
+	callee := a.skipNavigationOuterExpressions(call.Expression)
+	if callee == nil || callee.Kind != ast.KindPropertyAccessExpression {
+		return "", false
+	}
+	name := callee.AsPropertyAccessExpression().Name()
+	if name == nil || name.Text() != "getElementById" {
+		return "", false
+	}
+	receiver := a.skipNavigationOuterExpressions(callee.AsPropertyAccessExpression().Expression)
+	if receiver == nil || receiver.Kind != ast.KindIdentifier || receiver.Text() != "document" {
+		return "", false
+	}
+	argument := a.skipNavigationOuterExpressions(call.Arguments.Nodes[0])
+	if argument == nil || (argument.Kind != ast.KindStringLiteral && argument.Kind != ast.KindNoSubstitutionTemplateLiteral) || argument.Text() == "" {
+		return "", false
+	}
+	return argument.Text(), true
 }
 
 func (a *navigationAnalyzer) skipNavigationOuterExpressions(node *ast.Node) *ast.Node {
@@ -5414,6 +5462,27 @@ func lowerPath(path []string) string {
 		parts[index] = strings.ToLower(part)
 	}
 	return strings.Join(parts, ".")
+}
+
+// navigationWindowRelativePath strips leading window, self, top, and parent
+// references from a member path. It returns the remaining lower-case path and
+// the frame target implied by top or parent.
+func navigationWindowRelativePath(path []string) (string, string) {
+	frame := ""
+	index := 0
+	for index < len(path)-1 {
+		switch strings.ToLower(path[index]) {
+		case "window", "self":
+		case "top":
+			frame = "_top"
+		case "parent":
+			frame = "_parent"
+		default:
+			return lowerPath(path[index:]), frame
+		}
+		index++
+	}
+	return lowerPath(path[index:]), frame
 }
 
 func navigationFormName(path []string, property string) string {
@@ -5628,9 +5697,15 @@ func (a *navigationAnalyzer) navigationSink(node *ast.Node) (NavigationSink, boo
 		if !a.collectingUnknownFallback && !a.consumeNavigationWork(uint64(len(path)+1)) {
 			return NavigationSink{}, false
 		}
+		locationPath, locationFrame := navigationWindowRelativePath(path)
+		switch locationPath {
+		case "location", "location.href", "document.location", "document.location.href":
+			kind, valueExpr, targetFrame = "javascriptLocation", binary.Right, locationFrame
+		}
+		if kind != "" {
+			break
+		}
 		switch lowerPath(path) {
-		case "location", "location.href", "window.location", "window.location.href", "document.location", "document.location.href":
-			kind, valueExpr = "javascriptLocation", binary.Right
 		case "form.action":
 			kind, valueExpr, formName = "javascriptFormAction", binary.Right, path[0]
 			a.formActions[formName] = valueExpr
@@ -5658,12 +5733,24 @@ func (a *navigationAnalyzer) navigationSink(node *ast.Node) (NavigationSink, boo
 		if !a.collectingUnknownFallback && !a.consumeNavigationWork(uint64(len(path)+1)) {
 			return NavigationSink{}, false
 		}
-		switch lowerPath(path) {
-		case "location.assign", "location.replace", "window.location.assign", "window.location.replace":
+		locationPath, locationFrame := navigationWindowRelativePath(path)
+		switch locationPath {
+		case "location.assign", "location.replace", "document.location.assign", "document.location.replace":
 			if len(arguments.Nodes) == 0 {
 				return NavigationSink{}, false
 			}
-			kind, valueExpr = "javascriptLocation", arguments.Nodes[0]
+			kind, valueExpr, targetFrame = "javascriptLocation", arguments.Nodes[0], locationFrame
+		case "navigate":
+			// window.navigate is the legacy Internet Explorer equivalent of assign.
+			if len(path) < 2 || len(arguments.Nodes) == 0 {
+				return NavigationSink{}, false
+			}
+			kind, valueExpr, targetFrame = "javascriptLocation", arguments.Nodes[0], locationFrame
+		}
+		if kind != "" {
+			break
+		}
+		switch lowerPath(path) {
 		case "window.open":
 			if len(arguments.Nodes) == 0 {
 				return NavigationSink{}, false

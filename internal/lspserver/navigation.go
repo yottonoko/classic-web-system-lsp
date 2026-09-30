@@ -1581,10 +1581,10 @@ func (b *navigationGraphBuilder) addDocument(parsed *core.ParsedDocument, ownerU
 		}
 		b.addJavaScriptNavigationEdges(parsed, sourceID, ownerURI)
 	}
-	if err := b.navigationContextError(); err != nil {
-		b.navigationError = err
+	if b.navigationError != nil {
 		return
 	}
+	b.addHTMLEventHandlerNavigation(parsed, sourceID, ownerURI)
 	if err := b.navigationContextError(); err != nil {
 		b.navigationError = err
 		return
@@ -3952,6 +3952,9 @@ func (b *navigationGraphBuilder) addVBScriptNavigationRegions(parsed *core.Parse
 					if navigationHTMLPattern.MatchString(value.Text) {
 						b.addHTMLNavigationEdgesFromText(parsed.URI, sourceID, value.Text)
 					}
+					if b.navigationError == nil {
+						b.addWrittenScriptNavigation(parsed, sourceID, value)
+					}
 				} else {
 					extra := map[string]any{"confidence": value.confidence(), "dynamic": value.Kind != navigationValueLiteral, "pathKnown": navigationValuePathKnown(value)}
 					if len(value.Parameters) > 0 {
@@ -4045,6 +4048,11 @@ func (b *navigationGraphBuilder) addTargetEdge(ctx context.Context, ownerURI str
 			} else {
 				pathKnown = navigationValuePathKnown(b.context.value)
 			}
+		}
+		// An unresolved value confined to the query string or fragment still
+		// leaves a known destination page.
+		if confidence == "unknown" && pathKnown && navigationRawTargetHasPath(rawTarget) {
+			confidence = "possible"
 		}
 	}
 	if target["kind"] == "unknown" {
@@ -4703,6 +4711,14 @@ func navigationValuePathKnown(value navigationValue) bool {
 		return strings.HasPrefix(target, "?") || strings.HasPrefix(target, "#")
 	}
 	return value.Kind == navigationValueTemplate
+}
+
+func navigationRawTargetHasPath(target string) bool {
+	target = strings.TrimSpace(target)
+	if index := strings.IndexAny(target, "?#"); index >= 0 {
+		target = target[:index]
+	}
+	return target != "" && !strings.ContainsAny(target, "{}")
 }
 
 func navigationRawTargetPathKnown(target string) bool {
