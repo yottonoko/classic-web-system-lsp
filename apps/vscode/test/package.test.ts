@@ -1457,7 +1457,7 @@ describe("VS Code extension package", () => {
     expect(formEdge?.data?.parameters).toEqual([
       { name: "q", source: "formControl", value: "term", confidence: "certain" },
     ]);
-    expect(formEdge?.data?.path).toContain("L 396");
+    expect(formEdge?.data?.path).toMatch(/[LQ] 396 96\b/);
   });
 
   it("assigns deterministic unbounded layers through long chains and cycles", () => {

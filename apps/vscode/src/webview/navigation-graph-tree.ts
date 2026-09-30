@@ -15,6 +15,10 @@ export interface NavigationTreeEntry {
   subtreeEnd: number;
 }
 
+// Classic ASP sites usually start at one of these pages; when every page is
+// linked from somewhere, they are the most useful places to begin the outline.
+const conventionalEntryPage = /(?:^|\/)(?:default|index|login|top|main|home)\.(?:asp|aspx|html?)$/i;
+
 /** Builds an iterative forest without recursive or exponential expansion of cycles and shared pages. */
 export function navigationTreeEntries(
   payload: Pick<AspNavigationGraphPayload, "nodes" | "edges">,
@@ -38,7 +42,18 @@ export function navigationTreeEntries(
         left.id.localeCompare(right.id),
     );
   }
-  const priority = (node: AspNavigationNode) => (node.isRoot ? 0 : incoming.has(node.id) ? 2 : 1);
+  // Missing, external and unresolved targets are reached from real pages, so
+  // they should not claim a top-level slot before those pages do.
+  const priority = (node: AspNavigationNode) =>
+    node.isRoot
+      ? 0
+      : node.kind === "external" || node.kind === "unknown" || node.exists === false
+        ? 3
+        : !incoming.has(node.id)
+          ? 1
+          : conventionalEntryPage.test(node.label)
+            ? 1.5
+            : 2;
   const roots = [...nodes.values()].sort((a, b) => priority(a) - priority(b) || nodeOrder(a, b));
   // Choose the shortest route from each entry before rendering the forest.
   // A link from a help page must not move a directly reachable page deeper.
@@ -130,4 +145,35 @@ export function navigationSourcePath(uri: string): string {
   } catch {
     return uri;
   }
+}
+
+/** Returns the deepest directory shared by every local page, so labels can drop the workspace prefix. */
+export function navigationPathBase(nodes: readonly Pick<AspNavigationNode, "uri">[]): string {
+  let base: string[] | undefined;
+  for (const node of nodes) {
+    if (!node.uri?.startsWith("file:")) continue;
+    const parts = navigationSourcePath(node.uri).split("/").slice(0, -1);
+    if (!base) {
+      base = parts;
+      continue;
+    }
+    let shared = 0;
+    while (
+      shared < base.length &&
+      shared < parts.length &&
+      base[shared].toLowerCase() === parts[shared].toLowerCase()
+    ) {
+      shared++;
+    }
+    base = base.slice(0, shared);
+  }
+  return base?.length ? `${base.join("/")}/` : "";
+}
+
+/** Shows a source URI relative to `base` when it lies below it. */
+export function navigationRelativePath(uri: string, base: string): string {
+  const path = navigationSourcePath(uri);
+  return base && path.toLowerCase().startsWith(base.toLowerCase()) && path.length > base.length
+    ? path.slice(base.length)
+    : path;
 }

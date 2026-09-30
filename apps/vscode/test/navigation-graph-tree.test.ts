@@ -1,6 +1,8 @@
 import { describe, expect, it } from "vitest";
 import type { AspNavigationEdge, AspNavigationNode } from "../src/protocol-types";
 import {
+  navigationPathBase,
+  navigationRelativePath,
   navigationSourcePath,
   navigationTreeEntries,
   visibleNavigationTreeEntries,
@@ -75,5 +77,42 @@ describe("navigation outline", () => {
     );
     expect(navigationSourcePath("file:///C:/site/default.asp")).toBe("C:/site/default.asp");
     expect(navigationSourcePath("%broken")).toBe("%broken");
+  });
+});
+
+describe("navigation display paths", () => {
+  it("strips the shared workspace directory and keeps outside paths intact", () => {
+    const base = navigationPathBase([
+      { uri: "file:///site/app/default.asp" },
+      { uri: "file:///Site/app/admin/users.asp" },
+      { uri: "https://example.com/" },
+      {},
+    ]);
+    expect(base).toBe("/site/app/");
+    expect(navigationRelativePath("file:///site/app/admin/users.asp", base)).toBe(
+      "admin/users.asp",
+    );
+    expect(navigationRelativePath("file:///other/page.asp", base)).toBe("/other/page.asp");
+    expect(navigationPathBase([])).toBe("");
+    expect(navigationPathBase([{ uri: "file:///C:/site/default.asp" }])).toBe("C:/site/");
+  });
+
+  it("starts the outline from existing pages before missing targets", () => {
+    const entries = navigationTreeEntries({
+      nodes: [{ ...node("A"), exists: false }, node("B"), node("C")],
+      edges: [edge("ba", "B", "A"), edge("bc", "B", "C"), edge("cb", "C", "B")],
+    });
+    expect(entries[0].node.id).toBe("B");
+    expect(entries.filter((entry) => entry.depth === 0).map((entry) => entry.node.id)).toEqual([
+      "B",
+    ]);
+  });
+
+  it("prefers conventional entry pages when every page is linked", () => {
+    const entries = navigationTreeEntries({
+      nodes: [node("admin.asp"), node("login.asp")],
+      edges: [edge("al", "admin.asp", "login.asp"), edge("la", "login.asp", "admin.asp")],
+    });
+    expect(entries[0].node.id).toBe("login.asp");
   });
 });

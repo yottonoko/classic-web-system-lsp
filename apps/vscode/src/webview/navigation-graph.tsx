@@ -12,6 +12,8 @@ import { createVirtualizer } from "./virtual-list";
 import {
   navigationTreeEntries,
   visibleNavigationTreeEntries,
+  navigationPathBase,
+  navigationRelativePath,
   navigationSourcePath,
 } from "./navigation-graph-tree";
 import { navigationComponents } from "./navigation-graph-components";
@@ -123,7 +125,10 @@ type NavigationTextKey =
   | "legendSolid"
   | "legendDashed"
   | "legendNodes"
-  | "legendSelection";
+  | "legendSelection"
+  | "legendShared"
+  | "showSharedLinks"
+  | "sharedLinksBadge";
 const navigationMessages: Record<"en" | "ja", Record<NavigationTextKey, string>> = {
   en: {
     legendHelp: "How to read the graph",
@@ -194,6 +199,10 @@ const navigationMessages: Record<"en" | "ja", Record<NavigationTextKey, string>>
     allComponents: "All groups",
     component: "Page group",
     isolatedPages: "Pages without transitions",
+    legendShared:
+      "Transitions declared in a shared include file (such as a common header) are hidden by default and summarized as a “Shared ×N” badge on the destination page. Use the checkbox to draw them as lines.",
+    showSharedLinks: "Include links ({count})",
+    sharedLinksBadge: "Shared ×{count}",
   },
   ja: {
     legendHelp: "表示の見方",
@@ -263,6 +272,10 @@ const navigationMessages: Record<"en" | "ja", Record<NavigationTextKey, string>>
     allComponents: "すべてのまとまり",
     component: "ページのまとまり",
     isolatedPages: "つながりのないページ",
+    legendShared:
+      "共通ヘッダーなどのインクルードファイルで宣言された遷移は既定で非表示にし、遷移先ページに「共通 ×N」として件数を表示します。チェックボックスで線として表示できます。",
+    showSharedLinks: "インクルード由来の遷移 ({count})",
+    sharedLinksBadge: "共通 ×{count}",
   },
 };
 function navigationText(
@@ -364,6 +377,7 @@ function NavigationGraphSurface(props: { payload: NavigationGraphWebviewPayload 
   const [method, setMethod] = createSignal("all");
   const [selection, setSelection] = createSignal<Selection>();
   const [showLabels, setShowLabels] = createSignal(false);
+  const [showSharedLinks, setShowSharedLinks] = createSignal(false);
   const [hovered, setHovered] = createSignal<HoverTarget>();
   const [layout, setLayout] = createSignal<NavigationFlowLayout>(emptyLayout);
   const [isLayouting, setIsLayouting] = createSignal(false);
@@ -380,18 +394,51 @@ function NavigationGraphSurface(props: { payload: NavigationGraphWebviewPayload 
       method: method(),
     }),
   );
+  // Links from a shared include (a common header or menu) repeat on every page
+  // and bury the page-specific flow, so the graph folds them into a badge.
+  const sharedLinkEdges = createMemo(() => {
+    const payload = searchedPayload();
+    const nodeById = new Map(payload.nodes.map((node) => [node.id, node]));
+    return new Set(
+      payload.edges
+        .filter((edge) => isSharedIncludeEdge(edge, nodeById.get(edge.source)))
+        .map((edge) => edge.id),
+    );
+  });
+  const hidesSharedLinks = createMemo(
+    () => viewMode() === "graph" && !showSharedLinks() && sharedLinkEdges().size > 0,
+  );
+  const graphPayload = createMemo(() =>
+    hidesSharedLinks()
+      ? {
+          ...searchedPayload(),
+          edges: searchedPayload().edges.filter((edge) => !sharedLinkEdges().has(edge.id)),
+        }
+      : searchedPayload(),
+  );
+  const sharedIncoming = createMemo(() => {
+    const counts = new Map<string, number>();
+    if (!hidesSharedLinks()) return counts;
+    for (const edge of searchedPayload().edges) {
+      if (sharedLinkEdges().has(edge.id)) {
+        counts.set(edge.target, (counts.get(edge.target) ?? 0) + 1);
+      }
+    }
+    return counts;
+  });
   const components = createMemo(() =>
-    navigationComponents(searchedPayload().nodes, searchedPayload().edges),
+    navigationComponents(graphPayload().nodes, graphPayload().edges),
   );
   const component = createMemo(() =>
     viewMode() === "graph" ? components().find((group) => group.id === componentId()) : undefined,
   );
   const filteredPayload = createMemo(() =>
     component()
-      ? { ...searchedPayload(), nodes: component()!.nodes, edges: component()!.edges }
-      : searchedPayload(),
+      ? { ...graphPayload(), nodes: component()!.nodes, edges: component()!.edges }
+      : graphPayload(),
   );
   const methods = createMemo(() => distinctMethods(props.payload.edges));
+  const pathBase = createMemo(() => navigationPathBase(props.payload.nodes));
   createEffect(
     () => [filteredPayload(), viewMode()],
     () => {
@@ -509,6 +556,19 @@ function NavigationGraphSurface(props: { payload: NavigationGraphWebviewPayload 
     }
     return result;
   });
+  const nodeDegrees = createMemo(() => {
+    const degrees = new Map<string, { incoming: number; outgoing: number }>();
+    const entry = (id: string) => {
+      const current = degrees.get(id) ?? { incoming: 0, outgoing: 0 };
+      degrees.set(id, current);
+      return current;
+    };
+    for (const edge of filteredPayload().edges) {
+      entry(edge.source).outgoing++;
+      entry(edge.target).incoming++;
+    }
+    return degrees;
+  });
   const flowNodes = createMemo(() =>
     layout().nodes.map((node) => {
       const selected = selection()?.kind === "node" && selection()?.id === node.id;
@@ -535,8 +595,15 @@ function NavigationGraphSurface(props: { payload: NavigationGraphWebviewPayload 
                   fileName: sourceLocation(evidence),
                   label: navigationText(locale(), "unresolved"),
                 }
-              : node.data.node,
+              : {
+                  ...node.data.node,
+                  fileName: node.data.node.uri
+                    ? navigationRelativePath(node.data.node.uri, pathBase())
+                    : node.data.node.fileName,
+                },
           locale: locale(),
+          sharedIncoming: sharedIncoming().get(node.id),
+          degree: nodeDegrees().get(node.id),
           selected,
           searchHit,
           dimmed,
@@ -675,6 +742,7 @@ function NavigationGraphSurface(props: { payload: NavigationGraphWebviewPayload 
         {viewMode() === "tree" ? (
           <NavigationTree
             payload={filteredPayload()}
+            pathBase={pathBase()}
             locale={locale()}
             selection={selection()}
             onSelect={setSelection}
@@ -705,6 +773,16 @@ function NavigationGraphSurface(props: { payload: NavigationGraphWebviewPayload 
                       </option>
                     ))}
                   </select>
+                ) : null}
+                {sharedLinkEdges().size > 0 ? (
+                  <label>
+                    <input
+                      type="checkbox"
+                      checked={showSharedLinks()}
+                      onInput={(event) => setShowSharedLinks(event.currentTarget.checked)}
+                    />
+                    {text("showSharedLinks", { count: sharedLinkEdges().size })}
+                  </label>
                 ) : null}
                 <label>
                   <input
@@ -740,6 +818,7 @@ function NavigationGraphSurface(props: { payload: NavigationGraphWebviewPayload 
                 <p>{text("legendDashed")}</p>
                 <p>{text("legendNodes")}</p>
                 <p>{text("legendSelection")}</p>
+                <p>{text("legendShared")}</p>
               </div>
             </details>
             <NavigationGraphCanvas
@@ -761,6 +840,7 @@ function NavigationGraphSurface(props: { payload: NavigationGraphWebviewPayload 
         )}
         <Inspector
           payload={filteredPayload()}
+          pathBase={pathBase()}
           locale={locale()}
           node={selectedNode()}
           edge={selectedEdge()}
@@ -813,12 +893,31 @@ function NavigationPageNode(props: {
           {node().kind !== "unknown" && node().exists === false ? (
             <span>{navigationText(locale(), "missing")}</span>
           ) : null}
+          {props.data.sharedIncoming ? (
+            <span class="navigation-node-card__shared">
+              {navigationText(locale(), "sharedLinksBadge", { count: props.data.sharedIncoming })}
+            </span>
+          ) : null}
         </div>
         <div class="navigation-node-card__title" title={node().label}>
           {node().label}
         </div>
-        <div class="navigation-node-card__meta" title={node().uri ?? node().externalUrl ?? ""}>
-          {middleEllipsis(node().fileName ?? node().uri ?? node().externalUrl ?? "-", 42)}
+        <div class="navigation-node-card__meta">
+          <span title={node().uri ?? node().externalUrl ?? ""}>
+            {(() => {
+              const path = node().fileName ?? node().uri ?? node().externalUrl ?? "";
+              return path === node().label ? "" : middleEllipsis(path, 36);
+            })()}
+          </span>
+          {props.data.degree ? (
+            <span
+              class="navigation-node-card__degree"
+              aria-label={`${navigationText(locale(), "incoming")} ${props.data.degree.incoming}, ${navigationText(locale(), "outgoing")} ${props.data.degree.outgoing}`}
+            >
+              <span data-direction="incoming">↘ {props.data.degree.incoming}</span>
+              <span data-direction="outgoing">↗ {props.data.degree.outgoing}</span>
+            </span>
+          ) : null}
         </div>
       </div>
     </>
@@ -913,14 +1012,19 @@ function sourceLocation(evidence: AspNavigationEvidence): string {
 }
 function NavigationEvidence(props: {
   items: AspNavigationEvidence[];
+  pathBase: string;
   locale: "en" | "ja";
 }): JSX.Element {
   return (
     <div class="navigation-evidence">
       {props.items.map((evidence) => (
         <div class="navigation-evidence-item">
-          <strong>{sourceLocation(evidence)}</strong>
-          <span class="navigation-source-path">{navigationSourcePath(evidence.uri)}</span>
+          <div class="navigation-evidence-heading">
+            <strong>{sourceLocation(evidence)}</strong>
+            <span class="navigation-source-path" title={navigationSourcePath(evidence.uri)}>
+              {navigationRelativePath(evidence.uri, props.pathBase)}
+            </span>
+          </div>
           <pre>
             <code>{evidence.snippet ?? evidence.label}</code>
           </pre>
@@ -943,6 +1047,7 @@ function NavigationEvidence(props: {
 }
 function NavigationTree(props: {
   payload: AspNavigationGraphPayload;
+  pathBase: string;
   locale: "en" | "ja";
   selection: Selection;
   onSelect: (selection: Selection) => void;
@@ -967,7 +1072,7 @@ function NavigationTree(props: {
   const virtualizer = createVirtualizer(() => ({
     count: visible().length,
     getScrollElement: () => scrollElement.current,
-    estimateSize: () => 78,
+    estimateSize: () => 58,
     overscan: 8,
     getItemKey: (index) => visible()[index].id,
   }));
@@ -1040,6 +1145,17 @@ function NavigationTree(props: {
               entry.node.kind === "unknown"
                 ? navigationText(props.locale, "unresolved")
                 : entry.node.label;
+            const target = entry.node.uri ?? entry.node.externalUrl;
+            const relativeTarget = entry.node.uri
+              ? navigationRelativePath(entry.node.uri, props.pathBase)
+              : entry.node.externalUrl;
+            const secondary =
+              entry.node.kind === "unknown"
+                ? (evidence?.snippet ?? entry.node.label)
+                : relativeTarget !== label
+                  ? relativeTarget
+                  : undefined;
+            const secondaryTitle = entry.node.kind === "unknown" ? evidence?.snippet : target;
             return (
               <div
                 role="treeitem"
@@ -1119,7 +1235,7 @@ function NavigationTree(props: {
                     toggle(entry.id);
                   }}
                 >
-                  {hasChildren ? (collapsed().has(entry.id) ? "▸" : "▾") : "·"}
+                  {hasChildren ? "›" : ""}
                 </button>
                 <span
                   class={`navigation-tree-kind navigation-tree-kind--${entry.node.kind}`}
@@ -1129,13 +1245,18 @@ function NavigationTree(props: {
                   <div class="navigation-tree-heading">
                     <strong>{label}</strong>
                     {entry.node.isRoot ? (
-                      <span class="navigation-tree-badge">
+                      <span class="navigation-tree-badge navigation-tree-badge--entry">
                         {navigationText(props.locale, "entry")}
                       </span>
                     ) : null}
                     {entry.reference ? (
                       <span class="navigation-tree-badge">
                         {navigationText(props.locale, entry.reference)}
+                      </span>
+                    ) : null}
+                    {entry.node.kind !== "unknown" && entry.node.exists === false ? (
+                      <span class="navigation-tree-badge navigation-tree-badge--missing">
+                        {navigationText(props.locale, "missing")}
                       </span>
                     ) : null}
                     {entry.depth > 12 ? (
@@ -1151,24 +1272,20 @@ function NavigationTree(props: {
                     ) : null}
                   </div>
                   <div class="navigation-tree-meta">
-                    {entry.edge
-                      ? `${entry.edge.method ? entry.edge.method + " · " : ""}${edgeKindLabel(entry.edge.kind, props.locale)}${evidence ? " · " + sourceLocation(evidence) : ""}`
-                      : nodeKindLabel(entry.node.kind, props.locale)}
+                    {entry.edge?.method ? (
+                      <span class="navigation-tree-method">{entry.edge.method}</span>
+                    ) : null}
+                    <span>
+                      {entry.edge
+                        ? `${edgeKindLabel(entry.edge.kind, props.locale)}${evidence ? " · " + sourceLocation(evidence) : ""}`
+                        : nodeKindLabel(entry.node.kind, props.locale)}
+                    </span>
+                    {secondary ? (
+                      <code class="navigation-tree-preview" title={secondaryTitle}>
+                        {secondary}
+                      </code>
+                    ) : null}
                   </div>
-                  <code
-                    class="navigation-tree-preview"
-                    title={
-                      entry.node.kind === "unknown"
-                        ? evidence?.snippet
-                        : (entry.node.uri ?? entry.node.externalUrl)
-                    }
-                  >
-                    {entry.node.kind === "unknown"
-                      ? (evidence?.snippet ?? entry.node.label)
-                      : navigationSourcePath(
-                          entry.node.uri ?? entry.node.externalUrl ?? entry.node.label,
-                        )}
-                  </code>
                 </div>
               </div>
             );
@@ -1180,6 +1297,7 @@ function NavigationTree(props: {
 }
 function Inspector(props: {
   payload: AspNavigationGraphPayload;
+  pathBase: string;
   locale: "en" | "ja";
   node?: AspNavigationNode;
   edge?: AspNavigationEdge;
@@ -1191,19 +1309,33 @@ function Inspector(props: {
         if (props.edge) {
           const source = props.payload.nodes.find((item) => item.id === props.edge!.source);
           const target = props.payload.nodes.find((item) => item.id === props.edge!.target);
-          const includeDerived =
-            !!props.edge!.declaredInUri &&
-            !!source?.uri &&
-            normalizeUri(props.edge!.declaredInUri) !== normalizeUri(source.uri);
+          const includeDerived = isSharedIncludeEdge(props.edge!, source);
           return (
             <aside class="navigation-inspector">
-              <h2>{edgeKindLabel(props.edge!.kind, props.locale)}</h2>
+              <header class="navigation-inspector-header">
+                <span class="navigation-inspector-eyebrow">
+                  {navigationText(props.locale, "transition")}
+                </span>
+                <h2>{edgeKindLabel(props.edge!.kind, props.locale)}</h2>
+                <div class="navigation-inspector-chips">
+                  <span class="navigation-chip" data-confidence={props.edge!.confidence}>
+                    {confidenceLabel(props.edge!.confidence, props.locale)}
+                  </span>
+                  {props.edge!.method ? (
+                    <span class="navigation-chip">{props.edge!.method}</span>
+                  ) : null}
+                </div>
+              </header>
               {target?.kind === "unknown" ? (
                 <>
                   <p class="navigation-unresolved-help">
                     {navigationText(props.locale, "unresolvedHelp")}
                   </p>
-                  <NavigationEvidence items={props.edge!.evidence} locale={props.locale} />
+                  <NavigationEvidence
+                    items={props.edge!.evidence}
+                    pathBase={props.pathBase}
+                    locale={props.locale}
+                  />
                 </>
               ) : null}
               <dl>
@@ -1236,7 +1368,11 @@ function Inspector(props: {
                 <dt>{navigationText(props.locale, "targetFrame")}</dt>
                 <dd>{props.edge!.targetFrame ?? "-"}</dd>
                 <dt>{navigationText(props.locale, "declaredIn")}</dt>
-                <dd>{props.edge!.declaredInUri ?? "-"}</dd>
+                <dd title={props.edge!.declaredInUri}>
+                  {props.edge!.declaredInUri
+                    ? navigationRelativePath(props.edge!.declaredInUri, props.pathBase)
+                    : "-"}
+                </dd>
                 <dt>{navigationText(props.locale, "include")}</dt>
                 <dd>{includeDerived ? navigationText(props.locale, "includeDerived") : "-"}</dd>
                 <dt>{navigationText(props.locale, "count")}</dt>
@@ -1261,7 +1397,11 @@ function Inspector(props: {
               {target?.kind !== "unknown" ? (
                 <>
                   <h3>{navigationText(props.locale, "evidence")}</h3>
-                  <NavigationEvidence items={props.edge!.evidence} locale={props.locale} />
+                  <NavigationEvidence
+                    items={props.edge!.evidence}
+                    pathBase={props.pathBase}
+                    locale={props.locale}
+                  />
                 </>
               ) : null}
             </aside>
@@ -1274,13 +1414,22 @@ function Inspector(props: {
           if (props.node!.kind === "unknown") {
             return (
               <aside class="navigation-inspector">
-                <h2>{navigationText(props.locale, "unresolved")}</h2>
+                <header class="navigation-inspector-header">
+                  <span class="navigation-inspector-eyebrow">
+                    {nodeKindLabel("unknown", props.locale)}
+                  </span>
+                  <h2>{navigationText(props.locale, "unresolved")}</h2>
+                </header>
                 <p class="navigation-unresolved-help">
                   {navigationText(props.locale, "unresolvedHelp")}
                 </p>
                 {props.node!.label !== "{unknown}" ? <code>{props.node!.label}</code> : null}
                 <h3>{navigationText(props.locale, "evidence")}</h3>
-                <NavigationEvidence items={evidence} locale={props.locale} />
+                <NavigationEvidence
+                  items={evidence}
+                  pathBase={props.pathBase}
+                  locale={props.locale}
+                />
                 <NodeConnections
                   payload={props.payload}
                   node={props.node}
@@ -1292,7 +1441,28 @@ function Inspector(props: {
           }
           return (
             <aside class="navigation-inspector">
-              <h2>{props.node!.label}</h2>
+              <header class="navigation-inspector-header">
+                <span class="navigation-inspector-eyebrow">
+                  {nodeKindLabel(props.node!.kind, props.locale)}
+                </span>
+                <h2>{props.node!.label}</h2>
+                {props.node!.uri &&
+                navigationRelativePath(props.node!.uri, props.pathBase) !== props.node!.label ? (
+                  <span class="navigation-source-path" title={props.node!.uri}>
+                    {navigationRelativePath(props.node!.uri, props.pathBase)}
+                  </span>
+                ) : null}
+                <div class="navigation-inspector-chips">
+                  {props.node!.isRoot ? (
+                    <span class="navigation-chip">{navigationText(props.locale, "entry")}</span>
+                  ) : null}
+                  {props.node!.exists === false ? (
+                    <span class="navigation-chip" data-confidence="unknown">
+                      {navigationText(props.locale, "missing")}
+                    </span>
+                  ) : null}
+                </div>
+              </header>
               <NodeConnections
                 payload={props.payload}
                 node={props.node}
@@ -1303,7 +1473,11 @@ function Inspector(props: {
                 <dt>{navigationText(props.locale, "kind")}</dt>
                 <dd>{nodeKindLabel(props.node!.kind, props.locale)}</dd>
                 <dt>{navigationText(props.locale, "uri")}</dt>
-                <dd>{props.node!.uri ?? props.node!.externalUrl ?? "-"}</dd>
+                <dd class="navigation-inspector-uri">
+                  {props.node!.uri
+                    ? navigationSourcePath(props.node!.uri)
+                    : (props.node!.externalUrl ?? "-")}
+                </dd>
                 <dt>{navigationText(props.locale, "exists")}</dt>
                 <dd>
                   {props.node!.exists === false
@@ -1316,22 +1490,66 @@ function Inspector(props: {
         }
         return (
           <aside class="navigation-inspector">
-            <h2>{navigationText(props.locale, "navigationGraph")}</h2>
-            <dl>
-              <dt>{navigationText(props.locale, "scope")}</dt>
-              <dd>{props.payload.scope}</dd>
-              <dt>{navigationText(props.locale, "documents")}</dt>
-              <dd>{props.payload.stats.documents}</dd>
-              <dt>{navigationText(props.locale, "nodes")}</dt>
-              <dd>{props.payload.stats.nodes}</dd>
-              <dt>{navigationText(props.locale, "edges")}</dt>
-              <dd>{props.payload.stats.edges}</dd>
-            </dl>
+            <header class="navigation-inspector-header">
+              <span class="navigation-inspector-eyebrow">{props.payload.scope}</span>
+              <h2>{navigationText(props.locale, "navigationGraph")}</h2>
+            </header>
+            <div class="navigation-stat-grid">
+              {(
+                [
+                  ["documents", props.payload.stats.documents],
+                  ["nodes", props.payload.stats.nodes],
+                  ["edges", props.payload.stats.edges],
+                  ["external", props.payload.stats.external],
+                ] as const
+              ).map(([key, value]) => (
+                <div class="navigation-stat">
+                  <strong>{value}</strong>
+                  <span>
+                    {key === "external"
+                      ? nodeKindLabel("external", props.locale)
+                      : navigationText(props.locale, key)}
+                  </span>
+                </div>
+              ))}
+            </div>
+            <ConfidenceBreakdown stats={props.payload.stats} locale={props.locale} />
             <p class="navigation-empty">{navigationText(props.locale, "selectPageOrTransition")}</p>
           </aside>
         );
       })()}
     </>
+  );
+}
+function ConfidenceBreakdown(props: {
+  stats: AspNavigationGraphPayload["stats"];
+  locale: "en" | "ja";
+}): JSX.Element {
+  const levels = ["certain", "probable", "possible", "unknown"] as const;
+  const total = () => levels.reduce((sum, level) => sum + props.stats[level], 0);
+  return (
+    <section class="navigation-confidence-breakdown">
+      <h3>{navigationText(props.locale, "confidence")}</h3>
+      <div class="navigation-confidence-bar" aria-hidden="true">
+        {levels.map((level) =>
+          props.stats[level] > 0 ? (
+            <span
+              data-confidence={level}
+              style={webviewStyle({ flex: `${props.stats[level]} 1 0` })}
+            />
+          ) : null,
+        )}
+      </div>
+      <ul>
+        {levels.map((level) => (
+          <li data-confidence={level}>
+            <span>{confidenceLabel(level, props.locale)}</span>
+            <strong>{props.stats[level]}</strong>
+            <small>{total() ? Math.round((props.stats[level] / total()) * 100) : 0}%</small>
+          </li>
+        ))}
+      </ul>
+    </section>
   );
 }
 function NodeConnections(props: {
@@ -1388,6 +1606,13 @@ function NodeConnections(props: {
         );
       })}
     </div>
+  );
+}
+function isSharedIncludeEdge(edge: AspNavigationEdge, source: AspNavigationNode | undefined) {
+  return (
+    !!edge.declaredInUri &&
+    !!source?.uri &&
+    normalizeUri(edge.declaredInUri) !== normalizeUri(source.uri)
   );
 }
 function filterPayload(

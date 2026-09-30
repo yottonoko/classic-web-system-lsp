@@ -4,6 +4,7 @@ import {
   layoutNavigationGraphWithElk,
   navigationFlowElementsFromElk,
   navigationGraphToElkGraph,
+  roundedNavigationPath,
 } from "../src/webview/navigation-graph-layout";
 
 function graph(): AspNavigationGraphPayload {
@@ -137,5 +138,16 @@ describe("navigation connection layout", () => {
     expect(source.height).toBeGreaterThan(88);
     expect(source.ports).toHaveLength(24);
     expect(new Set(source.ports!.map((port) => port.y)).size).toBe(24);
+  });
+
+  it("softens corners without moving route endpoints", () => {
+    expect(
+      roundedNavigationPath([
+        { x: 0, y: 0 },
+        { x: 40, y: 0 },
+        { x: 40, y: 8 },
+      ]),
+    ).toBe("M 0 0 L 36 0 Q 40 0 40 4 L 40 8");
+    expect(roundedNavigationPath([{ x: 1, y: 2 }])).toBe("M 1 2");
   });
 });

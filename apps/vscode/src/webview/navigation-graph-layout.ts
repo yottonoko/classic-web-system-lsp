@@ -17,6 +17,9 @@ export interface NavigationFlowPort {
 export interface NavigationFlowNodeData extends Record<string, unknown> {
   node: AspNavigationNode;
   locale?: "en" | "ja";
+  /** Transitions into this page that the graph folded away because a shared include declares them. */
+  sharedIncoming?: number;
+  degree?: { incoming: number; outgoing: number };
   ports: NavigationFlowPort[];
   layer: number;
   revealIndex: number;
@@ -153,11 +156,12 @@ export function navigationGraphToElkGraph(payload: AspNavigationGraphPayload): E
       "elk.aspectRatio": "1.6",
       "elk.layered.considerModelOrder.strategy": "NODES_AND_EDGES",
       "elk.layered.crossingMinimization.strategy": "LAYER_SWEEP",
-      "elk.layered.spacing.edgeNodeBetweenLayers": "16",
-      "elk.layered.spacing.nodeNodeBetweenLayers": "44",
-      "elk.layered.spacing.edgeEdgeBetweenLayers": "20",
-      "elk.spacing.edgeEdge": "20",
-      "elk.spacing.nodeNode": "42",
+      "elk.layered.nodePlacement.bk.fixedAlignment": "BALANCED",
+      "elk.layered.spacing.edgeNodeBetweenLayers": "20",
+      "elk.layered.spacing.nodeNodeBetweenLayers": "56",
+      "elk.layered.spacing.edgeEdgeBetweenLayers": "16",
+      "elk.spacing.edgeEdge": "16",
+      "elk.spacing.nodeNode": "48",
       "elk.padding": "[top=44,left=44,bottom=44,right=44]",
     },
     children,
@@ -716,8 +720,45 @@ function elkEdgePath(edge: ElkExtendedEdge): string | undefined {
   if (!section) {
     return undefined;
   }
-  const points = [section.startPoint, ...(section.bendPoints ?? []), section.endPoint];
-  return points.map((point, index) => `${index === 0 ? "M" : "L"} ${point.x} ${point.y}`).join(" ");
+  return roundedNavigationPath([
+    section.startPoint,
+    ...(section.bendPoints ?? []),
+    section.endPoint,
+  ]);
+}
+
+const edgeCornerRadius = 10;
+
+/** Draws an orthogonal route with softened corners; every segment still ends at its route point. */
+export function roundedNavigationPath(points: readonly { x: number; y: number }[]): string {
+  if (points.length === 0) return "";
+  const commands = [`M ${points[0].x} ${points[0].y}`];
+  for (let index = 1; index < points.length - 1; index++) {
+    const previous = points[index - 1];
+    const corner = points[index];
+    const next = points[index + 1];
+    const inLength = Math.hypot(corner.x - previous.x, corner.y - previous.y);
+    const outLength = Math.hypot(next.x - corner.x, next.y - corner.y);
+    const radius = Math.min(edgeCornerRadius, inLength / 2, outLength / 2);
+    if (radius < 0.5) {
+      commands.push(`L ${corner.x} ${corner.y}`);
+      continue;
+    }
+    const entry = {
+      x: corner.x + ((previous.x - corner.x) * radius) / inLength,
+      y: corner.y + ((previous.y - corner.y) * radius) / inLength,
+    };
+    const exit = {
+      x: corner.x + ((next.x - corner.x) * radius) / outLength,
+      y: corner.y + ((next.y - corner.y) * radius) / outLength,
+    };
+    commands.push(`L ${entry.x} ${entry.y}`, `Q ${corner.x} ${corner.y} ${exit.x} ${exit.y}`);
+  }
+  if (points.length > 1) {
+    const last = points.at(-1)!;
+    commands.push(`L ${last.x} ${last.y}`);
+  }
+  return commands.join(" ");
 }
 
 function elkEdgeLabelPoint(edge: ElkExtendedEdge): { x: number; y: number } | undefined {
@@ -772,7 +813,7 @@ function fallbackConnection(
           { x: tx, y: ty },
         ];
   return {
-    path: points.map((point, index) => `${index ? "L" : "M"} ${point.x} ${point.y}`).join(" "),
+    path: roundedNavigationPath(points),
     points,
     label: { x: middle, y: tx > sx ? (sy + ty) / 2 : top },
   };
@@ -802,7 +843,7 @@ function fallbackLoop(
     { x, y: y + portY("target") },
   ];
   return {
-    path: points.map((point, index) => `${index ? "L" : "M"} ${point.x} ${point.y}`).join(" "),
+    path: roundedNavigationPath(points),
     points,
     label: { x: x + nodeWidth / 2, y: top },
   };
