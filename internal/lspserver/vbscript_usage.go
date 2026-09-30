@@ -482,7 +482,9 @@ func unusedVBScriptDiagnostics(parsed *core.ParsedDocument, usage vbUsageDeclara
 	if len(candidates) == 0 {
 		return nil
 	}
-	counts := map[string]int{}
+	// Usage is matched by name only, so every same-named candidate shares one
+	// use set; tracking names avoids a names x occurrences blowup.
+	used := map[string]struct{}{}
 	for _, region := range parsed.Regions {
 		if region.Language != core.LanguageVBScript {
 			continue
@@ -491,18 +493,22 @@ func unusedVBScriptDiagnostics(parsed *core.ParsedDocument, usage vbUsageDeclara
 		for _, span := range vbIdentifierSpans(text) {
 			start := region.ContentStart + span.Start
 			end := region.ContentStart + span.End
+			name := strings.ToLower(parsed.Text[start:end])
+			if _, ok := candidates[name]; !ok {
+				continue
+			}
+			if _, ok := used[name]; ok {
+				continue
+			}
 			if _, ok := declarationRanges[offsetRangeKey(start, end)]; ok {
 				continue
 			}
-			name := strings.ToLower(parsed.Text[start:end])
-			for _, candidate := range candidates[name] {
-				counts[offsetRangeKey(candidate.Start, candidate.End)]++
-			}
+			used[name] = struct{}{}
 		}
 	}
 	var diagnostics []lsp.Diagnostic
 	for _, declaration := range candidateList {
-		if counts[offsetRangeKey(declaration.Start, declaration.End)] > 0 {
+		if _, ok := used[strings.ToLower(declaration.Name)]; ok {
 			continue
 		}
 		message := "'" + declaration.Name + "' is declared but never used."
