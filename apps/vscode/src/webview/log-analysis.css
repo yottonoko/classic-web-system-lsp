@@ -30,11 +30,15 @@ select {
   cursor: pointer;
   background: var(--surface);
   border: 1px solid var(--border);
-  border-radius: 5px;
-  padding: 5px 10px;
+  border-radius: 6px;
+  padding: 5px 12px;
+  transition:
+    background 120ms ease,
+    border-color 120ms ease;
 }
 button:hover {
   border-color: var(--vscode-focusBorder, #69a7ef);
+  background: var(--vscode-toolbar-hoverBackground, var(--surface));
 }
 button:disabled {
   opacity: 0.4;
@@ -63,9 +67,9 @@ strong {
 .log-app {
   max-width: 1600px;
   margin: auto;
-  padding: 18px;
+  padding: 20px 24px;
   display: grid;
-  gap: 16px;
+  gap: 18px;
 }
 .log-header {
   display: flex;
@@ -94,7 +98,7 @@ strong {
 textarea,
 input {
   border: 1px solid var(--border);
-  border-radius: 5px;
+  border-radius: 6px;
   background: var(--surface);
   padding: 10px;
   min-width: 0;
@@ -114,7 +118,11 @@ textarea {
 }
 .primary {
   background: var(--accent);
+  border-color: transparent;
   color: var(--vscode-button-foreground, white);
+}
+.primary:hover {
+  background: var(--vscode-button-hoverBackground, var(--accent));
 }
 .muted,
 small {
@@ -135,16 +143,31 @@ small {
 .metrics article,
 .panel {
   border: 1px solid var(--border);
-  border-radius: 8px;
+  border-radius: 10px;
   background: var(--surface);
-  padding: 12px;
+  padding: 14px;
 }
 .metrics article {
+  position: relative;
   display: grid;
   gap: 4px;
+  overflow: hidden;
+}
+.metrics article::before {
+  position: absolute;
+  inset: 0 auto 0 0;
+  width: 3px;
+  content: "";
+  background: var(--accent);
+  opacity: 0.8;
+}
+.metrics article:nth-child(2)::before {
+  background: var(--heat);
 }
 .metrics article > strong {
-  font-size: 24px;
+  font-size: 26px;
+  font-weight: 650;
+  letter-spacing: -0.01em;
   font-variant-numeric: tabular-nums;
 }
 .metrics small {

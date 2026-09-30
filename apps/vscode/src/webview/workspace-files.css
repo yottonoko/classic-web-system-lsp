@@ -74,10 +74,14 @@ button:disabled {
   --asp-lsp-text-muted: var(--vscode-descriptionForeground, #9aa7b8);
   --asp-lsp-accent: var(--vscode-focusBorder, #63b3ff);
   --asp-lsp-active: var(--vscode-list-activeSelectionBackground, #173a5a);
-  --asp-lsp-chip: var(--vscode-badge-background, #182a52);
-  --asp-lsp-chip-border: var(--vscode-focusBorder, #294a8b);
-  --asp-lsp-danger-chip: var(--vscode-inputValidation-errorBackground, #3a222a);
-  --asp-lsp-danger-border: var(--vscode-inputValidation-errorBorder, #7a3841);
+  /* Chips follow the active VS Code theme; fixed colors here would lose contrast on light themes. */
+  --asp-lsp-danger: var(--vscode-errorForeground, #f85149);
+  --asp-lsp-chip: color-mix(in srgb, var(--asp-lsp-accent) 14%, var(--asp-lsp-bg));
+  --asp-lsp-chip-border: color-mix(in srgb, var(--asp-lsp-accent) 45%, transparent);
+  --asp-lsp-chip-text: color-mix(in srgb, var(--asp-lsp-accent) 70%, var(--asp-lsp-text));
+  --asp-lsp-danger-chip: color-mix(in srgb, var(--asp-lsp-danger) 12%, var(--asp-lsp-bg));
+  --asp-lsp-danger-border: color-mix(in srgb, var(--asp-lsp-danger) 45%, transparent);
+  --asp-lsp-danger-text: color-mix(in srgb, var(--asp-lsp-danger) 75%, var(--asp-lsp-text));
   color-scheme: normal;
   background:
     linear-gradient(180deg, rgb(255 255 255 / 2.5%), transparent 120px), var(--asp-lsp-bg);
@@ -103,8 +107,10 @@ button:disabled {
   --asp-lsp-active: #dbeafe;
   --asp-lsp-chip: #eef6ff;
   --asp-lsp-chip-border: #bfdbfe;
+  --asp-lsp-chip-text: #1d4ed8;
   --asp-lsp-danger-chip: #fff1f2;
   --asp-lsp-danger-border: #fecdd3;
+  --asp-lsp-danger-text: #be123c;
   --vscode-input-background: #ffffff;
   --vscode-input-foreground: #1f2937;
   --vscode-input-border: #cbd5e1;
@@ -128,8 +134,10 @@ button:disabled {
   --asp-lsp-active: #173a5a;
   --asp-lsp-chip: #182a52;
   --asp-lsp-chip-border: #294a8b;
+  --asp-lsp-chip-text: #b9d2ff;
   --asp-lsp-danger-chip: #3a222a;
   --asp-lsp-danger-border: #7a3841;
+  --asp-lsp-danger-text: #ffb4bd;
   --vscode-input-background: #141b24;
   --vscode-input-foreground: #d8dee9;
   --vscode-input-border: #354052;
@@ -258,7 +266,7 @@ button:disabled {
   background: var(--asp-lsp-chip);
   border: 1px solid var(--asp-lsp-chip-border);
   border-radius: 999px;
-  color: #b9d2ff;
+  color: var(--asp-lsp-chip-text);
   display: inline-flex;
   font-size: 12px;
   justify-content: center;
@@ -270,7 +278,7 @@ button:disabled {
 .glob-row.exclude .glob-count {
   background: var(--asp-lsp-danger-chip);
   border-color: var(--asp-lsp-danger-border);
-  color: #ffb4bd;
+  color: var(--asp-lsp-danger-text);
 }
 
 .icon-button {
@@ -311,7 +319,7 @@ button:disabled {
     transparent
   );
   border-bottom: 1px solid var(--vscode-inputValidation-warningBorder, #b89500);
-  color: var(--vscode-inputValidation-warningForeground, #fff1b8);
+  color: var(--vscode-inputValidation-warningForeground, var(--asp-lsp-text));
   padding: 8px 22px;
 }
 
@@ -322,7 +330,7 @@ button:disabled {
     transparent
   );
   border-bottom-color: var(--vscode-inputValidation-errorBorder, #be1100);
-  color: var(--vscode-inputValidation-errorForeground, #ffd7d7);
+  color: var(--vscode-inputValidation-errorForeground, var(--asp-lsp-text));
 }
 
 .workspace-files-main {
@@ -448,11 +456,11 @@ button:disabled {
 }
 
 .tree-row.file .tree-icon {
-  color: #7dd3fc;
+  color: var(--vscode-charts-blue, #7dd3fc);
 }
 
 .tree-row.folder .tree-icon {
-  color: #c4b5fd;
+  color: var(--vscode-charts-purple, #c4b5fd);
 }
 
 .tree-match {
@@ -576,7 +584,7 @@ button:disabled {
   background: var(--asp-lsp-chip);
   border: 1px solid var(--asp-lsp-chip-border);
   border-radius: 6px;
-  color: #b9d2ff;
+  color: var(--asp-lsp-chip-text);
   display: inline-flex;
   font-family: var(--vscode-editor-font-family, ui-monospace, SFMono-Regular, Menlo, monospace);
   font-size: 12px;
@@ -595,7 +603,7 @@ button:disabled {
 .filter-chip.danger {
   background: var(--asp-lsp-danger-chip);
   border-color: var(--asp-lsp-danger-border);
-  color: #ffb4bd;
+  color: var(--asp-lsp-danger-text);
 }
 
 .details-list {
