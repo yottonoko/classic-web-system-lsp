@@ -155,7 +155,7 @@ func SemanticTokensRangeWithExtraDeclarations(parsed *core.ParsedDocument, r lsp
 }
 
 func semanticTokens(parsed *core.ParsedDocument, tokenRange *lsp.Range, extra map[string]string, includeJavaScript bool) lsp.SemanticTokens {
-	doc := core.NewTextDocument(parsed.URI, "classic-asp", 0, parsed.Text)
+	doc := core.SourceDocument(parsed)
 	index := BuildSymbolIndex(parsed)
 	params := semanticParameters(parsed)
 	var classScopes classScopeIndex

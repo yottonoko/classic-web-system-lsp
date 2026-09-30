@@ -436,7 +436,7 @@ func workspaceIncludeArtifactEdges(parsed *core.ParsedDocument, resolved []resol
 }
 
 func workspaceExecutionTape(parsed *core.ParsedDocument, declarations []vbUsageDeclaration, edges []workspaceIncludeArtifactEdge) []workspaceDocumentExecutionEvent {
-	doc := core.NewTextDocument(parsed.URI, "classic-asp", 0, parsed.Text)
+	doc := core.SourceDocument(parsed)
 	events := make([]workspaceDocumentExecutionEvent, 0, len(edges)+len(declarations))
 	for _, edge := range edges {
 		events = append(events, workspaceDocumentExecutionEvent{Kind: workspaceExecutionInclude, Offset: doc.OffsetAt(edge.Range.Start), Include: edge, Range: edge.Range})

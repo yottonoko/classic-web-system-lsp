@@ -190,7 +190,7 @@ func vbscriptTypeAnnotationDiagnostics(parsed *core.ParsedDocument) []lsp.Diagno
 	if parsed == nil {
 		return nil
 	}
-	doc := core.NewTextDocument(parsed.URI, "classic-asp", 0, parsed.Text)
+	doc := core.SourceDocument(parsed)
 	var diagnostics []lsp.Diagnostic
 	for _, region := range parsed.Regions {
 		if region.Language != core.LanguageVBScript {

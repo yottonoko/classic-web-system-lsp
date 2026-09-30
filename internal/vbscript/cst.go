@@ -827,9 +827,26 @@ func cstDimNameTokens(tokens []Token, index int) []Token {
 }
 
 func isVBKeyword(value string) bool {
-	_, ok := vbKeywords[strings.ToLower(value)]
+	// Every keyword is short ASCII; lower-case into a stack buffer so the
+	// tokenizer does not allocate for each identifier.
+	if len(value) > vbKeywordMaxLength {
+		return false
+	}
+	var buffer [vbKeywordMaxLength]byte
+	for index := 0; index < len(value); index++ {
+		character := value[index]
+		if character >= 'A' && character <= 'Z' {
+			character += 'a' - 'A'
+		}
+		buffer[index] = character
+	}
+	_, ok := vbKeywords[string(buffer[:len(value)])]
 	return ok
 }
+
+// vbKeywordMaxLength bounds the lower-casing buffer; it must be at least as
+// long as the longest entry of vbKeywords.
+const vbKeywordMaxLength = 16
 
 var vbKeywords = map[string]struct{}{
 	"and": {}, "as": {}, "byref": {}, "byval": {}, "call": {}, "case": {},

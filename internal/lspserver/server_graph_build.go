@@ -520,7 +520,7 @@ func lspRangeEqual(a, b lsp.Range) bool {
 }
 
 func graphVBPropertySourceRange(parsed *core.ParsedDocument, declaration vbUsageDeclaration) (lsp.Range, bool) {
-	doc := core.NewTextDocument(parsed.URI, "classic-asp", 0, parsed.Text)
+	doc := core.SourceDocument(parsed)
 	for _, region := range parsed.Regions {
 		if region.Language != core.LanguageVBScript {
 			continue
@@ -609,7 +609,7 @@ func graphPropertySignatures(parsed *core.ParsedDocument) []vbscript.Signature {
 	if parsed == nil {
 		return nil
 	}
-	doc := core.NewTextDocument(parsed.URI, "classic-asp", 0, parsed.Text)
+	doc := core.SourceDocument(parsed)
 	signatures := make([]vbscript.Signature, 0)
 	for _, region := range parsed.Regions {
 		if region.Language != core.LanguageVBScript {
@@ -737,7 +737,7 @@ func graphAnalysisTypes(parsed *core.ParsedDocument) vbGraphAnalysisTypes {
 	procedureScopes := vbProcedureScopes(parsed)
 	procedureScopeIndex := newVBProcedureScopeIndex(procedureScopes)
 	classOwners := vbClassMemberLineOwners(parsed)
-	doc := core.NewTextDocument(parsed.URI, "classic-asp", 0, parsed.Text)
+	doc := core.SourceDocument(parsed)
 	seenLines := map[int]struct{}{}
 	for _, region := range parsed.Regions {
 		if region.Language != core.LanguageVBScript {
@@ -911,7 +911,7 @@ func graphSignatureAccessor(parsed *core.ParsedDocument, signature vbscript.Sign
 	if parsed == nil || !strings.EqualFold(signature.Kind, "property") {
 		return ""
 	}
-	doc := core.NewTextDocument(parsed.URI, "classic-asp", 0, parsed.Text)
+	doc := core.SourceDocument(parsed)
 	nameStart := doc.OffsetAt(signature.NameRange.Start)
 	for _, scope := range vbProcedureScopes(parsed) {
 		if scope.NameStart == nameStart && scope.Accessor != "" {
@@ -985,7 +985,7 @@ func vbscriptSignatureForUsageDeclaration(parsed *core.ParsedDocument, declarati
 	if scope, ok := vbProcedureScopeForUsageDeclaration(parsed, declaration); ok {
 		procedureNameStart = scope.NameStart
 	}
-	doc := core.NewTextDocument(parsed.URI, "classic-asp", 0, parsed.Text)
+	doc := core.SourceDocument(parsed)
 	var fallback vbscript.Signature
 	for _, signature := range graphSignatures(parsed) {
 		if !strings.EqualFold(signature.Name, name) {
@@ -1258,7 +1258,7 @@ var (
 )
 
 func graphLoopVariableDeclarations(parsed *core.ParsedDocument) []vbUsageDeclaration {
-	doc := core.NewTextDocument(parsed.URI, "classic-asp", 0, parsed.Text)
+	doc := core.SourceDocument(parsed)
 	procedureScopes := vbProcedureScopes(parsed)
 	procedureScopeIndex := newVBProcedureScopeIndex(procedureScopes)
 	var declarations []vbUsageDeclaration
@@ -1306,7 +1306,7 @@ func graphLoopVariableDeclarations(parsed *core.ParsedDocument) []vbUsageDeclara
 }
 
 func graphReDimDeclarations(parsed *core.ParsedDocument) []vbUsageDeclaration {
-	doc := core.NewTextDocument(parsed.URI, "classic-asp", 0, parsed.Text)
+	doc := core.SourceDocument(parsed)
 	procedureScopes := vbProcedureScopes(parsed)
 	procedureScopeIndex := newVBProcedureScopeIndex(procedureScopes)
 	globalNames := map[string]struct{}{}

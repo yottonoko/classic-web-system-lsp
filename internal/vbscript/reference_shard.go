@@ -657,7 +657,7 @@ func (index *referenceScopeIndex) add(scopes []referenceScopeOffsets) {
 }
 
 func buildReferenceShard(parsed *core.ParsedDocument) *ReferenceShard {
-	source := core.NewTextDocument(parsed.URI, "classic-asp", 0, parsed.Text)
+	source := core.SourceDocument(parsed)
 	regions, structured := referenceShardRegions(parsed)
 	var documentTokens []Token
 	var documentCST *CSTNode

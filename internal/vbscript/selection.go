@@ -12,7 +12,7 @@ func SelectionRange(parsed *core.ParsedDocument, position lsp.Position) *lsp.Sel
 	if parsed == nil {
 		return nil
 	}
-	source := core.NewTextDocument(parsed.URI, "classic-asp", 0, parsed.Text)
+	source := core.SourceDocument(parsed)
 	offset := source.OffsetAt(position)
 	region := core.RegionAt(parsed, offset)
 	if region == nil || region.Language != core.LanguageVBScript {

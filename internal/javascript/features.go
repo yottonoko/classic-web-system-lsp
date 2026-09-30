@@ -87,7 +87,7 @@ func Diagnostics(parsed *core.ParsedDocument) []lsp.Diagnostic {
 	index := BuildIndex(parsed)
 	var diagnostics []lsp.Diagnostic
 	seen := map[string]struct{}{}
-	source := core.NewTextDocument(parsed.URI, "classic-asp", 0, parsed.Text)
+	source := core.SourceDocument(parsed)
 	diagnostics = append(diagnostics, syntaxDiagnostics(parsed, source)...)
 	for lower, symbol := range index.Declarations {
 		if symbol.Kind != "variable" {
@@ -199,7 +199,7 @@ func jsIsEscaped(text string, offset int) bool {
 }
 
 func SemanticDiagnostics(parsed *core.ParsedDocument) []lsp.Diagnostic {
-	source := core.NewTextDocument(parsed.URI, "classic-asp", 0, parsed.Text)
+	source := core.SourceDocument(parsed)
 	var diagnostics []lsp.Diagnostic
 	seen := map[string]struct{}{}
 	for _, language := range []core.EmbeddedLanguage{core.LanguageJavaScript, core.LanguageJScript} {

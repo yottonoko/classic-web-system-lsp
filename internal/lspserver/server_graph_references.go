@@ -340,7 +340,7 @@ func (s *Server) graphMemberReferencesWithProgress(ctx context.Context, document
 			if len(occurrence.Parts) >= 2 {
 				receiverName := occurrence.Parts[0]
 				memberName := occurrence.Parts[len(occurrence.Parts)-1]
-				offset := core.NewTextDocument(parsed.URI, "classic-asp", 0, parsed.Text).OffsetAt(occurrence.Range.Start)
+				offset := core.SourceDocument(parsed).OffsetAt(occurrence.Range.Start)
 				ownerURIs := includeOwners[workspacepkg.FileIdentityKeyFromURI(parsed.URI)]
 				typeNames := make([]string, 0, len(ownerURIs)+1)
 				appendTypeName := func(typeName string) {
@@ -449,7 +449,7 @@ func graphMemberOccurrences(parsed *core.ParsedDocument) []graphMemberOccurrence
 	if parsed.LoadAnalysis("lspserver.graph-member-occurrences.v1", &cached) {
 		return cached
 	}
-	doc := core.NewTextDocument(parsed.URI, "classic-asp", 0, parsed.Text)
+	doc := core.SourceDocument(parsed)
 	occurrences := []graphMemberOccurrence{}
 	for _, region := range parsed.Regions {
 		if region.Language != core.LanguageVBScript {
@@ -747,7 +747,7 @@ func graphMemberDeclarationIDsForOccurrence(parsed *core.ParsedDocument, occurre
 		return nil
 	}
 	name := occurrence.Parts[0]
-	offset := core.NewTextDocument(parsed.URI, "classic-asp", 0, parsed.Text).OffsetAt(occurrence.Range.Start)
+	offset := core.SourceDocument(parsed).OffsetAt(occurrence.Range.Start)
 	local, classMember, global, _ := graphMemberDeclarationCandidates(parsed, name, offset)
 	declarations := make([]string, 0, len(ownerURIs)+1)
 	appendDeclaration := func(document *core.ParsedDocument, declaration *vbUsageDeclaration) {
@@ -821,7 +821,7 @@ func (s *Server) graphCanonicalImplicitDeclarationIDs(documents []*core.ParsedDo
 			return
 		}
 		visiting[parsed.URI] = struct{}{}
-		doc := core.NewTextDocument(parsed.URI, "classic-asp", 0, parsed.Text)
+		doc := core.SourceDocument(parsed)
 		events := make([]graphImplicitDeclarationEvent, 0, len(parsed.Includes)+4)
 		for _, declaration := range s.cachedVBDeclarations(parsed) {
 			if !declaration.Implicit {
@@ -1127,7 +1127,7 @@ func graphDeclarationRanges(parsed *core.ParsedDocument) map[string]map[lsp.Rang
 }
 
 func vbGraphReferenceLinkKind(parsed *core.ParsedDocument, r lsp.Range, declarationKind string) string {
-	source := core.NewTextDocument(parsed.URI, "classic-asp", 0, parsed.Text)
+	source := core.SourceDocument(parsed)
 	return vbGraphReferenceLinkKindWithSource(parsed, source, r, declarationKind)
 }
 
@@ -1210,7 +1210,7 @@ func graphUnresolvedNewReferencesWithProgress(ctx context.Context, documents []*
 			}
 			continue
 		}
-		doc := core.NewTextDocument(parsed.URI, "classic-asp", 0, parsed.Text)
+		doc := core.SourceDocument(parsed)
 		for _, region := range parsed.Regions {
 			if region.Language != core.LanguageVBScript {
 				continue
@@ -1346,7 +1346,7 @@ func graphVBProcedureRanges(parsed *core.ParsedDocument) []graphVBProcedureRange
 	if ranges := graphVBProcedureRangesFromCST(parsed); len(ranges) > 0 {
 		return ranges
 	}
-	doc := core.NewTextDocument(parsed.URI, "classic-asp", 0, parsed.Text)
+	doc := core.SourceDocument(parsed)
 	var ranges []graphVBProcedureRange
 	for _, region := range parsed.Regions {
 		if region.Language != core.LanguageVBScript {
@@ -1405,7 +1405,7 @@ func graphVBProcedureRangesFromCST(parsed *core.ParsedDocument) []graphVBProcedu
 	if len(scopes) == 0 {
 		return nil
 	}
-	doc := core.NewTextDocument(parsed.URI, "classic-asp", 0, parsed.Text)
+	doc := core.SourceDocument(parsed)
 	owners := vbClassMemberLineOwners(parsed)
 	ranges := make([]graphVBProcedureRange, 0, len(scopes))
 	for _, scope := range scopes {

@@ -35,22 +35,11 @@ const (
 	includedServerObjectIndexKey      = "lspserver.included-server-object-index.v1"
 	implicitVBDeclarationsAnalysisKey = "lspserver.implicit-vb-declarations.v3"
 	vbProcedureScopesAnalysisKey      = "lspserver.vb-procedure-scopes.v4"
-	vbTextDocumentAnalysisKey         = "lspserver.vb-text-document.v1"
 	vbLocalShadowNamesAnalysisKey     = "lspserver.vb-local-shadow-names.v1"
 )
 
 func vbTextDocument(parsed *core.ParsedDocument) *core.TextDocument {
-	if parsed == nil {
-		return nil
-	}
-	if value, ok := parsed.LoadRuntimeAnalysis(vbTextDocumentAnalysisKey); ok {
-		if cached, ok := value.(*core.TextDocument); ok && cached != nil {
-			return cached
-		}
-	}
-	document := core.NewTextDocument(parsed.URI, "classic-asp", 0, parsed.Text)
-	parsed.StoreRuntimeAnalysis(vbTextDocumentAnalysisKey, document)
-	return document
+	return core.SourceDocument(parsed)
 }
 
 // includedServerObjectIndex contains only included server-side OBJECT,
@@ -282,7 +271,7 @@ func mergeVBSourceProcedureScopes(parsed *core.ParsedDocument, scopes []vbProced
 			// incomplete outer declaration.
 			if scope.Complete && scope.Scope.EndOffset > scopes[index].EndOffset {
 				scopes[index].EndOffset = scope.Scope.EndOffset
-				doc := core.NewTextDocument(parsed.URI, "classic-asp", 0, parsed.Text)
+				doc := core.SourceDocument(parsed)
 				scopes[index].EndLine = doc.PositionAt(scope.Scope.EndOffset).Line
 			}
 			continue
@@ -306,7 +295,7 @@ func mergeVBSourceProcedureScopes(parsed *core.ParsedDocument, scopes []vbProced
 				if scopes[index].EndOffset < scopes[index].StartOffset {
 					scopes[index].EndOffset = scopes[index].StartOffset
 				}
-				doc := core.NewTextDocument(parsed.URI, "classic-asp", 0, parsed.Text)
+				doc := core.SourceDocument(parsed)
 				scopes[index].EndLine = doc.PositionAt(scopes[index].EndOffset).Line
 			}
 		}
@@ -324,7 +313,7 @@ func vbSourceProcedureScopes(parsed *core.ParsedDocument) []vbSourceProcedureSco
 	if parsed == nil {
 		return nil
 	}
-	doc := core.NewTextDocument(parsed.URI, "classic-asp", 0, parsed.Text)
+	doc := core.SourceDocument(parsed)
 	var scopes []vbSourceProcedureScope
 	for _, region := range parsed.Regions {
 		if region.Language != core.LanguageVBScript {
@@ -560,7 +549,7 @@ func serverObjectSymbols(parsed *core.ParsedDocument) []serverObjectSymbol {
 	}
 	virtual := core.BuildVirtualDocument(parsed, core.LanguageHTML)
 	scanner := htmlservice.GetLanguageService().CreateScanner(virtual.Text)
-	doc := core.NewTextDocument(parsed.URI, "classic-asp", 0, parsed.Text)
+	doc := core.SourceDocument(parsed)
 	symbols := make([]serverObjectSymbol, 0)
 	var tagName string
 	var tagStart int
@@ -787,7 +776,7 @@ func (s *Server) includedServerObjectIndexContext(ctx context.Context, root *cor
 				return false
 			}
 		}
-		textDocument := core.NewTextDocument(document.URI, "classic-asp", 0, document.Text)
+		textDocument := core.SourceDocument(document)
 		events := make([]includedNameIndexEvent, 0, len(document.Includes))
 		if !rootDocument {
 			classOwners := vbClassMemberLineOwners(document)
@@ -831,7 +820,7 @@ func (s *Server) includedServerObjectIndexContext(ctx context.Context, root *cor
 					Entry: includedNameIndexEntry{Kind: "global", URI: document.URI, TypeName: inferVBDeclarationType(document, declaration), Declaration: declaration},
 				})
 			}
-			doc := core.NewTextDocument(document.URI, "classic-asp", 0, document.Text)
+			doc := core.SourceDocument(document)
 			for _, signature := range vbscript.Signatures(document) {
 				if ctx.Err() != nil {
 					complete = false
@@ -1006,12 +995,12 @@ func implicitVBDeclarations(parsed *core.ParsedDocument) []vbUsageDeclaration {
 		parsed.StoreAnalysis(implicitVBDeclarationsAnalysisKey, empty)
 		return empty
 	}
-	doc := core.NewTextDocument(parsed.URI, "classic-asp", 0, parsed.Text)
-	declarationRanges := map[string]struct{}{}
+	doc := core.SourceDocument(parsed)
+	declarationRanges := map[offsetRange]struct{}{}
 	explicitGlobals := map[string]struct{}{}
 	explicitLocals := map[string]struct{}{}
 	usageDeclarations := normalizedVBUsageDeclarations(parsed)
-	localDeclarationRanges := map[string]struct{}{}
+	localDeclarationRanges := map[offsetRange]struct{}{}
 	for _, declaration := range usageDeclarations {
 		if declaration.Local {
 			localDeclarationRanges[offsetRangeKey(declaration.Start, declaration.End)] = struct{}{}
@@ -1161,7 +1150,7 @@ func (s *Server) serverObjectTargetContext(ctx context.Context, parsed *core.Par
 	if symbol, ok := serverObjectSymbolAt(parsed, position); ok {
 		return parsed, symbol, true
 	}
-	doc := core.NewTextDocument(parsed.URI, "classic-asp", 0, parsed.Text)
+	doc := core.SourceDocument(parsed)
 	offset := doc.OffsetAt(position)
 	region := core.RegionAt(parsed, offset)
 	if region == nil || region.Language != core.LanguageVBScript {
@@ -1287,11 +1276,11 @@ func normalizedVBUsageDeclarations(parsed *core.ParsedDocument) []vbUsageDeclara
 }
 
 func vbParameterDeclarationsFromTokens(parsed *core.ParsedDocument) []vbUsageDeclaration {
-	doc := core.NewTextDocument(parsed.URI, "classic-asp", 0, parsed.Text)
+	doc := core.SourceDocument(parsed)
 	scopes := vbProcedureScopes(parsed)
 	scopeIndex := newVBProcedureScopeIndex(scopes)
 	declarations := make([]vbUsageDeclaration, 0)
-	seen := map[string]struct{}{}
+	seen := map[offsetRange]struct{}{}
 	for _, region := range parsed.Regions {
 		if region.Language != core.LanguageVBScript {
 			continue
@@ -1356,7 +1345,7 @@ func vbPropertyAccessorSignatureAt(parsed *core.ParsedDocument, position lsp.Pos
 	if parsed == nil {
 		return vbscript.Signature{}, false
 	}
-	doc := core.NewTextDocument(parsed.URI, "classic-asp", 0, parsed.Text)
+	doc := core.SourceDocument(parsed)
 	var signatures []vbscript.Signature
 	var current *vbscript.Signature
 	for _, region := range parsed.Regions {

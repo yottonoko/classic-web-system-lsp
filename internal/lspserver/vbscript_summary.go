@@ -210,9 +210,9 @@ func remapVBExportSummary(mapper *core.IncrementalRangeMapper, previous vbExport
 }
 
 func collectVBScriptExternalRefs(parsed *core.ParsedDocument) []vbExternalRef {
-	doc := core.NewTextDocument(parsed.URI, "classic-asp", 0, parsed.Text)
+	doc := core.SourceDocument(parsed)
 	declared := map[string]struct{}{}
-	declarationRanges := map[string]struct{}{}
+	declarationRanges := map[offsetRange]struct{}{}
 	for _, declaration := range collectVBNamingDeclarations(parsed) {
 		declared[strings.ToLower(declaration.Name)] = struct{}{}
 		declarationRanges[offsetRangeKey(declaration.Start, declaration.End)] = struct{}{}

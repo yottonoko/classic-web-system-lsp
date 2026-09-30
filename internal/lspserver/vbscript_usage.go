@@ -199,9 +199,9 @@ func (s *Server) vbscriptUsageCodeActions(params codeActionParams) []lsp.CodeAct
 		return nil
 	}
 	usage := collectVBUsageDeclarations(parsed)
-	byRange := map[string]vbUsageDeclaration{}
+	byRange := map[lsp.Range]vbUsageDeclaration{}
 	for _, declaration := range usage.Declarations {
-		byRange[diagnosticRangeKey(declaration.Range)] = declaration
+		byRange[declaration.Range] = declaration
 	}
 	var actions []lsp.CodeAction
 	for _, diagnostic := range params.Context.Diagnostics {
@@ -225,7 +225,7 @@ func (s *Server) vbscriptUsageCodeActions(params codeActionParams) []lsp.CodeAct
 				}},
 			})
 		case "asp-lsp-vbscript-unused":
-			declaration, ok := byRange[diagnosticRangeKey(diagnostic.Range)]
+			declaration, ok := byRange[diagnostic.Range]
 			if !ok || declaration.Kind == "sub" || declaration.Kind == "function" || declaration.Kind == "class" {
 				continue
 			}
@@ -251,8 +251,23 @@ type vbUsageDeclarations struct {
 	Declarations []vbUsageDeclaration
 }
 
+const vbUsageDeclarationsAnalysisKey = "lspserver.vb-usage.v2"
+
 func collectVBUsageDeclarations(parsed *core.ParsedDocument) vbUsageDeclarations {
-	const analysisKey = "lspserver.vb-usage.v2"
+	if value, ok := parsed.LoadRuntimeAnalysis(vbUsageDeclarationsAnalysisKey); ok {
+		if cached, ok := value.(vbUsageDeclarations); ok {
+			return cached
+		}
+	}
+	// Usage and naming diagnostics request this from separate workers at the
+	// same time; build it once and share the result.
+	return singleflightParsedAnalysis(parsed, vbUsageDeclarationsAnalysisKey, func() vbUsageDeclarations {
+		return buildVBUsageDeclarations(parsed)
+	})
+}
+
+func buildVBUsageDeclarations(parsed *core.ParsedDocument) vbUsageDeclarations {
+	const analysisKey = vbUsageDeclarationsAnalysisKey
 	if value, ok := parsed.LoadRuntimeAnalysis(analysisKey); ok {
 		if cached, ok := value.(vbUsageDeclarations); ok {
 			return cached
@@ -471,7 +486,7 @@ func vbLineDeclarations(doc *core.TextDocument, line string, lineOffset int, loc
 func unusedVBScriptDiagnostics(parsed *core.ParsedDocument, usage vbUsageDeclarations) []lsp.Diagnostic {
 	candidates := map[string][]vbUsageDeclaration{}
 	var candidateList []vbUsageDeclaration
-	declarationRanges := map[string]struct{}{}
+	declarationRanges := map[offsetRange]struct{}{}
 	for _, declaration := range usage.Declarations {
 		declarationRanges[offsetRangeKey(declaration.Start, declaration.End)] = struct{}{}
 		if !declaration.Local || (declaration.Kind != "variable" && declaration.Kind != "constant" && declaration.Kind != "parameter") {
@@ -531,7 +546,7 @@ func unusedVBScriptDiagnostics(parsed *core.ParsedDocument, usage vbUsageDeclara
 func undeclaredVBScriptDiagnostics(parsed *core.ParsedDocument, usage vbUsageDeclarations, locale string, externalGlobals map[string]struct{}) []lsp.Diagnostic {
 	doc := core.SourceDocument(parsed)
 	declared := map[string]struct{}{}
-	declarationRanges := map[string]struct{}{}
+	declarationRanges := map[offsetRange]struct{}{}
 	for _, declaration := range usage.Declarations {
 		declared[strings.ToLower(declaration.Name)] = struct{}{}
 		declarationRanges[offsetRangeKey(declaration.Start, declaration.End)] = struct{}{}
@@ -942,11 +957,17 @@ func dedupeDiagnostics(diagnostics []lsp.Diagnostic) []lsp.Diagnostic {
 }
 
 func diagnosticRangeKey(r lsp.Range) string {
-	return offsetRangeKey(r.Start.Line*1_000_000+r.Start.Character, r.End.Line*1_000_000+r.End.Character)
+	return strconvItoa(r.Start.Line*1_000_000+r.Start.Character) + ":" + strconvItoa(r.End.Line*1_000_000+r.End.Character)
 }
 
-func offsetRangeKey(start int, end int) string {
-	return strconvItoa(start) + ":" + strconvItoa(end)
+// offsetRange is a comparable map key for a half-open offset range.
+type offsetRange struct {
+	start int
+	end   int
+}
+
+func offsetRangeKey(start int, end int) offsetRange {
+	return offsetRange{start: start, end: end}
 }
 
 func strconvItoa(value int) string {

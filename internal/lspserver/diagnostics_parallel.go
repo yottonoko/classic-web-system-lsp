@@ -179,7 +179,7 @@ func shiftDiagnosticsAcrossIncrementalRevision(items []lsp.Diagnostic, previousT
 	}
 	impact := current.ChangeImpact
 	oldDocument := core.NewTextDocument(current.URI, "classic-asp", 0, previousText)
-	newDocument := core.NewTextDocument(current.URI, "classic-asp", 0, current.Text)
+	newDocument := core.SourceDocument(current)
 	delta := impact.NewEnd - impact.OldEnd
 	shifted := cloneDiagnostics(items)
 	for index := range shifted {

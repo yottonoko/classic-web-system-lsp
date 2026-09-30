@@ -29,7 +29,7 @@ func vbscriptVariableTypeInlayHints(parsed *core.ParsedDocument, r lsp.Range, op
 	if !options.VariableTypes {
 		return nil
 	}
-	doc := core.NewTextDocument(parsed.URI, "classic-asp", 0, parsed.Text)
+	doc := core.SourceDocument(parsed)
 	startOffset := doc.OffsetAt(r.Start)
 	endOffset := doc.OffsetAt(r.End)
 	declarations := variableInlayDeclarations(parsed, options.IncludeAware, options.IncludedGlobalNames)
@@ -67,7 +67,7 @@ func vbscriptFunctionReturnTypeInlayHints(parsed *core.ParsedDocument, r lsp.Ran
 	if !enabled || parsed == nil {
 		return nil
 	}
-	doc := core.NewTextDocument(parsed.URI, "classic-asp", 0, parsed.Text)
+	doc := core.SourceDocument(parsed)
 	startOffset := doc.OffsetAt(r.Start)
 	endOffset := doc.OffsetAt(r.End)
 	analysis := graphAnalysisTypes(parsed)
@@ -149,7 +149,7 @@ func variableInlayDeclarations(parsed *core.ParsedDocument, includeAware bool, i
 			}
 		}
 	}
-	byRange := map[string]int{}
+	byRange := map[offsetRange]int{}
 	var declarations []vbUsageDeclaration
 	for _, declaration := range collectVBUsageDeclarations(parsed).Declarations {
 		if !isVBVariableInlayDeclaration(declaration) {
@@ -643,7 +643,7 @@ func implicitAssignmentInlayDeclarations(parsed *core.ParsedDocument, includeAwa
 	if hasVBOptionExplicit(parsed) {
 		return nil
 	}
-	doc := core.NewTextDocument(parsed.URI, "classic-asp", 0, parsed.Text)
+	doc := core.SourceDocument(parsed)
 	declared := map[string]struct{}{}
 	for _, declaration := range collectVBUsageDeclarations(parsed).Declarations {
 		declared[implicitDeclarationScopeKey(declaration.Local, declaration.Scope, declaration.Name)] = struct{}{}
@@ -798,7 +798,7 @@ func hasEarlierIncludeDirectiveAt(parsed *core.ParsedDocument, offset int) bool 
 	if len(parsed.Includes) == 0 {
 		return false
 	}
-	doc := core.NewTextDocument(parsed.URI, "classic-asp", 0, parsed.Text)
+	doc := core.SourceDocument(parsed)
 	for _, include := range parsed.Includes {
 		if doc.OffsetAt(include.Range.Start) <= offset {
 			return true

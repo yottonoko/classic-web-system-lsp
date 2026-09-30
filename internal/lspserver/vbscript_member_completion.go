@@ -580,7 +580,7 @@ func vbClassMemberCompletionsByClass(parsed *core.ParsedDocument) map[string]map
 		}
 	}
 	result := map[string]map[string]vbClassMemberCompletion{}
-	doc := core.NewTextDocument(parsed.URI, "classic-asp", 0, parsed.Text)
+	doc := core.SourceDocument(parsed)
 	analysis := graphAnalysisTypes(parsed)
 	for _, region := range parsed.Regions {
 		if region.Language != core.LanguageVBScript {

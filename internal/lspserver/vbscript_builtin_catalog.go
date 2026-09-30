@@ -407,7 +407,7 @@ func (s *Server) vbscriptBuiltinMemberSignatureHelpContext(ctx context.Context, 
 	if ctx.Err() != nil || parsed == nil {
 		return nil
 	}
-	doc := core.NewTextDocument(parsed.URI, "classic-asp", 0, parsed.Text)
+	doc := core.SourceDocument(parsed)
 	offset := doc.OffsetAt(position)
 	open := vbCallOpenParenBefore(parsed.Text, offset)
 	if open < 0 {

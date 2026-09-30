@@ -50,7 +50,7 @@ func (h HTML) cachedHTMLSource(parsed *core.ParsedDocument) *htmlDocumentCache {
 func (c *htmlDocumentCache) initializeSource(parsed *core.ParsedDocument) {
 	c.sourceOnce.Do(func() {
 		virtual := core.BuildVirtualDocument(parsed, core.LanguageHTML)
-		source := core.NewTextDocument(parsed.URI, "classic-asp", 0, parsed.Text)
+		source := core.SourceDocument(parsed)
 		service := reusableHTMLServiceDocument(parsed, virtual)
 		if service == nil {
 			service = &htmlServiceDocumentCache{
@@ -181,7 +181,7 @@ func (c CSS) cachedCSSSource(parsed *core.ParsedDocument) *cssDocumentCache {
 func (c *cssDocumentCache) initializeSource(parsed *core.ParsedDocument) {
 	c.sourceOnce.Do(func() {
 		virtual := core.BuildVirtualDocument(parsed, core.LanguageCSS)
-		source := core.NewTextDocument(parsed.URI, "classic-asp", 0, parsed.Text)
+		source := core.SourceDocument(parsed)
 		service := reusableCSSServiceDocument(parsed, virtual)
 		if service == nil {
 			service = &cssServiceDocumentCache{

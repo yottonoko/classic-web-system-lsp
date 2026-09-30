@@ -67,7 +67,7 @@ func declarationSyntaxDiagnostics(parsed *core.ParsedDocument) []lsp.Diagnostic 
 }
 
 func unsupportedDeclarationDiagnostics(parsed *core.ParsedDocument) []lsp.Diagnostic {
-	doc := core.NewTextDocument(parsed.URI, "classic-asp", 0, parsed.Text)
+	doc := core.SourceDocument(parsed)
 	var diagnostics []lsp.Diagnostic
 	for _, region := range parsed.Regions {
 		if region.Language != core.LanguageVBScript {
@@ -133,7 +133,7 @@ func declarationDiagnostic(doc *core.TextDocument, lineOffset int, line string, 
 }
 
 func dimDeclarationFixes(parsed *core.ParsedDocument, initializedStyle string) []dimDeclarationFix {
-	doc := core.NewTextDocument(parsed.URI, "classic-asp", 0, parsed.Text)
+	doc := core.SourceDocument(parsed)
 	var fixes []dimDeclarationFix
 	for _, region := range parsed.Regions {
 		if region.Language != core.LanguageVBScript {

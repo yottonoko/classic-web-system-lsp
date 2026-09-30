@@ -437,7 +437,7 @@ func Signatures(parsed *core.ParsedDocument) []Signature {
 		parsed.StoreRuntimeAnalysis("vbscript.signatures.runtime.v1", signatureListRuntime(cached))
 		return cached
 	}
-	source := core.NewTextDocument(parsed.URI, "classic-asp", 0, parsed.Text)
+	source := core.SourceDocument(parsed)
 	var signatures []Signature
 	for _, region := range parsed.Regions {
 		if region.Language != core.LanguageVBScript {
@@ -509,7 +509,7 @@ func StandaloneBuiltinSignatureHelp(parsed *core.ParsedDocument, position lsp.Po
 }
 
 func signatureHelp(parsed *core.ParsedDocument, position lsp.Position, standalone, includeUserDefined bool) *lsp.SignatureHelp {
-	doc := core.NewTextDocument(parsed.URI, "classic-asp", 0, parsed.Text)
+	doc := core.SourceDocument(parsed)
 	offset := doc.OffsetAt(position)
 	open := callOpenParenBefore(parsed.Text, offset)
 	if open < 0 {
@@ -585,7 +585,7 @@ func WorkspaceSymbols(parsed *core.ParsedDocument, query string) []lsp.SymbolInf
 }
 
 func SignatureAt(parsed *core.ParsedDocument, position lsp.Position) (Signature, bool) {
-	doc := core.NewTextDocument(parsed.URI, "classic-asp", 0, parsed.Text)
+	doc := core.SourceDocument(parsed)
 	word := WordAt(parsed.Text, doc.OffsetAt(position))
 	if word == "" {
 		return Signature{}, false
@@ -645,7 +645,7 @@ func InlayHints(parsed *core.ParsedDocument, r lsp.Range) []lsp.InlayHint {
 
 // InlayHintsWithOptions returns VBScript inlay hints for the requested source range.
 func InlayHintsWithOptions(parsed *core.ParsedDocument, r lsp.Range, options InlayHintOptions) []lsp.InlayHint {
-	doc := core.NewTextDocument(parsed.URI, "classic-asp", 0, parsed.Text)
+	doc := core.SourceDocument(parsed)
 	startOffset := doc.OffsetAt(r.Start)
 	endOffset := doc.OffsetAt(r.End)
 	signatures := BuildSignatures(parsed)

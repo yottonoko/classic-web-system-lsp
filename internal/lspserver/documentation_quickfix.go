@@ -118,7 +118,7 @@ func missingVBScriptDocumentationXMLLines(signature vbscript.Signature, existing
 }
 
 func vbscriptDocumentationDeclarationAt(parsed *core.ParsedDocument, position lsp.Position) (vbUsageDeclaration, bool) {
-	offset := core.NewTextDocument(parsed.URI, "classic-asp", 0, parsed.Text).OffsetAt(position)
+	offset := core.SourceDocument(parsed).OffsetAt(position)
 	var found vbUsageDeclaration
 	foundSize := 0
 	for _, declaration := range collectVBNamingDeclarations(parsed) {
@@ -205,7 +205,7 @@ func vbscriptDeclarationHasAmbiguousXMLDocumentation(parsed *core.ParsedDocument
 			lineEnd++
 		}
 		line := parsed.Text[lineStart:lineEnd]
-		declarations := vbLineDeclarations(core.NewTextDocument(parsed.URI, "classic-asp", 0, parsed.Text), line, lineStart, declaration.Local, declaration.Scope)
+		declarations := vbLineDeclarations(core.SourceDocument(parsed), line, lineStart, declaration.Local, declaration.Scope)
 		count := 0
 		for _, candidate := range declarations {
 			if candidate.Kind == declaration.Kind {

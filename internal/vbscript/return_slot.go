@@ -81,7 +81,7 @@ func returnValueTextDocument(parsed *core.ParsedDocument) *core.TextDocument {
 			return cached
 		}
 	}
-	document := core.NewTextDocument(parsed.URI, "classic-asp", 0, parsed.Text)
+	document := core.SourceDocument(parsed)
 	parsed.StoreRuntimeAnalysis(returnValueTextDocumentAnalysisKey, document)
 	return document
 }

@@ -673,7 +673,7 @@ func DocumentSymbols(parsed *core.ParsedDocument) []lsp.DocumentSymbol {
 	if parsed.LoadAnalysis("vbscript.document-symbols.v1", &cached) {
 		return cached
 	}
-	source := core.NewTextDocument(parsed.URI, "classic-asp", 0, parsed.Text)
+	source := core.SourceDocument(parsed)
 	var symbols []lsp.DocumentSymbol
 	for _, match := range declarations.FindAllStringSubmatchIndex(parsed.Text, -1) {
 		nameStart, nameEnd := match[6], match[7]
@@ -697,7 +697,7 @@ func DocumentSymbols(parsed *core.ParsedDocument) []lsp.DocumentSymbol {
 }
 
 func TypeHierarchyItems(parsed *core.ParsedDocument, position lsp.Position) []lsp.TypeHierarchyItem {
-	source := core.NewTextDocument(parsed.URI, "classic-asp", 0, parsed.Text)
+	source := core.SourceDocument(parsed)
 	offset := source.OffsetAt(position)
 	word := strings.ToLower(WordAt(parsed.Text, offset))
 	if word == "" {

@@ -503,7 +503,7 @@ func vbProcedureLineSet(parsed *core.ParsedDocument) map[int]struct{} {
 	}
 	lines := map[int]struct{}{}
 	procedureScopes := vbProcedureScopes(parsed)
-	doc := core.NewTextDocument(parsed.URI, "classic-asp", 0, parsed.Text)
+	doc := core.SourceDocument(parsed)
 	for _, region := range parsed.Regions {
 		if region.Language != core.LanguageVBScript {
 			continue
@@ -534,7 +534,7 @@ func vbClassLineSet(parsed *core.ParsedDocument) map[int]struct{} {
 	if parsed.LoadAnalysis("lspserver.vb-class-lines.v1", &cached) {
 		return cached
 	}
-	doc := core.NewTextDocument(parsed.URI, "classic-asp", 0, parsed.Text)
+	doc := core.SourceDocument(parsed)
 	lines := map[int]struct{}{}
 	for _, region := range parsed.Regions {
 		if region.Language != core.LanguageVBScript {

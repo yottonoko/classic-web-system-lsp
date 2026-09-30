@@ -231,7 +231,7 @@ func DeclarationSymbols(parsed *core.ParsedDocument) []Symbol {
 }
 
 func Definition(parsed *core.ParsedDocument, position lsp.Position) []lsp.Location {
-	doc := core.NewTextDocument(parsed.URI, "classic-asp", 0, parsed.Text)
+	doc := core.SourceDocument(parsed)
 	offset := doc.OffsetAt(position)
 	word := WordAt(parsed.Text, offset)
 	if word == "" {
@@ -263,7 +263,7 @@ func References(parsed *core.ParsedDocument, position lsp.Position, includeDecla
 }
 
 func ReferencesWithOptions(parsed *core.ParsedDocument, position lsp.Position, options ReferenceOptions) []lsp.Location {
-	doc := core.NewTextDocument(parsed.URI, "classic-asp", 0, parsed.Text)
+	doc := core.SourceDocument(parsed)
 	offset := doc.OffsetAt(position)
 	word := WordAt(parsed.Text, offset)
 	if word == "" {
@@ -316,7 +316,7 @@ func positionInLSPRange(position lsp.Position, r lsp.Range) bool {
 }
 
 func RenameRange(parsed *core.ParsedDocument, position lsp.Position) *lsp.Range {
-	doc := core.NewTextDocument(parsed.URI, "classic-asp", 0, parsed.Text)
+	doc := core.SourceDocument(parsed)
 	offset := doc.OffsetAt(position)
 	word := WordAt(parsed.Text, offset)
 	if word == "" {

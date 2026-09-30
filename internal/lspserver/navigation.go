@@ -490,7 +490,7 @@ func navigationIncludeRelationsWithProgress(ctx context.Context, s *Server, docu
 			}
 			continue
 		}
-		documentText := core.NewTextDocument(document.URI, "classic-asp", 0, document.Text)
+		documentText := core.SourceDocument(document)
 		parentKey := workspacepkg.FileIdentityKeyFromURI(document.URI)
 		for includeIndex, include := range document.Includes {
 			if ctx.Err() != nil {
@@ -1088,7 +1088,7 @@ func navigationVBExecutionProgramContext(ctx context.Context, root *core.ParsedD
 			return nil
 		}
 		stack[key] = true
-		textDocument := core.NewTextDocument(parsed.URI, "classic-asp", 0, parsed.Text)
+		textDocument := core.SourceDocument(parsed)
 		cursor := 0
 		includes := make([]navigationVBIncludeRelation, 0)
 		if resolvedIncludes != nil {
@@ -1180,7 +1180,7 @@ func navigationVBIncludeRelationsForDocumentsContext(ctx context.Context, docume
 		if parsed == nil {
 			continue
 		}
-		textDocument := core.NewTextDocument(parsed.URI, "classic-asp", 0, parsed.Text)
+		textDocument := core.SourceDocument(parsed)
 		parentKey := workspacepkg.FileIdentityKeyFromURI(parsed.URI)
 		for includeIndex, include := range parsed.Includes {
 			if err := ctx.Err(); err != nil {
@@ -1540,7 +1540,7 @@ func (b *navigationGraphBuilder) addDocument(parsed *core.ParsedDocument, ownerU
 	}
 	if b.current != parsed {
 		b.current = parsed
-		b.document = core.NewTextDocument(parsed.URI, "classic-asp", 0, parsed.Text)
+		b.document = core.SourceDocument(parsed)
 	}
 	sourceID := b.navigationSourceID(ownerURI)
 	if sourceID == "" {
@@ -1779,7 +1779,7 @@ func (b *navigationGraphBuilder) addHTMLNavigationEdgesForOccurrence(parsed *cor
 	}
 	previousCurrent, previousDocument, previousOccurrence := b.current, b.document, b.currentOccurrence
 	b.current = parsed
-	b.document = core.NewTextDocument(parsed.URI, "classic-asp", 0, parsed.Text)
+	b.document = core.SourceDocument(parsed)
 	b.currentOccurrence = occurrenceID
 	defer func() {
 		b.current, b.document, b.currentOccurrence = previousCurrent, previousDocument, previousOccurrence

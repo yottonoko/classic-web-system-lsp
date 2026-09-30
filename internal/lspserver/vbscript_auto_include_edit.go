@@ -65,7 +65,7 @@ func (s *Server) vbscriptAutoIncludeTextEdit(owner *core.ParsedDocument, targetU
 	}
 
 	offset, prefix, suffix := autoIncludeInsertion(owner)
-	document := core.NewTextDocument(owner.URI, "classic-asp", 0, owner.Text)
+	document := core.SourceDocument(owner)
 	position := document.PositionAt(offset)
 	return lsp.TextEdit{
 		Range:   lsp.Range{Start: position, End: position},

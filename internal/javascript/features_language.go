@@ -124,7 +124,7 @@ func Highlights(parsed *core.ParsedDocument, position lsp.Position) []lsp.Docume
 }
 
 func FoldingRanges(parsed *core.ParsedDocument) []lsp.FoldingRange {
-	source := core.NewTextDocument(parsed.URI, "classic-asp", 0, parsed.Text)
+	source := core.SourceDocument(parsed)
 	var ranges []lsp.FoldingRange
 	for _, region := range parsed.Regions {
 		if region.Language != core.LanguageJavaScript && region.Language != core.LanguageJScript {
@@ -190,7 +190,7 @@ func FoldingRanges(parsed *core.ParsedDocument) []lsp.FoldingRange {
 }
 
 func SelectionRange(parsed *core.ParsedDocument, position lsp.Position) *lsp.SelectionRange {
-	source := core.NewTextDocument(parsed.URI, "classic-asp", 0, parsed.Text)
+	source := core.SourceDocument(parsed)
 	offset := source.OffsetAt(position)
 	region := core.RegionAt(parsed, offset)
 	if region == nil || (region.Language != core.LanguageJavaScript && region.Language != core.LanguageJScript) {
@@ -210,7 +210,7 @@ func SelectionRange(parsed *core.ParsedDocument, position lsp.Position) *lsp.Sel
 }
 
 func InlineValues(parsed *core.ParsedDocument, r lsp.Range) []lsp.InlineValueVariableLookup {
-	source := core.NewTextDocument(parsed.URI, "classic-asp", 0, parsed.Text)
+	source := core.SourceDocument(parsed)
 	start := source.OffsetAt(r.Start)
 	end := source.OffsetAt(r.End)
 	seen := map[string]struct{}{}
@@ -242,7 +242,7 @@ func Monikers(parsed *core.ParsedDocument, position lsp.Position) []lsp.Moniker 
 	if !ok {
 		return nil
 	}
-	source := core.NewTextDocument(parsed.URI, "classic-asp", 0, parsed.Text)
+	source := core.SourceDocument(parsed)
 	offset := source.OffsetAt(occurrence.Range.Start)
 	region := core.RegionAt(parsed, offset)
 	if region == nil {
@@ -265,7 +265,7 @@ func OnTypeFormatting(parsed *core.ParsedDocument, position lsp.Position, charac
 	if !ok {
 		return nil
 	}
-	source := core.NewTextDocument(parsed.URI, "classic-asp", 0, parsed.Text)
+	source := core.SourceDocument(parsed)
 	virtualPosition, ok := virtual.ToVirtualPosition(position, source)
 	if !ok {
 		return nil

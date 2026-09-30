@@ -667,8 +667,8 @@ func legacyUndefinedGlobalFacts(parsed *core.ParsedDocument) legacyUndefinedGlob
 		return cached
 	}
 	facts := legacyUndefinedGlobalDocumentFacts{LocalNames: map[string][]string{}}
-	declarationOffsets := map[string]struct{}{}
-	localDeclarationOffsets := map[string]struct{}{}
+	declarationOffsets := map[offsetRange]struct{}{}
+	localDeclarationOffsets := map[offsetRange]struct{}{}
 	declarations := collectVBUsageDeclarations(parsed).Declarations
 	for _, declaration := range declarations {
 		if declaration.Local {

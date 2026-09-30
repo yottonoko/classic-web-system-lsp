@@ -9,7 +9,7 @@ import (
 )
 
 func BuildIndex(parsed *core.ParsedDocument) Index {
-	source := core.NewTextDocument(parsed.URI, "classic-asp", 0, parsed.Text)
+	source := core.SourceDocument(parsed)
 	index := Index{Declarations: map[string]Symbol{}, Occurrences: map[string][]Occurrence{}}
 	for _, language := range []core.EmbeddedLanguage{core.LanguageJavaScript, core.LanguageJScript} {
 		virtual := core.BuildVirtualDocument(parsed, language)
@@ -52,7 +52,7 @@ func occurrenceAt(parsed *core.ParsedDocument, position lsp.Position) (core.Virt
 	if !ok {
 		return core.VirtualDocument{}, Occurrence{}, false
 	}
-	sourceDoc := core.NewTextDocument(parsed.URI, "classic-asp", 0, parsed.Text)
+	sourceDoc := core.SourceDocument(parsed)
 	virtualPosition, ok := virtual.ToVirtualPosition(position, sourceDoc)
 	if !ok {
 		return core.VirtualDocument{}, Occurrence{}, false
@@ -78,7 +78,7 @@ func occurrenceAt(parsed *core.ParsedDocument, position lsp.Position) (core.Virt
 }
 
 func virtualForPosition(parsed *core.ParsedDocument, position lsp.Position) (core.VirtualDocument, bool) {
-	sourceDoc := core.NewTextDocument(parsed.URI, "classic-asp", 0, parsed.Text)
+	sourceDoc := core.SourceDocument(parsed)
 	offset := sourceDoc.OffsetAt(position)
 	region := core.RegionAt(parsed, offset)
 	if region == nil {

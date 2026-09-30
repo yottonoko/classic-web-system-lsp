@@ -255,6 +255,12 @@ func TestAnalysisCacheEvictionKeepsRuntimeValueChargedUntilFinalRevision(t *test
 
 	firstFreed := cache.evict(1)
 	wantFirstFreed := estimateAnalysisCacheFileSnapshotBytes(first, firstSnapshot) + first.EstimateStructuralBytesWithoutRevisionText()
+	// Runtime values only the predecessor owns, such as its cached source document, are released with it.
+	for _, owner := range first.RuntimeAnalysisMemoryOwners() {
+		if owner.Identity != owners[0].Identity {
+			wantFirstFreed += owner.Bytes
+		}
+	}
 	if firstFreed != wantFirstFreed {
 		t.Fatalf("predecessor eviction freed %d bytes, want %d without shared structural or runtime payload", firstFreed, wantFirstFreed)
 	}

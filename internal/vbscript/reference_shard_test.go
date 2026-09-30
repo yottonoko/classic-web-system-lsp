@@ -84,10 +84,15 @@ func TestReferenceShardPromotionPreservesRuntimeOwnerIdentity(t *testing.T) {
 	}
 	firstOwners := first.RuntimeAnalysisMemoryOwners()
 	secondOwners := second.RuntimeAnalysisMemoryOwners()
-	if len(firstOwners) != 1 || len(secondOwners) != 1 {
-		t.Fatalf("reference shard owners = first %#v second %#v, want one each", firstOwners, secondOwners)
+	if len(secondOwners) != 1 {
+		t.Fatalf("reference shard owners = first %#v second %#v, want one promoted owner", firstOwners, secondOwners)
 	}
-	if firstOwners[0].Identity != secondOwners[0].Identity {
+	// The first document also owns its cached source text document.
+	shared := false
+	for _, owner := range firstOwners {
+		shared = shared || owner.Identity == secondOwners[0].Identity
+	}
+	if !shared {
 		t.Fatal("reference shard promotion replaced the shared runtime owner identity")
 	}
 }

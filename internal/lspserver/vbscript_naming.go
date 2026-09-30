@@ -51,9 +51,9 @@ func (s *Server) vbscriptNamingCodeActions(params codeActionParams) []lsp.CodeAc
 		return nil
 	}
 	declarations := collectVBNamingDeclarations(parsed)
-	byRange := map[string]vbUsageDeclaration{}
+	byRange := map[lsp.Range]vbUsageDeclaration{}
 	for _, declaration := range declarations {
-		byRange[diagnosticRangeKey(declaration.Range)] = declaration
+		byRange[declaration.Range] = declaration
 	}
 	var actions []lsp.CodeAction
 	for _, diagnostic := range params.Context.Diagnostics {
@@ -68,7 +68,7 @@ func (s *Server) vbscriptNamingCodeActions(params codeActionParams) []lsp.CodeAc
 		if name == "" || expectedName == "" {
 			continue
 		}
-		declaration, ok := byRange[diagnosticRangeKey(diagnostic.Range)]
+		declaration, ok := byRange[diagnostic.Range]
 		if ok && hasVBScriptNamingCollision(declarations, declaration, expectedName) {
 			continue
 		}
@@ -208,9 +208,13 @@ func vbPropertyAccessorForLine(line string) string {
 
 func dedupeAndSortVBDeclarations(declarations []vbUsageDeclaration) []vbUsageDeclaration {
 	result := make([]vbUsageDeclaration, 0, len(declarations))
-	indexByKey := map[string]int{}
+	type declarationKey struct {
+		kind string
+		span offsetRange
+	}
+	indexByKey := map[declarationKey]int{}
 	for _, declaration := range declarations {
-		key := declaration.Kind + ":" + offsetRangeKey(declaration.Start, declaration.End)
+		key := declarationKey{kind: declaration.Kind, span: offsetRangeKey(declaration.Start, declaration.End)}
 		if index, ok := indexByKey[key]; ok {
 			if declaration.MemberOf != "" && result[index].MemberOf == "" {
 				result[index] = declaration

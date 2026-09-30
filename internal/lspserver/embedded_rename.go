@@ -39,7 +39,7 @@ func embeddedReferenceRangesFor(parsed *core.ParsedDocument) *embeddedReferenceR
 			return ranges
 		}
 	}
-	doc := core.NewTextDocument(parsed.URI, "classic-asp", 0, parsed.Text)
+	doc := core.SourceDocument(parsed)
 	ranges := &embeddedReferenceRanges{
 		tags:              indexHTMLTagNameRanges(parsed, doc),
 		cssClasses:        indexCSSClassNameRanges(parsed, doc),
@@ -69,7 +69,7 @@ func (r *embeddedReferenceRanges) classNames(name string) []lsp.Range {
 }
 
 func embeddedRenameTarget(parsed *core.ParsedDocument, offset int) (embeddedRename, bool) {
-	doc := core.NewTextDocument(parsed.URI, "classic-asp", 0, parsed.Text)
+	doc := core.SourceDocument(parsed)
 	htmlVirtual := core.BuildVirtualDocument(parsed, core.LanguageHTML)
 	if virtualOffset, ok := htmlVirtual.ToVirtualOffset(offset); ok {
 		htmlText := maskEmbeddedHTMLComments(htmlVirtual.Text)

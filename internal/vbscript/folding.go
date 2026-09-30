@@ -28,7 +28,7 @@ func FoldingRanges(parsed *core.ParsedDocument) []lsp.FoldingRange {
 	if parsed.LoadAnalysis("vbscript.folding-ranges.v1", &cached) {
 		return cached
 	}
-	doc := core.NewTextDocument(parsed.URI, "classic-asp", 0, parsed.Text)
+	doc := core.SourceDocument(parsed)
 	var ranges []lsp.FoldingRange
 	for _, region := range parsed.Regions {
 		if region.Language != core.LanguageVBScript {

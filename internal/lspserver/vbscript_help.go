@@ -111,7 +111,7 @@ func vbscriptPropertySignatureHoverWithLocale(parsed *core.ParsedDocument, offse
 	if parsed == nil {
 		return nil
 	}
-	doc := core.NewTextDocument(parsed.URI, "classic-asp", 0, parsed.Text)
+	doc := core.SourceDocument(parsed)
 	for _, region := range parsed.Regions {
 		if region.Language != core.LanguageVBScript || offset < region.ContentStart || offset > region.ContentEnd {
 			continue
@@ -245,7 +245,7 @@ func vbscriptSignatureHover(signature vbscript.Signature, doc vbscriptXMLDoc, mi
 }
 
 func positionInRangeOffset(offset int, r lsp.Range, parsed *core.ParsedDocument) bool {
-	doc := core.NewTextDocument(parsed.URI, "classic-asp", 0, parsed.Text)
+	doc := core.SourceDocument(parsed)
 	start := doc.OffsetAt(r.Start)
 	end := doc.OffsetAt(r.End)
 	return offset >= start && offset <= end

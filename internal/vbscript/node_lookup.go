@@ -108,6 +108,10 @@ func (node *CSTNode) EstimateBytes() int64 {
 
 const cstEstimateMaxInt64 = int64(1<<63 - 1)
 
+// cstStaticStringMaxBytes bounds the strings remembered as repeated token
+// kinds; longer strings are token text.
+const cstStaticStringMaxBytes = 16
+
 // cstBackingIdentity identifies a slice backing by its first element and
 // capacity. The element kind is kept separate by the estimator's maps.
 type cstBackingIdentity struct {
@@ -130,7 +134,12 @@ type cstEstimator struct {
 
 	tokenRanges       []cstBackingRange
 	tokenStringRanges []cstBackingRange
-	nameTokens        []*Token
+	// widestStringRange indexes the largest entry of tokenStringRanges, which
+	// is the source buffer once the document's own token list was visited.
+	widestStringRange      int
+	staticStringRanges     [16]cstBackingRange
+	staticStringRangeCount int
+	nameTokens             []*Token
 
 	seenChildSlices map[cstBackingIdentity]struct{}
 	childRanges     []cstBackingRange
@@ -240,7 +249,44 @@ func (estimator *cstEstimator) visitString(value string) {
 	if pointer == 0 {
 		return
 	}
-	appendCSTBackingRange(&estimator.tokenStringRanges, pointer, uintptr(len(value)))
+	estimator.addStringRange(pointer, uintptr(len(value)))
+}
+
+// addStringRange records a string backing range while keeping the list short.
+// Token text is a substring of one source buffer and the same tokens are
+// reached through several slices, so almost every range either extends the
+// previous one or is already covered. Folding those here leaves the union
+// unchanged and spares finish from sorting one entry per token visit.
+func (estimator *cstEstimator) addStringRange(pointer, byteCount uintptr) {
+	end := pointer + byteCount
+	if end <= pointer {
+		appendCSTBackingRange(&estimator.tokenStringRanges, pointer, byteCount)
+		return
+	}
+	ranges := estimator.tokenStringRanges
+	if widest := estimator.widestStringRange; widest < len(ranges) && pointer >= ranges[widest].start && end <= ranges[widest].end {
+		return
+	}
+	// Token kinds are a handful of static strings repeated for every token.
+	for _, static := range estimator.staticStringRanges[:estimator.staticStringRangeCount] {
+		if static.start == pointer && static.end == end {
+			return
+		}
+	}
+	if last := len(ranges) - 1; last >= 0 && pointer >= ranges[last].start && pointer <= ranges[last].end {
+		if end > ranges[last].end {
+			ranges[last].end = end
+		}
+		if last != estimator.widestStringRange && ranges[last].end-ranges[last].start > ranges[estimator.widestStringRange].end-ranges[estimator.widestStringRange].start {
+			estimator.widestStringRange = last
+		}
+		return
+	}
+	if byteCount <= cstStaticStringMaxBytes && estimator.staticStringRangeCount < len(estimator.staticStringRanges) {
+		estimator.staticStringRanges[estimator.staticStringRangeCount] = cstBackingRange{start: pointer, end: end}
+		estimator.staticStringRangeCount++
+	}
+	estimator.tokenStringRanges = append(ranges, cstBackingRange{start: pointer, end: end})
 }
 
 func (estimator *cstEstimator) addBackingRange(ranges *[]cstBackingRange, pointer uintptr, capacity int, elementSize int64) {
@@ -318,13 +364,13 @@ func (estimator *cstEstimator) finishBackingRanges(ranges *[]cstBackingRange, un
 
 func (estimator *cstEstimator) tokenPointerInBacking(pointer uintptr) bool {
 	tokenSize := uintptr(unsafe.Sizeof(Token{}))
-	for _, backing := range estimator.tokenRanges {
-		if pointer < backing.start || pointer >= backing.end {
-			continue
-		}
-		return tokenSize > 0 && (pointer-backing.start)%tokenSize == 0
+	// finishBackingRanges left tokenRanges sorted and disjoint.
+	ranges := estimator.tokenRanges
+	index := sort.Search(len(ranges), func(index int) bool { return ranges[index].end > pointer })
+	if index == len(ranges) || pointer < ranges[index].start {
+		return false
 	}
-	return false
+	return tokenSize > 0 && (pointer-ranges[index].start)%tokenSize == 0
 }
 
 func (estimator *cstEstimator) add(value int64) {

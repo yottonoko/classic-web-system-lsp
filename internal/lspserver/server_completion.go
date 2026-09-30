@@ -530,7 +530,7 @@ func (s *Server) includedServerObjectIndexBeforeRootFastPath(ctx context.Context
 	// Procedure locals, parameters, and members remain authoritative even when
 	// an included document exposes the same name. Avoid the include lookup for
 	// those shadowed scopes.
-	document := core.NewTextDocument(parsed.URI, "classic-asp", 0, parsed.Text)
+	document := core.SourceDocument(parsed)
 	if vbLocalDeclarationShadowsNameAt(parsed, word, position) {
 		return nil, true
 	}
@@ -547,7 +547,7 @@ func vbscriptClassMemberDeclarationAtOffset(parsed *core.ParsedDocument, name st
 	if parsed == nil || name == "" {
 		return vbUsageDeclaration{}, false
 	}
-	document := core.NewTextDocument(parsed.URI, "classic-asp", 0, parsed.Text)
+	document := core.SourceDocument(parsed)
 	if offset < 0 {
 		offset = 0
 	}
@@ -653,7 +653,7 @@ func vbscriptRootDeclarationAtOffset(parsed *core.ParsedDocument, name string, o
 		winner = candidate
 		found = true
 	}
-	document := core.NewTextDocument(parsed.URI, "classic-asp", 0, parsed.Text)
+	document := core.SourceDocument(parsed)
 	classOwners := vbClassMemberLineOwners(parsed)
 	for _, signature := range vbscript.Signatures(parsed) {
 		if !strings.EqualFold(signature.Name, lowerName) || classOwners[signature.NameRange.Start.Line] != "" {
@@ -716,7 +716,7 @@ func vbscriptRootDeclarationShadowedAt(parsed *core.ParsedDocument, name string,
 	if scope == "" {
 		return false
 	}
-	document := core.NewTextDocument(parsed.URI, "classic-asp", 0, parsed.Text)
+	document := core.SourceDocument(parsed)
 	position := document.PositionAt(offset)
 	return vbLocalDeclarationShadowsNameAt(parsed, name, position) || vbscriptClassMemberShadowsNameAt(parsed, name, scope)
 }
@@ -725,7 +725,7 @@ func vbscriptRootResolutionInconclusive(parsed *core.ParsedDocument, offset, roo
 	if parsed == nil || len(parsed.Includes) == 0 {
 		return false
 	}
-	document := core.NewTextDocument(parsed.URI, "classic-asp", 0, parsed.Text)
+	document := core.SourceDocument(parsed)
 	firstInclude := len(parsed.Text) + 1
 	for _, include := range parsed.Includes {
 		start := document.OffsetAt(include.Range.Start)
@@ -785,7 +785,7 @@ func vbscriptFastDeclarationTypeAtOffset(parsed *core.ParsedDocument, declaratio
 			return typeName
 		}
 	}
-	document := core.NewTextDocument(parsed.URI, "classic-asp", 0, parsed.Text)
+	document := core.SourceDocument(parsed)
 	var inferred vbscriptType
 	foundAssignment := false
 	unknownAssignment := false
@@ -821,7 +821,7 @@ func (s *Server) vbscriptVariableHoverMatchAtOffset(ctx context.Context, parsed 
 		return vbscriptVariableHoverMatch{}, false
 	}
 	stateOffset := offset
-	document := core.NewTextDocument(parsed.URI, "classic-asp", 0, parsed.Text)
+	document := core.SourceDocument(parsed)
 	for _, assignment := range vbscriptAssignments(parsed) {
 		if ctx.Err() != nil {
 			return vbscriptVariableHoverMatch{}, false
@@ -1711,7 +1711,7 @@ func (s *Server) organizeJavaScriptImportsAction(uri string) (lsp.CodeAction, bo
 	if parsed == nil {
 		return lsp.CodeAction{}, false
 	}
-	source := core.NewTextDocument(parsed.URI, "classic-asp", 0, parsed.Text)
+	source := core.SourceDocument(parsed)
 	for _, region := range parsed.Regions {
 		if region.Language != core.LanguageJavaScript && region.Language != core.LanguageJScript {
 			continue

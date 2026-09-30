@@ -13,7 +13,7 @@ func SignatureHelp(parsed *core.ParsedDocument, position lsp.Position) *lsp.Sign
 	if !ok {
 		return nil
 	}
-	sourceDoc := core.NewTextDocument(parsed.URI, "classic-asp", 0, parsed.Text)
+	sourceDoc := core.SourceDocument(parsed)
 	virtualPosition, ok := virtual.ToVirtualPosition(position, sourceDoc)
 	if !ok {
 		return nil
@@ -117,7 +117,7 @@ func OutgoingCalls(parsed *core.ParsedDocument, name string) []lsp.CallHierarchy
 }
 
 func InlayHints(parsed *core.ParsedDocument, r lsp.Range) []lsp.InlayHint {
-	source := core.NewTextDocument(parsed.URI, "classic-asp", 0, parsed.Text)
+	source := core.SourceDocument(parsed)
 	startOffset := source.OffsetAt(r.Start)
 	endOffset := source.OffsetAt(r.End)
 	var hints []lsp.InlayHint
@@ -157,7 +157,7 @@ func javascriptCallHierarchyItem(uri string, declaration functionDeclaration) ls
 }
 
 func functionDeclarations(parsed *core.ParsedDocument) []functionDeclaration {
-	source := core.NewTextDocument(parsed.URI, "classic-asp", 0, parsed.Text)
+	source := core.SourceDocument(parsed)
 	var declarations []functionDeclaration
 	for _, region := range parsed.Regions {
 		if region.Language != core.LanguageJavaScript && region.Language != core.LanguageJScript {
@@ -193,7 +193,7 @@ func functionDeclarations(parsed *core.ParsedDocument) []functionDeclaration {
 }
 
 func callOccurrences(parsed *core.ParsedDocument, name string) []callOccurrence {
-	source := core.NewTextDocument(parsed.URI, "classic-asp", 0, parsed.Text)
+	source := core.SourceDocument(parsed)
 	pattern := regexp.MustCompile(`\b` + regexp.QuoteMeta(name) + `\s*\(`)
 	var calls []callOccurrence
 	for _, region := range parsed.Regions {

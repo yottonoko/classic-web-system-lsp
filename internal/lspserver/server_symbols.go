@@ -294,7 +294,7 @@ func htmlAttributeWorkspaceSymbols(parsed *core.ParsedDocument, query string) []
 	normalizedQuery := strings.ToLower(query)
 	virtual := core.BuildVirtualDocument(parsed, core.LanguageHTML)
 	virtualText := maskEmbeddedHTMLComments(virtual.Text)
-	source := core.NewTextDocument(parsed.URI, "classic-asp", 0, parsed.Text)
+	source := core.SourceDocument(parsed)
 	symbols := []lsp.SymbolInformation{}
 	for _, match := range htmlWorkspaceAttributePattern.FindAllStringSubmatchIndex(virtualText, -1) {
 		nameStart, nameEnd := -1, -1
@@ -680,7 +680,7 @@ func (s *Server) vbscriptSymbolCompletionsContext(ctx context.Context, parsed *c
 			documentOffset = offset
 		}
 		visibleSymbols := vbscriptCompletionVisibleSymbols(doc, documentOffset)
-		completionSource := core.NewTextDocument(doc.URI, "classic-asp", 0, doc.Text)
+		completionSource := core.SourceDocument(doc)
 		completionPosition := completionSource.PositionAt(documentOffset)
 		if documentOffset < 0 {
 			completionPosition = completionSource.PositionAt(len(doc.Text))
@@ -713,7 +713,7 @@ func (s *Server) vbscriptSymbolCompletionsContext(ctx context.Context, parsed *c
 				continue
 			}
 			declaration := object.Declaration
-			if documentOffset >= 0 && vbLocalDeclarationShadowsNameAt(doc, declaration.Name, core.NewTextDocument(doc.URI, "classic-asp", 0, doc.Text).PositionAt(documentOffset)) {
+			if documentOffset >= 0 && vbLocalDeclarationShadowsNameAt(doc, declaration.Name, core.SourceDocument(doc).PositionAt(documentOffset)) {
 				continue
 			}
 			items = append(items, lsp.CompletionItem{
@@ -747,7 +747,7 @@ func (s *Server) vbscriptSymbolCompletionsContext(ctx context.Context, parsed *c
 		if !s.settings.ShowUnresolvedSymbolsInCompletion {
 			continue
 		}
-		source := core.NewTextDocument(doc.URI, "classic-asp", 0, doc.Text)
+		source := core.SourceDocument(doc)
 		for lower, occurrences := range index.Occurrences {
 			if ctx.Err() != nil {
 				return nil
@@ -816,7 +816,7 @@ func vbscriptCompletionVisibleSymbols(parsed *core.ParsedDocument, offset int) m
 	}
 	localNames := map[string]struct{}{}
 	otherLocalNames := map[string]struct{}{}
-	localDeclarationRanges := map[string]struct{}{}
+	localDeclarationRanges := map[offsetRange]struct{}{}
 	for _, declaration := range usage.Declarations {
 		if !declaration.Local {
 			continue
@@ -923,7 +923,7 @@ func (s *Server) includedVBScriptDefinitionContext(ctx context.Context, parsed *
 	if ctx.Err() != nil || parsed == nil {
 		return nil
 	}
-	source := core.NewTextDocument(parsed.URI, "classic-asp", 0, parsed.Text)
+	source := core.SourceDocument(parsed)
 	word := vbscript.WordAt(parsed.Text, source.OffsetAt(position))
 	if word == "" {
 		return nil
@@ -1116,7 +1116,7 @@ func (s *Server) vbscriptIncludeExecutionUnitsContext(ctx context.Context, root 
 		active[key] = struct{}{}
 		defer delete(active, key)
 
-		textDocument := core.NewTextDocument(parsed.URI, "classic-asp", 0, parsed.Text)
+		textDocument := core.SourceDocument(parsed)
 		unitStart := len(units)
 		includes := append([]core.Include(nil), parsed.Includes...)
 		sort.SliceStable(includes, func(left, right int) bool {
@@ -1258,7 +1258,7 @@ func (s *Server) vbscriptIncludeExecutionUnitsThroughOffsetContextResult(ctx con
 		active[key] = struct{}{}
 		defer delete(active, key)
 
-		textDocument := core.NewTextDocument(parsed.URI, "classic-asp", 0, parsed.Text)
+		textDocument := core.SourceDocument(parsed)
 		unitStart := len(units)
 		limit := len(parsed.Text)
 		if rootDocument {

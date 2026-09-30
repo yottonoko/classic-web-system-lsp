@@ -31,7 +31,7 @@ func (s *Server) graphDocumentAnalysesWithProgress(ctx context.Context, document
 				referenceShard:    vbscript.BuildReferenceShard(document),
 				declarationRanges: graphDeclarationRanges(document),
 				procedureRanges:   graphVBProcedureRanges(document),
-				sourceDocument:    core.NewTextDocument(document.URI, "classic-asp", 0, document.Text),
+				sourceDocument:    core.SourceDocument(document),
 			}
 		}
 		if report != nil {

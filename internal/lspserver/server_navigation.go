@@ -112,11 +112,11 @@ func (s *Server) serverObjectDefinitionVisibleAtOffset(ctx context.Context, pars
 	}
 	location := locations[0]
 	if workspacepkg.SameFileIdentityURI(location.URI, parsed.URI) {
-		offset := core.NewTextDocument(parsed.URI, "classic-asp", 0, parsed.Text).OffsetAt(position)
-		declarationOffset := core.NewTextDocument(parsed.URI, "classic-asp", 0, parsed.Text).OffsetAt(location.Range.Start)
+		offset := core.SourceDocument(parsed).OffsetAt(position)
+		declarationOffset := core.SourceDocument(parsed).OffsetAt(location.Range.Start)
 		return declarationOffset <= offset
 	}
-	offset := core.NewTextDocument(parsed.URI, "classic-asp", 0, parsed.Text).OffsetAt(position)
+	offset := core.SourceDocument(parsed).OffsetAt(position)
 	documents, complete := s.vbscriptDocumentsThroughExecutionOffsetContext(ctx, parsed, offset)
 	if !complete || ctx.Err() != nil {
 		return false
@@ -133,7 +133,7 @@ func positionSensitiveVBScriptDefinition(parsed *core.ParsedDocument, position l
 	if parsed == nil {
 		return nil
 	}
-	doc := core.NewTextDocument(parsed.URI, "classic-asp", 0, parsed.Text)
+	doc := core.SourceDocument(parsed)
 	offset := doc.OffsetAt(position)
 	word := vbscript.WordAt(parsed.Text, offset)
 	if word == "" {
@@ -207,7 +207,7 @@ func vbForwardCallAt(text string, start, end int) bool {
 }
 
 func scopedVBScriptDefinition(parsed *core.ParsedDocument, position lsp.Position) []lsp.Location {
-	doc := core.NewTextDocument(parsed.URI, "classic-asp", 0, parsed.Text)
+	doc := core.SourceDocument(parsed)
 	offset := doc.OffsetAt(position)
 	word := vbscript.WordAt(parsed.Text, offset)
 	if word == "" {
@@ -335,7 +335,7 @@ func (s *Server) vbscriptTypeDefinitionContext(ctx context.Context, parsed *core
 	if parsed == nil {
 		return nil
 	}
-	doc := core.NewTextDocument(parsed.URI, "classic-asp", 0, parsed.Text)
+	doc := core.SourceDocument(parsed)
 	offset := doc.OffsetAt(position)
 	if region := core.RegionAt(parsed, offset); region != nil && region.Language != core.LanguageVBScript {
 		return nil
@@ -512,7 +512,7 @@ func vbscriptClassOwnerAtOffset(parsed *core.ParsedDocument, offset int, scope s
 	if owner := vbscriptClassScopeForProcedure(parsed, scope); owner != "" {
 		return owner
 	}
-	doc := core.NewTextDocument(parsed.URI, "classic-asp", 0, parsed.Text)
+	doc := core.SourceDocument(parsed)
 	return strings.ToLower(strings.TrimSpace(vbClassMemberLineOwners(parsed)[doc.PositionAt(offset).Line]))
 }
 
@@ -592,7 +592,7 @@ func vbscriptClassLocationsContext(ctx context.Context, documents []*core.Parsed
 				continue
 			}
 			rootDocument := document == root || root != nil && workspacepkg.SameFileIdentityURI(document.URI, root.URI)
-			source := core.NewTextDocument(document.URI, "classic-asp", 0, document.Text)
+			source := core.SourceDocument(document)
 			for _, symbol := range vbscript.DeclarationSymbols(document) {
 				if ctx.Err() != nil {
 					return nil
@@ -871,7 +871,7 @@ func vbscriptParenthesizedCallShadowedAt(parsed *core.ParsedDocument, position l
 	if parsed == nil {
 		return false
 	}
-	document := core.NewTextDocument(parsed.URI, "classic-asp", 0, parsed.Text)
+	document := core.SourceDocument(parsed)
 	offset := document.OffsetAt(position)
 	open := vbCallOpenParenBefore(parsed.Text, offset)
 	if open < 0 {
@@ -888,7 +888,7 @@ func vbscriptRootSignatureHelp(parsed *core.ParsedDocument, position lsp.Positio
 	if parsed == nil {
 		return nil
 	}
-	document := core.NewTextDocument(parsed.URI, "classic-asp", 0, parsed.Text)
+	document := core.SourceDocument(parsed)
 	offset := document.OffsetAt(position)
 	open := vbCallOpenParenBefore(parsed.Text, offset)
 	if open < 0 {
@@ -931,7 +931,7 @@ func (s *Server) vbscriptPropertyMemberSignatureHelpContext(ctx context.Context,
 	if parsed == nil {
 		return nil
 	}
-	doc := core.NewTextDocument(parsed.URI, "classic-asp", 0, parsed.Text)
+	doc := core.SourceDocument(parsed)
 	offset := doc.OffsetAt(position)
 	open := vbCallOpenParenBefore(parsed.Text, offset)
 	nameStart := -1
@@ -1197,7 +1197,7 @@ func (s *Server) vbscriptRenameEditContext(ctx context.Context, parsed *core.Par
 	if !s.settings.WorkspaceSymbolRename {
 		return edit
 	}
-	doc := core.NewTextDocument(parsed.URI, "classic-asp", 0, parsed.Text)
+	doc := core.SourceDocument(parsed)
 	word := vbscript.WordAt(parsed.Text, doc.OffsetAt(position))
 	if ctx.Err() != nil {
 		return emptyEdit

@@ -338,3 +338,19 @@ func flattenCSTNodes(root *CSTNode) []*CSTNode {
 	}
 	return nodes
 }
+
+func TestIsVBKeywordMatchesCaseInsensitivelyWithinBufferLimit(t *testing.T) {
+	for keyword := range vbKeywords {
+		if len(keyword) > vbKeywordMaxLength {
+			t.Fatalf("keyword %q exceeds vbKeywordMaxLength", keyword)
+		}
+		if !isVBKeyword(keyword) || !isVBKeyword(strings.ToUpper(keyword)) {
+			t.Fatalf("keyword %q was not recognized", keyword)
+		}
+	}
+	for _, value := range []string{"", "response", "paramarrayx", strings.Repeat("a", 64), "ｄｉｍ"} {
+		if isVBKeyword(value) {
+			t.Fatalf("%q must not be a keyword", value)
+		}
+	}
+}

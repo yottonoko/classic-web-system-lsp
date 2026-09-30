@@ -56,7 +56,7 @@ func (s *Server) vbscriptMemberTargetAtContext(ctx context.Context, parsed *core
 				owner = declaration.MemberOf
 			}
 		}
-		position := core.NewTextDocument(parsed.URI, "classic-asp", 0, parsed.Text).PositionAt(offset)
+		position := core.SourceDocument(parsed).PositionAt(offset)
 		if name == "" {
 			for _, declaration := range collectVBNamingDeclarations(parsed) {
 				if ctx.Err() != nil {
@@ -125,7 +125,7 @@ func (s *Server) vbscriptMemberOwnerTypesContext(ctx context.Context, parsed *co
 		return nil
 	}
 	if strings.EqualFold(owner, "Me") {
-		position := core.NewTextDocument(parsed.URI, "classic-asp", 0, parsed.Text).PositionAt(offset)
+		position := core.SourceDocument(parsed).PositionAt(offset)
 		if classOwner := vbClassMemberLineOwners(parsed)[position.Line]; classOwner != "" {
 			return []string{classOwner}
 		}
@@ -176,7 +176,7 @@ func (s *Server) vbscriptMemberDefinitionContext(ctx context.Context, parsed *co
 	if parsed == nil || ctx.Err() != nil {
 		return nil, false
 	}
-	doc := core.NewTextDocument(parsed.URI, "classic-asp", 0, parsed.Text)
+	doc := core.SourceDocument(parsed)
 	target, ok := s.vbscriptMemberTargetAtContext(ctx, parsed, doc.OffsetAt(position))
 	if !ok {
 		return nil, false
@@ -266,7 +266,7 @@ func (s *Server) vbscriptMemberReferenceLocations(ctx context.Context, parsed *c
 	if parsed == nil || ctx.Err() != nil {
 		return nil, false
 	}
-	doc := core.NewTextDocument(parsed.URI, "classic-asp", 0, parsed.Text)
+	doc := core.SourceDocument(parsed)
 	target, ok := s.vbscriptMemberTargetAtContext(ctx, parsed, doc.OffsetAt(position))
 	if !ok {
 		return nil, false
@@ -302,7 +302,7 @@ func (s *Server) vbscriptMemberReferenceLocations(ctx context.Context, parsed *c
 			}
 			continue
 		}
-		source := core.NewTextDocument(document.URI, "classic-asp", 0, document.Text)
+		source := core.SourceDocument(document)
 		for _, posting := range vbscript.BuildReferenceShard(document).PostingsFor(target.name) {
 			if ctx.Err() != nil {
 				return nil, false
@@ -340,7 +340,7 @@ func (s *Server) vbscriptMemberSignatureHelpContext(ctx context.Context, parsed 
 	if parsed == nil {
 		return nil, false
 	}
-	doc := core.NewTextDocument(parsed.URI, "classic-asp", 0, parsed.Text)
+	doc := core.SourceDocument(parsed)
 	offset := doc.OffsetAt(position)
 	open := vbCallOpenParenBefore(parsed.Text, offset)
 	nameStart := -1
@@ -399,7 +399,7 @@ func (s *Server) vbscriptMemberSignatureHelpContext(ctx context.Context, parsed 
 			nameEnd++
 		}
 		name := parsed.Text[nameStart:nameEnd]
-		if vbLocalDeclarationShadowsNameAt(parsed, name, core.NewTextDocument(parsed.URI, "classic-asp", 0, parsed.Text).PositionAt(nameStart)) {
+		if vbLocalDeclarationShadowsNameAt(parsed, name, core.SourceDocument(parsed).PositionAt(nameStart)) {
 			return nil, true
 		}
 		if declaration, ok := vbscriptClassMemberDeclarationAtOffset(parsed, name, nameStart); ok && declaration.Kind == "method" {

@@ -1823,7 +1823,7 @@ func vbscriptGlobalContractAppliesToAssignment(parsed *core.ParsedDocument, assi
 	if contract.Start < 0 || parsed == nil || contract.URI == "" || !strings.EqualFold(contract.URI, parsed.URI) {
 		return true
 	}
-	doc := core.NewTextDocument(parsed.URI, "classic-asp", 0, parsed.Text)
+	doc := core.SourceDocument(parsed)
 	return doc.OffsetAt(assignment.NameRange.Start) >= contract.Start
 }
 
@@ -1949,7 +1949,7 @@ func stripVBScriptTrailingComment(text string) string {
 
 func (s *Server) vbscriptMemberTypeDiagnostics(parsed *core.ParsedDocument, info vbscriptTypeInfo) []lsp.Diagnostic {
 	var diagnostics []lsp.Diagnostic
-	doc := core.NewTextDocument(parsed.URI, "classic-asp", 0, parsed.Text)
+	doc := core.SourceDocument(parsed)
 	for _, occurrence := range vbscriptTypeMemberOccurrences(parsed) {
 		if len(occurrence.Parts) < 2 {
 			continue
@@ -2009,7 +2009,7 @@ func (s *Server) vbscriptCallTypeDiagnosticsContextResult(ctx context.Context, p
 	if ctx.Err() != nil {
 		return nil, false
 	}
-	doc := core.NewTextDocument(parsed.URI, "classic-asp", 0, parsed.Text)
+	doc := core.SourceDocument(parsed)
 	signatures := map[string]vbscript.Signature{}
 	units, complete := s.vbscriptIncludeExecutionUnitsContext(ctx, parsed)
 	if !complete || ctx.Err() != nil {
@@ -2282,7 +2282,7 @@ func vbscriptUnionMember(typeName string, memberName string, info vbscriptTypeIn
 }
 
 func vbscriptTypeMemberOccurrences(parsed *core.ParsedDocument) []graphMemberOccurrence {
-	doc := core.NewTextDocument(parsed.URI, "classic-asp", 0, parsed.Text)
+	doc := core.SourceDocument(parsed)
 	var occurrences []graphMemberOccurrence
 	for _, region := range parsed.Regions {
 		if region.Language != core.LanguageVBScript {

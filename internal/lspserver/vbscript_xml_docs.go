@@ -430,7 +430,7 @@ func vbscriptParameterHoverAtOffset(parsed *core.ParsedDocument, offset int, loc
 	if scope == "" {
 		return nil
 	}
-	document := core.NewTextDocument(parsed.URI, "classic-asp", 0, parsed.Text)
+	document := core.SourceDocument(parsed)
 	declaration := vbUsageDeclaration{
 		Name:     word,
 		Kind:     "parameter",
@@ -507,7 +507,7 @@ func vbscriptParameterHoverForDeclaration(parsed *core.ParsedDocument, declarati
 	if typeName == "" {
 		typeName = "Variant"
 	}
-	document := core.NewTextDocument(parsed.URI, "classic-asp", 0, parsed.Text)
+	document := core.SourceDocument(parsed)
 	start, end := vbscriptIdentifierOffsetsAtOffset(parsed.Text, offset)
 	hover := &lsp.Hover{
 		Contents: lsp.MarkupContent{Kind: "markdown", Value: markdownVBScriptSignature(parameter.Mode+" "+parameter.Name+" As "+typeName, documentation)},
@@ -553,7 +553,7 @@ func signatureParameterByName(signature vbscript.Signature, name string) (vbscri
 }
 
 func vbscriptNoParenSignatureHelp(parsed *core.ParsedDocument, position lsp.Position, locale string) *lsp.SignatureHelp {
-	doc := core.NewTextDocument(parsed.URI, "classic-asp", 0, parsed.Text)
+	doc := core.SourceDocument(parsed)
 	offset := doc.OffsetAt(position)
 	lineStart := offset
 	for lineStart > 0 && parsed.Text[lineStart-1] != '\n' && parsed.Text[lineStart-1] != '\r' {
@@ -650,7 +650,7 @@ func vbscriptSignatureForNoParenCall(parsed *core.ParsedDocument, nameStart int,
 	if parsed == nil || name == "" {
 		return vbscript.Signature{}, false
 	}
-	position := core.NewTextDocument(parsed.URI, "classic-asp", 0, parsed.Text).PositionAt(nameStart)
+	position := core.SourceDocument(parsed).PositionAt(nameStart)
 	if declaration, ok := vbscriptClassMemberDeclarationAtOffset(parsed, name, nameStart); ok && declaration.Kind == "method" {
 		if signature, ok := vbscriptSignatureForMemberDeclaration(parsed, declaration); ok {
 			return signature, true

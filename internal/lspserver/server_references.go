@@ -72,7 +72,7 @@ func (s *Server) workspaceVBScriptReferencesCurrentDocument(ctx context.Context,
 	if parsed == nil || ctx.Err() != nil {
 		return nil
 	}
-	doc := core.NewTextDocument(parsed.URI, "classic-asp", 0, parsed.Text)
+	doc := core.SourceDocument(parsed)
 	offset := doc.OffsetAt(position)
 	name := vbscript.WordAt(parsed.Text, offset)
 	if name == "" || ctx.Err() != nil {
@@ -121,7 +121,7 @@ func (s *Server) currentWorkspaceReferenceParsed(previous *core.ParsedDocument) 
 }
 
 func (s *Server) workspaceVBScriptReferencesOnce(ctx context.Context, parsed *core.ParsedDocument, position lsp.Position, includeDeclaration bool, symbolKind string, applyTestDelay bool, candidateDocuments []*core.ParsedDocument, publishResult bool) ([]lsp.Location, bool) {
-	doc := core.NewTextDocument(parsed.URI, "classic-asp", 0, parsed.Text)
+	doc := core.SourceDocument(parsed)
 	offset := doc.OffsetAt(position)
 	name := vbscript.WordAt(parsed.Text, offset)
 	if name == "" {
