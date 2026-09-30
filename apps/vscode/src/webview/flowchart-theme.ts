@@ -493,6 +493,21 @@ export const flowchartThemePalettes: Record<WebviewTheme, FlowchartThemePalette>
   },
 };
 
+/** VS Code chart colors that carry each node group's meaning under the auto theme. */
+const flowchartNodeChartColors: Record<string, string> = {
+  flowStart: "charts-blue",
+  flowStatement: "charts-blue",
+  flowEnd: "charts-foreground",
+  flowMerge: "charts-foreground",
+  flowBranch: "charts-yellow",
+  flowLoop: "charts-purple",
+  flowCall: "charts-green",
+  flowOutput: "charts-green",
+  flowDeclaration: "charts-orange",
+  flowExceptionHandling: "charts-red",
+  flowExit: "charts-red",
+};
+
 export type VsCodeColorLookup = (name: string) => string | undefined;
 
 function mermaidSafeColor(value: string): string {
@@ -539,33 +554,45 @@ export function flowchartThemePaletteForSetting(
   const foreground = resolveColor("editor-foreground", theme === "light" ? "#0f172a" : "#d9e0ea");
   const background = resolveColor("editor-background", theme === "light" ? "#ffffff" : "#0d1117");
   const surface = resolveColor("editorWidget-background", background);
+  const chart = (name: string): string | undefined => {
+    const value = color(name);
+    return value ? mermaidSafeColor(value) : undefined;
+  };
   const palette = [
-    color("charts-blue"),
-    color("charts-yellow"),
-    color("charts-purple"),
-    color("charts-green"),
-    color("charts-orange"),
-    color("charts-red"),
+    "charts-blue",
+    "charts-yellow",
+    "charts-purple",
+    "charts-green",
+    "charts-orange",
+    "charts-red",
   ]
-    .filter((value): value is string => Boolean(value))
-    .map(mermaidSafeColor);
+    .map(chart)
+    .filter((value): value is string => Boolean(value));
   const accent = mermaidSafeColor(
     color("focusBorder") ?? color("textLink-foreground") ?? fallback.nodeKindStyles.start.border,
   );
+  // Kinds that share a fixed-theme color (If/ElseIf/Else, every loop, ...) must
+  // keep sharing one VS Code color, so colors follow the fixed palette's groups
+  // rather than each kind's position in the table.
   const recolor = <T extends string>(
     styles: Record<T, FlowchartVisualStyle>,
-  ): Record<T, FlowchartVisualStyle> =>
-    Object.fromEntries(
-      Object.entries<FlowchartVisualStyle>(styles).map(([key, style], index) => [
-        key,
-        {
-          ...style,
-          background: surface,
-          border: palette[index % Math.max(palette.length, 1)] ?? accent,
-          text: foreground,
-        },
-      ]),
+    semantic: Record<string, string> = {},
+  ): Record<T, FlowchartVisualStyle> => {
+    const groupColors = new Map<string, string>();
+    return Object.fromEntries(
+      Object.entries<FlowchartVisualStyle>(styles).map(([key, style]) => {
+        const semanticColor = semantic[style.mermaidClass]
+          ? chart(semantic[style.mermaidClass])
+          : undefined;
+        let border = semanticColor ?? groupColors.get(style.border);
+        if (!border) {
+          border = palette[groupColors.size % Math.max(palette.length, 1)] ?? accent;
+          groupColors.set(style.border, border);
+        }
+        return [key, { ...style, background: surface, border, text: foreground }];
+      }),
     ) as Record<T, FlowchartVisualStyle>;
+  };
   return {
     mermaidTheme: "base",
     mermaidThemeVariables: {
@@ -578,7 +605,7 @@ export function flowchartThemePaletteForSetting(
       textColor: foreground,
       edgeLabelBackground: surface,
     },
-    nodeKindStyles: recolor(fallback.nodeKindStyles),
+    nodeKindStyles: recolor(fallback.nodeKindStyles, flowchartNodeChartColors),
     linkRoleStyles: recolor(fallback.linkRoleStyles),
     symbolKindStyles: recolor(fallback.symbolKindStyles),
   };

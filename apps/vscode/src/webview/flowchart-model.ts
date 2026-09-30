@@ -233,7 +233,7 @@ export function mermaidForSelectedSection(
   }
   for (const edge of edges) {
     lines.push(
-      `  ${mermaidId(edge.source)} -->${edge.label ? `|${escapeMermaidEdgeLabel(edge.label)}|` : ""} ${mermaidId(edge.target)}`,
+      `  ${mermaidId(edge.source)} -->${edge.label ? `|"${escapeMermaidEdgeLabel(edge.label)}"|` : ""} ${mermaidId(edge.target)}`,
     );
   }
   lines.push(...flowchartMermaidClassDefinitions(themePalette));
@@ -314,8 +314,17 @@ function flowchartLabelLineLengthForPayload(payload: FlowchartPayload): number {
     : flowchartLabelLineLength;
 }
 
+// Edge labels are emitted as quoted `|"..."|` text. A raw quote (for example
+// `Case "active"`) would end the label, and entities are shown verbatim in
+// SVG edge labels, so quotes become typographic pairs instead.
 function escapeMermaidEdgeText(value: string): string {
-  return value.replaceAll("<", "&lt;").replaceAll(">", "&gt;").replaceAll("|", "/").trim();
+  let quotes = 0;
+  return value
+    .replaceAll("<", "&lt;")
+    .replaceAll(">", "&gt;")
+    .replace(/"/g, () => (quotes++ % 2 === 0 ? "\u201c" : "\u201d"))
+    .replaceAll("|", "/")
+    .trim();
 }
 
 function wrapFlowchartLabel(value: string, lineLength: number): string[] {

@@ -343,6 +343,14 @@ describe("VS Code extension package", () => {
     expect(autoPalette.nodeKindStyles.start.background).toBe("#223344");
     expect(autoPalette.nodeKindStyles.start.border).toBe("#1234aa");
     expect(fixedPalette.nodeKindStyles.start.background).not.toBe("#223344");
+    const grouped = flowchartThemePaletteForSetting("dark", "auto", (name) =>
+      name === "charts-yellow" ? "#eecc00" : name === "charts-purple" ? "#aa66dd" : color(name),
+    );
+    expect(grouped.nodeKindStyles.if.border).toBe("#eecc00");
+    expect(grouped.nodeKindStyles.elseif.border).toBe("#eecc00");
+    expect(grouped.nodeKindStyles.case.border).toBe("#eecc00");
+    expect(grouped.nodeKindStyles.for.border).toBe("#aa66dd");
+    expect(grouped.nodeKindStyles.while.border).toBe("#aa66dd");
     expect(highlighted.style.background).toBe("#112233");
     expect(highlighted.tokens).toContainEqual(["If", "#cc44aa"]);
   });
