@@ -2,6 +2,7 @@ package services
 
 import (
 	"regexp"
+	"sort"
 	"strings"
 
 	"github.com/yottonoko/vscode-css-languageservice-go/languagefacts"
@@ -793,13 +794,7 @@ func parseCSSBlocks(text string) []cssBlock {
 			})
 		}
 	}
-	for i := 0; i < len(blocks)-1; i++ {
-		for j := i + 1; j < len(blocks); j++ {
-			if blocks[j].start < blocks[i].start {
-				blocks[i], blocks[j] = blocks[j], blocks[i]
-			}
-		}
-	}
+	sort.Slice(blocks, func(i, j int) bool { return blocks[i].start < blocks[j].start })
 	return blocks
 }
 

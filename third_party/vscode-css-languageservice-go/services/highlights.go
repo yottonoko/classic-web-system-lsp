@@ -23,18 +23,35 @@ type cachedHighlightTokens struct {
 	tokens     []highlightToken
 }
 
-var highlightTokenCache sync.Map
+// highlightTokenCacheLimit bounds the cache: callers create a new document for
+// every edit, so an unbounded cache would retain every revision's text.
+const highlightTokenCacheLimit = 8
+
+var highlightTokenCache = struct {
+	sync.Mutex
+	entries map[*lsp.TextDocument]cachedHighlightTokens
+	order   []*lsp.TextDocument
+}{entries: map[*lsp.TextDocument]cachedHighlightTokens{}}
 
 func highlightTokensForDocument(document *lsp.TextDocument) []highlightToken {
 	text := document.Text()
-	if cached, ok := highlightTokenCache.Load(document); ok {
-		entry := cached.(cachedHighlightTokens)
-		if entry.text == text && entry.languageID == document.LanguageID {
-			return entry.tokens
-		}
+	highlightTokenCache.Lock()
+	entry, ok := highlightTokenCache.entries[document]
+	highlightTokenCache.Unlock()
+	if ok && entry.text == text && entry.languageID == document.LanguageID {
+		return entry.tokens
 	}
 	tokens := collectHighlightTokens(text, document.LanguageID)
-	highlightTokenCache.Store(document, cachedHighlightTokens{text: text, languageID: document.LanguageID, tokens: tokens})
+	highlightTokenCache.Lock()
+	defer highlightTokenCache.Unlock()
+	if _, exists := highlightTokenCache.entries[document]; !exists {
+		if len(highlightTokenCache.order) >= highlightTokenCacheLimit {
+			delete(highlightTokenCache.entries, highlightTokenCache.order[0])
+			highlightTokenCache.order = append(highlightTokenCache.order[:0], highlightTokenCache.order[1:]...)
+		}
+		highlightTokenCache.order = append(highlightTokenCache.order, document)
+	}
+	highlightTokenCache.entries[document] = cachedHighlightTokens{text: text, languageID: document.LanguageID, tokens: tokens}
 	return tokens
 }
 

@@ -1,6 +1,9 @@
 package parser
 
-import "strings"
+import (
+	"strings"
+	"unicode/utf8"
+)
 
 // Parser builds a lightweight syntax tree for CSS, LESS, or SCSS input.
 type Parser struct {
@@ -304,7 +307,7 @@ func (p *Parser) parseAtRule(start, end int, typ NodeType) *Node {
 	case NodeTypeKeyframe:
 		parts := strings.Fields(head)
 		if len(parts) > 1 {
-			node.AddChild(NewNode(start+strings.Index(string(p.source[start:open]), parts[1]), len([]rune(parts[1])), NodeTypeIdentifier))
+			node.AddChild(NewNode(start+runeIndex(string(p.source[start:open]), parts[1]), len([]rune(parts[1])), NodeTypeIdentifier))
 		}
 		selectorList := NewNode(-1, -1, NodeTypeUndefined)
 		p.parseKeyframeSelectorsInto(selectorList, open+1, close)
@@ -384,7 +387,7 @@ func (p *Parser) parseSelector(start, end int) *Node {
 		simple.AddChild(NewNode(trimStart, 1, NodeTypeSelectorCombinator))
 		simple.AddChild(NewNode(trimStart, 1, NodeTypeSelectorCombinatorParent))
 		if rest := strings.TrimSpace(text[1:]); rest != "" {
-			restOffset := trimStart + 1 + strings.Index(string(p.source[trimStart+1:end]), rest)
+			restOffset := trimStart + 1 + runeIndex(string(p.source[trimStart+1:end]), rest)
 			elem := NewNode(restOffset, len([]rune(firstSelectorPart(rest))), NodeTypeElementNameSelector)
 			elem.AddChild(NewNode(restOffset, elem.Length, NodeTypeIdentifier))
 			wrapper := NewNode(-1, -1, NodeTypeUndefined)
@@ -467,7 +470,13 @@ func (p *Parser) parseDeclarationsInto(parent *Node, start, end int) {
 }
 
 func (p *Parser) parseNested(start, end int) *Node {
-	head := strings.TrimSpace(string(p.source[start:p.indexRune(start, end, '{')]))
+	// indexRune does not skip quoted text, so a quoted parenthesis can hide the
+	// brace that indexBlockBrace found for the caller.
+	open := p.indexRune(start, end, '{')
+	if open == -1 {
+		return p.parseRuleLike(start, end)
+	}
+	head := strings.TrimSpace(string(p.source[start:open]))
 	if typ := p.blockAtRuleType(head); typ != NodeTypeUndefined {
 		return p.parseAtRule(start, end, typ)
 	}
@@ -477,21 +486,24 @@ func (p *Parser) parseNested(start, end int) *Node {
 func (p *Parser) parseDeclaration(start, end int) *Node {
 	colon := p.indexRune(start, end, ':')
 	decl := NewNode(start, end-start, NodeTypeDeclaration)
+	if colon == -1 {
+		// The statement ends before the colon the caller saw, so it is a bare
+		// property without a value.
+		colon = end
+	}
 	propStart := p.skipWhitespace(start, colon)
 	propEnd := trimRightRunes(p.source, propStart, colon)
 	property := NewNode(propStart, propEnd-propStart, NodeTypeProperty)
 	property.AddChild(NewNode(propStart, propEnd-propStart, NodeTypeIdentifier))
 	p.addInterpolations(property, propStart, propEnd, NodeTypeInterpolation)
 	decl.AddChild(property)
-	valueStart := p.skipWhitespace(colon+1, end)
+	valueStart := p.skipWhitespace(min(colon+1, end), end)
 	if valueStart < end {
 		expr := NewNode(valueStart, end-valueStart, NodeTypeExpression)
-		if strings.Contains(strings.ToLower(string(p.source[valueStart:end])), "u+") {
+		if idx := indexUnicodeRangePrefix(p.source[valueStart:end]); idx >= 0 {
 			bin := NewNode(valueStart, end-valueStart, NodeTypeBinaryExpression)
 			term := NewNode(valueStart, end-valueStart, NodeTypeTerm)
-			if idx := strings.Index(strings.ToLower(string(p.source[valueStart:end])), "u+"); idx >= 0 {
-				term.AddChild(NewNode(valueStart+idx, lenUntilDelimiter(p.source[valueStart+idx:end]), NodeTypeUnicodeRange))
-			}
+			term.AddChild(NewNode(valueStart+idx, lenUntilDelimiter(p.source[valueStart+idx:end]), NodeTypeUnicodeRange))
 			bin.AddChild(term)
 			expr.AddChild(bin)
 		} else {
@@ -1495,6 +1507,26 @@ func trimRightRunes(runes []rune, start, end int) int {
 		}
 	}
 	return end
+}
+
+// runeIndex is strings.Index measured in runes, matching Parser.source offsets.
+func runeIndex(text, substr string) int {
+	index := strings.Index(text, substr)
+	if index <= 0 {
+		return index
+	}
+	return utf8.RuneCountInString(text[:index])
+}
+
+// indexUnicodeRangePrefix returns the rune index of the first "u+" or "U+",
+// so callers can index the rune source without byte/rune offset drift.
+func indexUnicodeRangePrefix(runes []rune) int {
+	for i := 0; i+1 < len(runes); i++ {
+		if (runes[i] == 'u' || runes[i] == 'U') && runes[i+1] == '+' {
+			return i
+		}
+	}
+	return -1
 }
 
 func lenUntilDelimiter(runes []rune) int {

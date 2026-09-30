@@ -273,3 +273,17 @@ func TestHighlightRangesAreStable(t *testing.T) {
 func highlightDocument(input string) *lsp.TextDocument {
 	return lsp.NewTextDocument("test://test/test.css", "css", 0, input)
 }
+
+func TestHighlightTokenCacheStaysBounded(t *testing.T) {
+	for i := 0; i < highlightTokenCacheLimit*4; i++ {
+		document := lsp.NewTextDocument("file:///cache.css", "css", i, ".a { color: red; }")
+		if len(highlightTokensForDocument(document)) == 0 {
+			t.Fatal("expected highlight tokens")
+		}
+	}
+	highlightTokenCache.Lock()
+	defer highlightTokenCache.Unlock()
+	if len(highlightTokenCache.entries) > highlightTokenCacheLimit || len(highlightTokenCache.order) != len(highlightTokenCache.entries) {
+		t.Fatalf("cache holds %d entries and %d order slots, want at most %d", len(highlightTokenCache.entries), len(highlightTokenCache.order), highlightTokenCacheLimit)
+	}
+}

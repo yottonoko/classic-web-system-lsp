@@ -539,3 +539,42 @@ func parserTestNodeTypeNames(types []NodeType) []string {
 	}
 	return names
 }
+
+func TestParseStylesheetSurvivesMalformedDeclarations(t *testing.T) {
+	for _, source := range []string{
+		// A quoted parenthesis hides the nested block brace from the unquoted scan.
+		`a{b:"(" c{d:e}}`,
+		// The first statement ends before the colon that belongs to the next one.
+		`a{b;c:d}`,
+		// Non-ASCII text before a unicode-range prefix must not shift rune offsets.
+		`a{b:ああああu+1}`,
+		`@keyframes　あ{from{a:b}}`,
+	} {
+		if node := NewParser().ParseStylesheet(source); node == nil {
+			t.Fatalf("ParseStylesheet(%q) = nil", source)
+		}
+	}
+}
+
+func TestParseDeclarationUnicodeRangeUsesRuneOffsets(t *testing.T) {
+	source := `a{b:あ u+26}`
+	root := NewParser().ParseStylesheet(source)
+	var found *Node
+	var visit func(node *Node)
+	visit = func(node *Node) {
+		if node.Type() == NodeTypeUnicodeRange {
+			found = node
+		}
+		for _, child := range node.GetChildren() {
+			visit(child)
+		}
+	}
+	visit(root)
+	if found == nil {
+		t.Fatal("unicode range node not found")
+	}
+	runes := []rune(source)
+	if got := string(runes[found.Offset : found.Offset+found.Length]); got != "u+26" {
+		t.Fatalf("unicode range text = %q, want %q", got, "u+26")
+	}
+}

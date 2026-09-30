@@ -441,3 +441,15 @@ func sameStringMultiset(actual, expected []string) bool {
 	}
 	return true
 }
+
+func TestParseCSSBlocksReturnsBlocksInSourceOrder(t *testing.T) {
+	blocks := parseCSSBlocks(`@media x{a{b:c}d{e:f}}g{h:i}`)
+	heads := make([]string, 0, len(blocks))
+	for _, block := range blocks {
+		heads = append(heads, block.head)
+	}
+	want := []string{"@media x", "a", "d", "g"}
+	if !reflect.DeepEqual(heads, want) {
+		t.Fatalf("block heads = %q, want %q", heads, want)
+	}
+}
