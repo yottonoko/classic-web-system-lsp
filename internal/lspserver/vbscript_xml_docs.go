@@ -3,6 +3,7 @@ package lspserver
 import (
 	"html"
 	"regexp"
+	"slices"
 	"strings"
 
 	"github.com/yottonoko/classic-web-system-lsp/internal/core"
@@ -32,7 +33,8 @@ var (
 )
 
 func vbscriptXMLDocBeforeLine(parsed *core.ParsedDocument, line int) vbscriptXMLDoc {
-	lines := strings.Split(parsed.Text, "\n")
+	lines := commentLinesBeforeLine(parsed, line)
+	line = len(lines)
 	block := xmlDocBlockBeforeLine(lines, line)
 	if len(block) > 0 {
 		return parseVBScriptXMLDoc(strings.Join(block, "\n"))
@@ -48,6 +50,41 @@ func vbscriptXMLDocForSignature(parsed *core.ParsedDocument, signature vbscript.
 		return vbscriptXMLDoc{Params: map[string]string{}}
 	}
 	return vbscriptXMLDocBeforeLine(parsed, signature.Range.Start.Line)
+}
+
+// commentLinesBeforeLine returns the contiguous comment lines directly above
+// line. Doc blocks never extend past a non-comment line, so this avoids
+// splitting the whole document for every signature lookup.
+func commentLinesBeforeLine(parsed *core.ParsedDocument, line int) []string {
+	if line <= 0 {
+		return nil
+	}
+	text := parsed.Text
+	end := core.SourceDocument(parsed).OffsetAt(lsp.Position{Line: line})
+	var lines []string
+	for end > 0 {
+		lineEnd := end
+		if text[lineEnd-1] == '\n' {
+			lineEnd--
+			if lineEnd > 0 && text[lineEnd-1] == '\r' {
+				lineEnd--
+			}
+		} else if text[lineEnd-1] == '\r' {
+			lineEnd--
+		}
+		if lineEnd == end && end < len(text) {
+			break
+		}
+		lineStart := strings.LastIndexAny(text[:lineEnd], "\r\n") + 1
+		content := text[lineStart:lineEnd]
+		if !strings.HasPrefix(strings.TrimSpace(content), "'") {
+			break
+		}
+		lines = append(lines, content)
+		end = lineStart
+	}
+	slices.Reverse(lines)
+	return lines
 }
 
 func xmlDocBlockBeforeLine(lines []string, line int) []string {
