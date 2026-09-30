@@ -373,14 +373,38 @@ func (s *Server) prepareJavaScriptRequestContext(ctx context.Context, sourceURI 
 		dirtyOwners:         map[string]struct{}{},
 	}
 	s.mu.Lock()
-	if nextPreparation.matchesLocked(s, preparationRoot, defaultLanguage, explicitTypes, explicitTypesSet, explicitCompilerOptions, ignoreProjectConfig) {
-		nextPreparation.documentGeneration = s.javascriptDocumentGeneration
-		nextPreparation.mappingGeneration = s.javascriptMappingGeneration
+	if s.javascriptProject == project {
+		// The project now holds exactly these files, so the preparation must be
+		// replaced even when documents changed during the rebuild. A stale
+		// generation keeps the fast path off until the next request resyncs.
+		if nextPreparation.matchesLocked(s, preparationRoot, defaultLanguage, explicitTypes, explicitTypesSet, explicitCompilerOptions, ignoreProjectConfig) {
+			nextPreparation.documentGeneration = s.javascriptDocumentGeneration
+			nextPreparation.mappingGeneration = s.javascriptMappingGeneration
+		} else {
+			nextPreparation.markChangedDocumentsDirty(uniqueJavaScriptDocuments(s.documents, s.workspace))
+		}
 		s.javascriptPreparation = nextPreparation
 	}
 	s.mu.Unlock()
 	s.logJavaScriptProjectPreparation(sourceURI, created, state)
 	return &javaScriptRequest{project: project, active: active, files: mappings, state: state, cache: nextPreparation.serviceCache}, true
+}
+
+// markChangedDocumentsDirty records owners whose current document no longer
+// matches the snapshot this preparation was built from.
+func (p *javaScriptProjectPreparation) markChangedDocumentsDirty(documents []*core.TextDocument) {
+	current := make(map[string]struct{}, len(documents))
+	for _, document := range documents {
+		current[document.URI] = struct{}{}
+		if !matchesJavaScriptDocumentSnapshot(p.documents[document.URI], document) {
+			p.dirtyOwners[document.URI] = struct{}{}
+		}
+	}
+	for uri := range p.documents {
+		if _, ok := current[uri]; !ok {
+			p.dirtyOwners[uri] = struct{}{}
+		}
+	}
 }
 
 func (s *Server) prepareJavaScriptRequestDelta(project *tsgoadapter.Project, preparation *javaScriptProjectPreparation, sourceURI string, position lsp.Position, documentGeneration, mappingGeneration uint64, options tsgoadapter.ProjectOptions) (*javaScriptRequest, bool, bool) {
@@ -497,7 +521,8 @@ func (s *Server) prepareJavaScriptRequestDelta(project *tsgoadapter.Project, pre
 		}
 	}
 	s.mu.Lock()
-	current := s.javascriptPreparation == preparation
+	samePreparation := s.javascriptPreparation == preparation
+	current := samePreparation
 	for _, delta := range deltas {
 		latestDocument := s.openDocumentByURILocked(delta.uri)
 		if latestDocument == nil {
@@ -509,7 +534,11 @@ func (s *Server) prepareJavaScriptRequestDelta(project *tsgoadapter.Project, pre
 			break
 		}
 	}
-	if current {
+	if samePreparation {
+		// UpdateDelta has already changed the project, so the mappings must
+		// follow it even when a document moved on meanwhile. Otherwise the next
+		// delta diffs against files the project no longer contains. Owners that
+		// changed again stay dirty and are refreshed by the next request.
 		for _, delta := range deltas {
 			for _, mapping := range delta.previousMappings {
 				delete(preparation.mappings, mapping.uri)
@@ -523,9 +552,11 @@ func (s *Server) prepareJavaScriptRequestDelta(project *tsgoadapter.Project, pre
 				preparation.mappings[mapping.uri] = mapping
 				preparation.mappingsByOwner[delta.uri] = append(preparation.mappingsByOwner[delta.uri], mapping)
 			}
-			delete(preparation.dirtyOwners, delta.uri)
+			if current {
+				delete(preparation.dirtyOwners, delta.uri)
+			}
 		}
-		if len(preparation.dirtyOwners) == 0 && s.javascriptDocumentGeneration == documentGeneration && s.javascriptMappingGeneration == mappingGeneration {
+		if current && len(preparation.dirtyOwners) == 0 && s.javascriptDocumentGeneration == documentGeneration && s.javascriptMappingGeneration == mappingGeneration {
 			preparation.documentGeneration = documentGeneration
 			preparation.mappingGeneration = mappingGeneration
 		}
