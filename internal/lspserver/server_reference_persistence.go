@@ -772,10 +772,6 @@ func (s *Server) workspaceReferenceQueryDescriptorsContext(ctx context.Context, 
 	return descriptors
 }
 
-func (s *Server) workspaceReferenceDescriptorFingerprints(parsed *core.ParsedDocument, declarations []vbUsageDeclaration, documents []*core.ParsedDocument) (map[string]string, string) {
-	return s.workspaceReferenceDescriptorFingerprintsContext(context.Background(), parsed, declarations, documents)
-}
-
 func (s *Server) workspaceReferenceDescriptorFingerprintsContext(ctx context.Context, parsed *core.ParsedDocument, declarations []vbUsageDeclaration, documents []*core.ParsedDocument) (map[string]string, string) {
 	if ctx.Err() != nil {
 		return nil, ""

@@ -661,10 +661,6 @@ func navigationVBAppendDirectSink(tokens []vbscript.Token, state *navigationVBSt
 	*state.candidateSink = append(*state.candidateSink, candidate)
 }
 
-func navigationVBStatementEvidence(statement []vbscript.Token, baseOffset int, sourceText string) navigationVBCallEvidence {
-	return navigationVBStatementEvidenceWithSource(statement, baseOffset, core.NewTextDocument("", "classic-asp", 0, sourceText))
-}
-
 func navigationVBStatementEvidenceWithSource(statement []vbscript.Token, baseOffset int, document *core.TextDocument) navigationVBCallEvidence {
 	if document == nil || len(statement) == 0 {
 		return navigationVBCallEvidence{}

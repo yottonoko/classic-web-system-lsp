@@ -26,7 +26,7 @@ func TestNamingDeclarationsCachePreservesCallerOwnership(t *testing.T) {
 				t.Error("cached declarations differ")
 			}
 			actual[0].Name = "changed"
-			actual = append(actual, vbUsageDeclaration{Name: "extra"})
+			_ = append(actual, vbUsageDeclaration{Name: "extra"})
 		})
 	}
 	workers.Wait()

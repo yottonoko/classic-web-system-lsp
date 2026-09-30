@@ -742,10 +742,6 @@ func (s *Server) includeTargetDetailsForModeContext(ctx context.Context, ownerUR
 	return details, ctx.Err() == nil
 }
 
-func (s *Server) existingIncludeTargetDetails(targetPath string) (includeTargetDetails, bool) {
-	return s.existingIncludeTargetDetailsContext(context.Background(), targetPath)
-}
-
 func (s *Server) existingIncludeTargetDetailsContext(ctx context.Context, targetPath string) (includeTargetDetails, bool) {
 	if s.inMemoryDocumentAtPath(targetPath) {
 		return includeTargetDetails{
@@ -840,10 +836,6 @@ func (s *Server) inMemoryDocumentAtPath(path string) bool {
 		}
 	}
 	return true
-}
-
-func (s *Server) missingIncludeTargetDetails(targetPath, includePath string) includeTargetDetails {
-	return s.missingIncludeTargetDetailsContext(context.Background(), targetPath, includePath)
 }
 
 func (s *Server) missingIncludeTargetDetailsContext(ctx context.Context, targetPath, includePath string) includeTargetDetails {

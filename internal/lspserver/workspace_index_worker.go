@@ -306,9 +306,6 @@ const workspaceIncludeGraphRetryDelay = 10 * time.Millisecond
 // inside the workspace-index worker's generation. A graph invalidation does
 // not change the discovered document universe, so retry only the collection
 // and synchronization after the document-open publication barrier settles.
-func (s *Server) synchronizeWorkspaceIncludeGraphForWorkspaceIndex(ctx context.Context, generation uint64, candidate *workspaceIncludeGraphDiskCandidate) error {
-	return s.synchronizeWorkspaceIncludeGraphForWorkspaceIndexWithProgress(ctx, generation, candidate, nil)
-}
 
 func (s *Server) synchronizeWorkspaceIncludeGraphForWorkspaceIndexWithProgress(ctx context.Context, generation uint64, candidate *workspaceIncludeGraphDiskCandidate, report graphProgressReporter) error {
 	for {
