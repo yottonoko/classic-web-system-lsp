@@ -668,6 +668,7 @@ func buildReferenceShard(parsed *core.ParsedDocument) *ReferenceShard {
 		// not consume tokens from a later island.
 		documentTokens = vbscriptDocumentTokens(parsed)
 	}
+	withOwners := newWithOwnerIndex(parsed.Text, documentTokens)
 	shard := &ReferenceShard{
 		Version:      referenceShardVersion,
 		Declarations: map[string]Symbol{},
@@ -706,7 +707,7 @@ func buildReferenceShard(parsed *core.ParsedDocument) *ReferenceShard {
 				posting.ClassOwner = classScope.Name
 			}
 			if structured {
-				posting.Owner, _, _ = memberOwnerFromTokens(parsed.Text, start, documentTokens)
+				posting.Owner, _, _ = memberOwnerFromTokens(parsed.Text, start, withOwners)
 			} else {
 				posting.Owner = flatMemberOwner(parsed.Text, start)
 			}
@@ -757,7 +758,7 @@ func buildReferenceShard(parsed *core.ParsedDocument) *ReferenceShard {
 				Roles: ReferenceRoleRead | ReferenceRoleCref,
 			}
 			offset := source.OffsetAt(occurrence.Range.Start)
-			posting.Owner, _, _ = memberOwnerFromTokens(parsed.Text, offset, documentTokens)
+			posting.Owner, _, _ = memberOwnerFromTokens(parsed.Text, offset, withOwners)
 			if scope, ok := scopes.innermost(offset); ok {
 				posting.Scope = scope.Name
 				posting.ScopeKind = scope.Kind

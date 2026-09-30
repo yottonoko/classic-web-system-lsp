@@ -1,6 +1,7 @@
 package vbscript
 
 import (
+	"sort"
 	"strings"
 	"unsafe"
 
@@ -120,7 +121,7 @@ func vbscriptDocumentTokens(parsed *core.ParsedDocument) []Token {
 	return runtime.tokens
 }
 
-func memberOwnerFromTokens(text string, start int, tokens []Token) (string, int, int) {
+func memberOwnerFromTokens(text string, start int, withOwners *withOwnerIndex) (string, int, int) {
 	if start < 0 {
 		start = 0
 	}
@@ -139,13 +140,13 @@ func memberOwnerFromTokens(text string, start int, tokens []Token) (string, int,
 		if !hasLeadingDotBefore(text, ownerStart) {
 			return strings.ToLower(text[ownerStart:ownerEnd]), ownerStart, ownerEnd
 		}
-		if withOwner, withStart, withEnd := withOwnerAtTokens(text, start, tokens); withOwner != "" {
+		if withOwner, withStart, withEnd := withOwners.at(start); withOwner != "" {
 			suffix := strings.ToLower(text[ownerStart:ownerEnd])
 			return withOwner + "." + suffix, withStart, withEnd
 		}
 		return "", -1, -1
 	}
-	if withOwner, withStart, withEnd := withOwnerAtTokens(text, start, tokens); withOwner != "" {
+	if withOwner, withStart, withEnd := withOwners.at(start); withOwner != "" {
 		return withOwner, withStart, withEnd
 	}
 	return "", -1, -1
@@ -196,39 +197,75 @@ func hasLeadingDotBefore(text string, start int) bool {
 	return cursor > 0 && text[cursor-1] == '.'
 }
 
-func withOwnerAtTokens(text string, offset int, tokens []Token) (string, int, int) {
+// withOwnerIndex records the innermost With target after each statement so
+// member owner lookups do not rescan the token stream from the start.
+type withOwnerIndex struct {
+	text    string
+	tokens  []Token
+	built   bool
+	starts  []int
+	targets []lexicalWithTarget
+}
+
+func newWithOwnerIndex(text string, tokens []Token) *withOwnerIndex {
+	return &withOwnerIndex{text: text, tokens: tokens}
+}
+
+func (index *withOwnerIndex) build() {
+	index.built = true
+	tokens := index.tokens
 	stack := make([]lexicalWithTarget, 0, 2)
-	for index := 0; index < len(tokens); {
-		if tokens[index].Kind == "newline" || tokens[index].Text == ":" {
-			index++
+	for cursor := 0; cursor < len(tokens); {
+		if tokens[cursor].Kind == "newline" || tokens[cursor].Text == ":" {
+			cursor++
 			continue
 		}
-		if tokens[index].Start >= offset {
-			break
-		}
-		end := cstStatementEndIndex(tokens, index)
-		if end <= index {
-			index++
+		statementStart := tokens[cursor].Start
+		end := cstStatementEndIndex(tokens, cursor)
+		if end <= cursor {
+			cursor++
 			continue
 		}
-		statement := tokens[index:end]
+		statement := tokens[cursor:end]
 		first := strings.ToLower(statement[0].Text)
+		changed := false
 		switch {
 		case first == "with":
-			if target := withTargetFromTokens(text, statement[1:], stack); target.name != "" {
+			if target := withTargetFromTokens(index.text, statement[1:], stack); target.name != "" {
 				stack = append(stack, target)
+				changed = true
 			}
 		case first == "end" && len(statement) > 1 && strings.EqualFold(statement[1].Text, "with"):
 			if len(stack) > 0 {
 				stack = stack[:len(stack)-1]
+				changed = true
 			}
 		}
-		index = end
+		if changed {
+			var top lexicalWithTarget
+			if len(stack) > 0 {
+				top = stack[len(stack)-1]
+			}
+			index.starts = append(index.starts, statementStart)
+			index.targets = append(index.targets, top)
+		}
+		cursor = end
 	}
-	if len(stack) == 0 {
+}
+
+// at returns the With target in effect for statements starting before offset.
+func (index *withOwnerIndex) at(offset int) (string, int, int) {
+	if index == nil {
 		return "", -1, -1
 	}
-	target := stack[len(stack)-1]
+	if !index.built {
+		index.build()
+	}
+	position := sort.SearchInts(index.starts, offset) - 1
+	if position < 0 || index.targets[position].name == "" {
+		return "", -1, -1
+	}
+	target := index.targets[position]
 	return target.name, target.start, target.end
 }
 
