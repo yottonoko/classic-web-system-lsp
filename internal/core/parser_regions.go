@@ -24,6 +24,9 @@ type aspOpenScanFeatures struct {
 	hasRawTextElements bool
 	hasScriptElements  bool
 	hasClientComments  bool
+	// quotes carries line quote state between monotonically increasing opens
+	// so long single-line documents are not rescanned from the line start.
+	quotes *lineQuoteScanner
 }
 
 func newASPOpenScanFeatures(text string) aspOpenScanFeatures {
@@ -80,7 +83,7 @@ func indexASPOpenWithFeatures(text string, cursor int, features aspOpenScanFeatu
 		open += cursor
 		javascriptLiteralOutput := aspOutputExpressionInJavaScriptLiteral(text, open)
 		if (!features.hasHTMLComments && !features.hasRawTextElements || !aspOpenLooksLikeHTMLFalseRegion(text, open) || javascriptLiteralOutput) &&
-			(!aspOpenLooksLikeQuotedLiteral(text, open) || javascriptLiteralOutput) &&
+			(!aspOpenLooksLikeQuotedLiteralWithScanner(text, open, features.quotes) || javascriptLiteralOutput) &&
 			(!features.hasScriptElements || !aspOpenLooksLikeJSTemplateLiteral(text, open) || javascriptLiteralOutput) &&
 			(!features.hasClientComments || !aspOpenLooksLikeClientCommentSince(text, open, scanStart)) {
 			return open
@@ -1068,12 +1071,22 @@ func aspOpenLooksLikeLineComment(text string, open int) bool {
 }
 
 func aspOpenLooksLikeQuotedLiteral(text string, open int) bool {
+	return aspOpenLooksLikeQuotedLiteralWithScanner(text, open, nil)
+}
+
+func aspOpenLooksLikeQuotedLiteralWithScanner(text string, open int, quotes *lineQuoteScanner) bool {
 	if candidate, ok := htmlASPOpenCandidate(text, open); ok {
 		if candidate.context == htmlScanComment || candidate.context == htmlScanScript || candidate.context == htmlScanStyle {
 			return candidate.quotedLiteral
 		}
 	}
-	quote, ok := activeQuoteOnLine(text, open)
+	var quote byte
+	var ok bool
+	if quotes != nil && quotes.text == text {
+		quote, ok = quotes.activeQuote(open)
+	} else {
+		quote, ok = activeQuoteOnLine(text, open)
+	}
 	if !ok {
 		return false
 	}
@@ -1111,6 +1124,42 @@ func activeQuoteOnLine(text string, offset int) (byte, bool) {
 		return 0, false
 	}
 	return quote, true
+}
+
+// lineQuoteScanner computes activeQuoteOnLine incrementally. Queries at
+// non-decreasing offsets on the same line resume from the previous offset;
+// any other query restarts from the line start.
+type lineQuoteScanner struct {
+	text    string
+	scanned int
+	quote   byte
+}
+
+func (s *lineQuoteScanner) activeQuote(offset int) (byte, bool) {
+	if offset < s.scanned {
+		s.scanned = 0
+		s.quote = 0
+	}
+	if lineBreak := strings.LastIndexAny(s.text[s.scanned:offset], "\r\n"); lineBreak >= 0 || s.scanned == 0 {
+		s.scanned = strings.LastIndexAny(s.text[:offset], "\r\n") + 1
+		s.quote = 0
+	}
+	quote := s.quote
+	for i := s.scanned; i < offset; i++ {
+		ch := s.text[i]
+		if quote != 0 {
+			if ch == quote && !isEscaped(s.text, i) {
+				quote = 0
+			}
+			continue
+		}
+		if ch == '"' || ch == '\'' || ch == '`' {
+			quote = ch
+		}
+	}
+	s.scanned = offset
+	s.quote = quote
+	return quote, quote != 0
 }
 
 func matchingQuoteOnLine(text string, offset int, quote byte) int {

@@ -889,3 +889,31 @@ func htmlText(parsed *ParsedDocument) string {
 	}
 	return builder.String()
 }
+
+func TestLineQuoteScannerMatchesLineRescan(t *testing.T) {
+	text := "a \"b<%c\" 'd\\'e' `f<%g`\r\nh \"i\n<% j = \"k\" %>'l\rm \"n\" <%o"
+	scanner := &lineQuoteScanner{text: text}
+	offsets := make([]int, 0, 2*len(text)+1)
+	for offset := 0; offset <= len(text); offset++ {
+		offsets = append(offsets, offset)
+	}
+	// Revisit earlier offsets to exercise the restart path.
+	for offset := len(text); offset >= 0; offset -= 3 {
+		offsets = append(offsets, offset)
+	}
+	for _, offset := range offsets {
+		wantQuote, wantOK := activeQuoteOnLine(text, offset)
+		gotQuote, gotOK := scanner.activeQuote(offset)
+		if gotQuote != wantQuote || gotOK != wantOK {
+			t.Fatalf("offset %d: got (%q, %v), want (%q, %v)", offset, gotQuote, gotOK, wantQuote, wantOK)
+		}
+	}
+}
+
+func TestParseDocumentLongSingleLineStaysLinear(t *testing.T) {
+	text := strings.Repeat("<% a = 1 %>", 20000)
+	parsed := ParseDocument("file:///long.asp", text, Settings{DefaultLanguage: "VBScript"})
+	if len(parsed.Regions) != 20000 {
+		t.Fatalf("regions = %d, want 20000", len(parsed.Regions))
+	}
+}

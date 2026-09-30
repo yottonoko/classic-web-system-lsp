@@ -1143,6 +1143,7 @@ func ParseDocument(uri, text string, settings Settings) *ParsedDocument {
 		return parseStandaloneVBScriptDocument(uri, text)
 	}
 	aspOpenFeatures := newASPOpenScanFeatures(text)
+	aspOpenFeatures.quotes = &lineQuoteScanner{text: text}
 	defaultLanguage := normalizeServerLanguage(settings.DefaultLanguage)
 	if directiveLanguage, ok := aspDirectiveLanguageWithFeatures(text, aspOpenFeatures); ok {
 		defaultLanguage = normalizeServerLanguage(directiveLanguage)
