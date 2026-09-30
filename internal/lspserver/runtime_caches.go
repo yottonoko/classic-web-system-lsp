@@ -20,7 +20,7 @@ import (
 
 const (
 	// diskCacheToolVersion changes only when persisted analysis semantics become incompatible.
-	diskCacheToolVersion = "0.8.8-go-inlay-types"
+	diskCacheToolVersion = "0.9.0-go"
 	// diskReferenceCacheSchemaVersion changes when reference-only persisted records become incompatible.
 	diskReferenceCacheSchemaVersion uint32 = 1
 )
