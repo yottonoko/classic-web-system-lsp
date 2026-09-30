@@ -147,6 +147,34 @@ func TestFlowchartStaticOnlyDocumentHasConnectedOutputFlow(t *testing.T) {
 	}
 }
 
+func TestFlowchartDetachedOutputStartStaysInRenderedOutputSection(t *testing.T) {
+	source := "<% Option Explicit %>\n<p>head</p>\n<%\nDim total\ntotal = 1\nSub Render()\nEnd Sub\n%>\n<footer>tail</footer>\n<% Render %>\n<p>end</p>\n"
+	parsed := core.ParseDocument("file:///detached.asp", source, core.Settings{DefaultLanguage: "VBScript"})
+	nodes, edges := flowchartVBScriptNodes(parsed, nil, "raw", "en", 80)
+	sections := flowchartEnsureOutputSection(flowchartSections(parsed), nodes)
+	_, nodes, edges = flowchartAttachSectionMembership(sections, nodes, edges)
+	tail := flowchartOutputNodeContaining(nodes, "tail")
+	if tail == nil {
+		t.Fatalf("tail output missing: %#v", nodes)
+	}
+	starts := 0
+	for _, node := range nodes {
+		if node["kind"] == "start" && node["sectionId"] == tail["sectionId"] {
+			starts++
+		}
+	}
+	if starts != 1 {
+		t.Fatalf("section %v has %d start nodes: nodes=%#v edges=%#v", tail["sectionId"], starts, nodes, edges)
+	}
+	for _, edge := range edges {
+		if edge["target"] == tail["id"] || edge["source"] == tail["id"] {
+			if edge["sectionId"] != tail["sectionId"] {
+				t.Fatalf("edge %#v crosses out of section %v", edge, tail["sectionId"])
+			}
+		}
+	}
+}
+
 func TestFlowchartASPExpressionIsImplicitResponseOutput(t *testing.T) {
 	source := `<% If enabled Then %><h1><%= title %></h1><% End If %>`
 	parsed := core.ParseDocument("file:///expression.asp", source, core.Settings{DefaultLanguage: "VBScript"})

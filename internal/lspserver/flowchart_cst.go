@@ -129,41 +129,63 @@ type flowchartStaticOutput struct {
 
 func flowchartAttachStaticOutput(parsed *core.ParsedDocument, builder *flowchartCFGBuilder) {
 	outputs := flowchartStaticOutputs(parsed, builder.document)
-	for _, output := range outputs {
+	ids := make([]string, len(outputs))
+	for index, output := range outputs {
 		id := builder.addNode("output", flowchartStaticOutputLabel(output.fragments), nil, output.start, output.end)
 		builder.nodes[len(builder.nodes)-1]["outputFragments"] = output.fragments
 		flowchartSpliceOutputNode(builder, id, output.start, output.end)
+		ids[index] = id
 	}
-	flowchartConnectDetachedOutputs(builder, outputs)
+	flowchartConnectDetachedOutputs(builder, outputs, ids)
 	for index := range builder.edges {
 		builder.edges[index]["id"] = "edge-" + strconv.Itoa(index)
 	}
 }
 
-func flowchartConnectDetachedOutputs(builder *flowchartCFGBuilder, outputs []flowchartStaticOutput) {
+func flowchartConnectDetachedOutputs(builder *flowchartCFGBuilder, outputs []flowchartStaticOutput, ids []string) {
+	if len(outputs) == 0 {
+		return
+	}
+	connected := make(map[string]bool, len(builder.edges)*2)
+	for _, edge := range builder.edges {
+		source, _ := edge["source"].(string)
+		target, _ := edge["target"].(string)
+		connected[source] = true
+		connected[target] = true
+	}
+	staticOutput := make(map[string]int, len(ids))
+	for index, id := range ids {
+		staticOutput[id] = index
+	}
 	detached := make([]string, 0)
+	first, last := -1, -1
 	for _, node := range builder.nodes {
 		if node["kind"] != "output" {
 			continue
 		}
 		id, _ := node["id"].(string)
-		connected := false
-		for _, edge := range builder.edges {
-			if edge["source"] == id || edge["target"] == id {
-				connected = true
-				break
-			}
+		if connected[id] {
+			continue
 		}
-		if !connected {
-			detached = append(detached, id)
+		detached = append(detached, id)
+		if index, ok := staticOutput[id]; ok {
+			if first < 0 {
+				first = index
+			}
+			last = index
 		}
 	}
-	if len(detached) == 0 || len(outputs) == 0 {
+	if len(detached) == 0 {
 		return
 	}
-	start := builder.addNode("start", "Start", nil, outputs[0].start, outputs[0].start)
-	endOffset := outputs[len(outputs)-1].end
-	end := builder.addNode("end", "End", nil, endOffset, endOffset)
+	// Sections are assigned by position, so the synthetic Start/End must sit at
+	// the detached outputs; anchoring them at an output that was already
+	// spliced into the top level would move Start into that other section.
+	if first < 0 {
+		first, last = 0, len(outputs)-1
+	}
+	start := builder.addNode("start", "Start", nil, outputs[first].start, outputs[first].start)
+	end := builder.addNode("end", "End", nil, outputs[last].end, outputs[last].end)
 	previous := start
 	for _, id := range detached {
 		builder.connect(previous, id, "")
