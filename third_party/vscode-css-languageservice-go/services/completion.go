@@ -606,13 +606,16 @@ func (b completionBuilder) collectValueCompletionData(propertyName string) value
 
 	var data valueCompletionData
 	var wg sync.WaitGroup
+	var relay panicRelay
 	wg.Add(2)
 	go func() {
 		defer wg.Done()
+		defer relay.capture()
 		data.reused = b.collectReusedValues(propertyName)
 	}()
 	go func() {
 		defer wg.Done()
+		defer relay.capture()
 		data.cssVariables = collectCSSVariables(text)
 	}()
 	switch languageID {
@@ -620,20 +623,24 @@ func (b completionBuilder) collectValueCompletionData(propertyName string) value
 		wg.Add(2)
 		go func() {
 			defer wg.Done()
+			defer relay.capture()
 			data.scssFunctions = collectSCSSCallables(text, "function")
 		}()
 		go func() {
 			defer wg.Done()
+			defer relay.capture()
 			data.scssVariables = collectSCSSVariables(text)
 		}()
 	case "less":
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
+			defer relay.capture()
 			data.lessVariables = collectLESSVariables(text)
 		}()
 	}
 	wg.Wait()
+	relay.rethrow()
 	return data
 }
 

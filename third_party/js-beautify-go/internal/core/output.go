@@ -449,6 +449,7 @@ func renderLineSnapshots(lines []outputLineRenderSnapshot, byteCount int, itemCo
 	}
 	chunkSize := (len(lines) + workers - 1) / workers
 	var wg sync.WaitGroup
+	var relay panicRelay
 	for worker := 0; worker < workers; worker++ {
 		start := worker * chunkSize
 		end := start + chunkSize
@@ -461,10 +462,12 @@ func renderLineSnapshots(lines []outputLineRenderSnapshot, byteCount int, itemCo
 		wg.Add(1)
 		go func(start int, end int) {
 			defer wg.Done()
+			defer relay.capture()
 			renderLineSnapshotsRange(parts[start:end], lines[start:end])
 		}(start, end)
 	}
 	wg.Wait()
+	relay.rethrow()
 	return parts
 }
 

@@ -22,12 +22,18 @@ func parallelMapOrdered[T any, R any](items []T, minItems int, fn func(int, T) R
 	}
 	jobs := make(chan int, workers)
 	var wg sync.WaitGroup
+	var relay panicRelay
 	wg.Add(workers)
 	for worker := 0; worker < workers; worker++ {
 		go func() {
 			defer wg.Done()
+			// Recover per item so the worker keeps draining jobs; a dead
+			// worker pool would block the producer below forever.
 			for i := range jobs {
-				results[i] = fn(i, items[i])
+				func() {
+					defer relay.capture()
+					results[i] = fn(i, items[i])
+				}()
 			}
 		}()
 	}
@@ -36,5 +42,6 @@ func parallelMapOrdered[T any, R any](items []T, minItems int, fn func(int, T) R
 	}
 	close(jobs)
 	wg.Wait()
+	relay.rethrow()
 	return results
 }

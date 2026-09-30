@@ -47,6 +47,7 @@ func parallelBlockMap[T any](blocks []cssBlock, workers int, fn func([]cssBlock)
 	chunkSize := (len(blocks) + workers - 1) / workers
 	results := make([][]T, workers)
 	var wg sync.WaitGroup
+	var relay panicRelay
 	for worker := 0; worker < workers; worker++ {
 		start := worker * chunkSize
 		end := start + chunkSize
@@ -61,10 +62,12 @@ func parallelBlockMap[T any](blocks []cssBlock, workers int, fn func([]cssBlock)
 		wg.Add(1)
 		go func(index int) {
 			defer wg.Done()
+			defer relay.capture()
 			results[index] = fn(chunk)
 		}(worker)
 	}
 	wg.Wait()
+	relay.rethrow()
 	var total int
 	for _, values := range results {
 		total += len(values)
