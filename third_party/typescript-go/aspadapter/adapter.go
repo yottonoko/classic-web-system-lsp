@@ -196,13 +196,25 @@ func AnalyzeJavaScriptAST(source string) Analysis {
 	return result
 }
 
-func FormatJavaScript(source string, options FormattingOptions) []TextChange {
+// FormatJavaScript formats source and returns no changes when the formatter
+// trips an internal assertion on malformed input, so callers keep the text.
+func FormatJavaScript(source string, options FormattingOptions) (changes []TextChange) {
+	defer func() {
+		if recover() != nil {
+			changes = nil
+		}
+	}()
 	file := parseJavaScript(source)
 	ctx := format.WithFormatCodeSettings(context.Background(), formatCodeSettings(options), "\n")
 	return textChanges(format.FormatDocument(ctx, file))
 }
 
-func FormatJavaScriptAfterKeystroke(source string, position int, key string, options FormattingOptions) []TextChange {
+func FormatJavaScriptAfterKeystroke(source string, position int, key string, options FormattingOptions) (result []TextChange) {
+	defer func() {
+		if recover() != nil {
+			result = nil
+		}
+	}()
 	file := parseJavaScript(source)
 	ctx := format.WithFormatCodeSettings(context.Background(), formatCodeSettings(options), "\n")
 	var changes []core.TextChange

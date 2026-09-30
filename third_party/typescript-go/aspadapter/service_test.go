@@ -674,3 +674,16 @@ func TestProjectRequestForMissingFileReturnsError(t *testing.T) {
 		t.Fatalf("request after missing-file errors failed: %v", err)
 	}
 }
+
+func TestFormatJavaScriptSurvivesFormatterAssertions(t *testing.T) {
+	// Malformed text mixed into script regions trips formatter assertions.
+	source := `<% If a Then %><table><tr><td><% Response.Write "x" %></td></tr></tResp--x--x--x--x--x--x--xonse.Write "x" %></td></tr></table><% End If %>`
+	if changes := FormatJavaScript(source, FormattingOptions{}); len(changes) != 0 {
+		t.Fatalf("FormatJavaScript() = %#v, want no changes after an internal failure", changes)
+	}
+	for position := 0; position <= len(source); position++ {
+		for _, key := range []string{"\n", "{", "}", ";"} {
+			FormatJavaScriptAfterKeystroke(source, position, key, FormattingOptions{})
+		}
+	}
+}
