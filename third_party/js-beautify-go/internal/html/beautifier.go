@@ -37,6 +37,7 @@ type Beautifier struct {
 	multilineTextTag string
 	angularDepth     int
 	formatTagCache   map[formatTagCacheKey]string
+	closeIndex       *simpleCloseIndex
 }
 
 type optionalTag struct {
@@ -245,7 +246,7 @@ func (b *Beautifier) Beautify() (string, error) {
 						continue
 					}
 				} else if shouldTrySimpleHTMLContent(source, next, name, closeTag, b.options) {
-					content, closeStart, closeEnd, ok := readSimpleHTMLContent(source, next, closeTag, tag, b.options)
+					content, closeStart, closeEnd, ok := b.readSimpleHTMLContent(source, next, closeTag, tag)
 					if ok {
 						if hasExtraLiner(name, false, b.options) {
 							b.output.AddNewLine(true)
@@ -444,6 +445,14 @@ func (b *Beautifier) Beautify() (string, error) {
 			continue
 		}
 		next := nextHTMLSpecialIndex(source[i:], b.options)
+		if next == 0 {
+			// The marker at i was not consumed by any reader above (for example an
+			// unterminated "{#"), so treat it as text to guarantee progress.
+			next = nextHTMLSpecialIndex(source[i+1:], b.options)
+			if next >= 0 {
+				next++
+			}
+		}
 		if next < 0 {
 			next = len(source) - i
 		}
@@ -2099,7 +2108,11 @@ func splitTag(tag string) (name string, attrs []string, closing bool, selfClosin
 	}
 	if strings.HasPrefix(trimmed, "</") {
 		inner := strings.TrimSpace(strings.TrimSuffix(strings.TrimPrefix(trimmed, "</"), ">"))
-		return strings.Fields(inner)[0], nil, true, false, true
+		fields := strings.Fields(inner)
+		if len(fields) == 0 {
+			return "", nil, false, false, false
+		}
+		return fields[0], nil, true, false, true
 	}
 	if !strings.HasSuffix(trimmed, ">") {
 		return "", nil, false, false, false
@@ -2460,8 +2473,9 @@ func firstLineIndent(lines []string) string {
 	return ""
 }
 
-func readSimpleHTMLContent(source string, start int, closeTag string, openTag string, options *Options) (string, int, int, bool) {
-	closeIndex, closeEnd, ok := findSimpleCloseSpan(source[start:], closeTag)
+func (b *Beautifier) readSimpleHTMLContent(source string, start int, closeTag string, openTag string) (string, int, int, bool) {
+	options := b.options
+	closeIndex, closeEnd, ok := b.findSimpleCloseSpan(source, start, closeTag)
 	if !ok {
 		return "", 0, 0, false
 	}

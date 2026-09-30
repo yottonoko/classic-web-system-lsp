@@ -270,3 +270,51 @@ func TestBeautifyPreservesInlineContentUnformattedWhitespace(t *testing.T) {
 		}
 	}
 }
+
+func TestBeautifyTerminatesOnUnterminatedTemplateMarkers(t *testing.T) {
+	for _, source := range []string{"{#f0x0xff", "a {% b", "<p>{# x</p>", "{#{#{%"} {
+		got, err := Beautify(source, nil, nil, nil)
+		if err != nil {
+			t.Fatalf("Beautify(%q) error = %v", source, err)
+		}
+		if got == "" {
+			t.Fatalf("Beautify(%q) returned no output", source)
+		}
+	}
+}
+
+func TestSplitTagRejectsEmptyClosingTag(t *testing.T) {
+	if _, _, _, _, ok := splitTag("</ >"); ok {
+		t.Fatal("splitTag accepted a closing tag without a name")
+	}
+	got, err := Beautify("<div></ ></div>", map[string]any{"wrap_attributes": "force"}, nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := "<div>\n</ >\n</div>"; got != want {
+		t.Fatalf("Beautify() = %q, want %q", got, want)
+	}
+}
+
+func TestIndexedSimpleCloseSpanMatchesScan(t *testing.T) {
+	sources := []string{
+		"<table><tr><td>a<td>b<tr><td>c</td><td>d</table>",
+		"<ul><li>a<li>b<ul><li>c</li></ul><li>d</ul>",
+		"<p>a<p>b</p><P>c</P ><p>d",
+		`<td title="</td>">a<td>b</td></td>`,
+		"<select><option>a<option selected>b</option></select>",
+		"<span>a<span>b</span>c</span><span/>d</span>",
+	}
+	for _, source := range sources {
+		b := NewBeautifier(source, nil, nil, nil)
+		for start := 0; start <= len(source); start++ {
+			for _, closeTag := range []string{"</td>", "</li>", "</p>", "</option>", "</span>", "</ul>"} {
+				gotStart, gotEnd, gotOK := b.findSimpleCloseSpan(source, start, closeTag)
+				wantStart, wantEnd, wantOK := findSimpleCloseSpan(source[start:], closeTag)
+				if gotOK != wantOK || (gotOK && (gotStart != wantStart || gotEnd != wantEnd)) {
+					t.Fatalf("findSimpleCloseSpan(%q, %d, %q) = %d, %d, %v; scan = %d, %d, %v", source, start, closeTag, gotStart, gotEnd, gotOK, wantStart, wantEnd, wantOK)
+				}
+			}
+		}
+	}
+}
