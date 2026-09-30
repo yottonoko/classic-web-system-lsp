@@ -129,6 +129,31 @@ describe("extension progress controller", () => {
     await Promise.all([firstOperation, secondOperation]);
   });
 
+  it("reports the crash limit once instead of restarting again", () => {
+    const limits: { count: number; minutes: number }[] = [];
+    const controller = createProgressController({
+      getClient: () => undefined,
+      getStatusBarItem: () => ({ text: "", tooltip: "" }) as never,
+      isDeactivating: () => false,
+      isManualRestarting: () => false,
+      onServerCrashLimit: (crash) => limits.push(crash),
+      localize: () => (key) => key,
+      locale: () => "en",
+      baseNameFromPath: () => undefined,
+      baseNameFromUri: () => undefined,
+    });
+    const handler = controller.createLanguageClientErrorHandler();
+    const results = Array.from({ length: 5 }, () => handler.closed());
+
+    expect(results.slice(0, 4).every((result) => "action" in result && result.action === 2)).toBe(
+      true,
+    );
+    expect(results[4]).toEqual({ action: 1, handled: true });
+    expect(limits).toEqual([{ count: 5, minutes: 3 }]);
+    // The counter restarts so a manual restart gets the full retry budget again.
+    expect(handler.closed()).toEqual({ action: 2 });
+  });
+
   it("drops stale reporter claims before an automatic crash restart", async () => {
     progressSessions.length = 0;
     const controller = createProgressController({

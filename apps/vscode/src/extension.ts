@@ -118,11 +118,29 @@ class ServerStartupError extends Error {
   }
 }
 
+async function showServerCrashLimit(crash: { count: number; minutes: number }): Promise<void> {
+  const localize = extensionLocalizer();
+  const message = localize("server.crashLimit", {
+    count: String(crash.count),
+    minutes: String(crash.minutes),
+  });
+  outputChannel?.error(message);
+  const restart = localize("server.restart");
+  const openOutput = localize("server.openOutput");
+  const choice = await vscode.window.showErrorMessage(message, restart, openOutput);
+  if (choice === restart) {
+    await vscode.commands.executeCommand("aspLsp.restartServer");
+  } else if (choice === openOutput) {
+    outputChannel?.show();
+  }
+}
+
 const progressController = createProgressController({
   getClient: () => client,
   getStatusBarItem: () => statusBarItem,
   isDeactivating: () => isDeactivating,
   isManualRestarting: () => isManualRestarting,
+  onServerCrashLimit: (crash) => void showServerCrashLimit(crash),
   localize: extensionLocalizer,
   locale: extensionLocale,
   baseNameFromPath,

@@ -7,6 +7,8 @@ export type ExtensionMessageKey =
   | "server.binaryInvalid"
   | "server.startFailed"
   | "server.openOutput"
+  | "server.crashLimit"
+  | "server.restart"
   | "maintenance.serverUnavailable"
   | "maintenance.commandFailed"
   | "maintenance.reindexRequested"
@@ -153,6 +155,9 @@ const extensionMessages: Record<"en" | "ja", Record<ExtensionMessageKey, string>
     "server.startFailed":
       "The Classic ASP Language Server could not start from {path}: {error}. Check the Classic ASP output channel for details.",
     "server.openOutput": "Open Output",
+    "server.crashLimit":
+      "The Classic ASP Language Server crashed {count} times in the last {minutes} minutes and was not restarted. Check the Classic ASP output channel for details.",
+    "server.restart": "Restart Server",
     "maintenance.serverUnavailable":
       "Start the Classic ASP Language Server before running this maintenance command.",
     "maintenance.commandFailed": "Classic ASP maintenance command failed: {error}",
@@ -305,6 +310,9 @@ const extensionMessages: Record<"en" | "ja", Record<ExtensionMessageKey, string>
     "server.startFailed":
       "{path} の Classic ASP Language Server を起動できませんでした: {error}。Classic ASP の出力チャネルで詳細を確認してください。",
     "server.openOutput": "出力を開く",
+    "server.crashLimit":
+      "Classic ASP Language Server が直近 {minutes} 分間に {count} 回異常終了したため、再起動を停止しました。Classic ASP の出力チャネルで詳細を確認してください。",
+    "server.restart": "サーバーを再起動",
     "maintenance.serverUnavailable":
       "保守コマンドを実行する前に Classic ASP Language Server を起動してください。",
     "maintenance.commandFailed": "Classic ASP 保守コマンドに失敗しました: {error}",

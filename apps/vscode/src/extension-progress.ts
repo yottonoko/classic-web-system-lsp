@@ -51,6 +51,8 @@ export interface ExtensionProgressDependencies {
   getStatusBarItem: () => vscode.StatusBarItem | undefined;
   isDeactivating: () => boolean;
   isManualRestarting: () => boolean;
+  /** Called instead of the client's default message once automatic restarts stop. */
+  onServerCrashLimit?: (crash: { count: number; minutes: number }) => void;
   localize: () => (key: ExtensionMessageKey, args?: ExtensionMessageArgs) => string;
   locale: () => AspFlowchartLocale;
   baseNameFromPath: (value: string | undefined) => string | undefined;
@@ -97,6 +99,7 @@ export function createProgressController(
     getStatusBarItem,
     isDeactivating,
     isManualRestarting,
+    onServerCrashLimit,
     localize,
     locale,
     baseNameFromPath,
@@ -871,6 +874,12 @@ export function createProgressController(
         const elapsedMs =
           crashRestartTimestamps[crashRestartTimestamps.length - 1] - crashRestartTimestamps[0];
         if (elapsedMs <= crashRestartWindowMs) {
+          if (onServerCrashLimit) {
+            const count = crashRestartTimestamps.length;
+            crashRestartTimestamps = [];
+            onServerCrashLimit({ count, minutes: crashRestartWindowMs / 60_000 });
+            return { action: CloseAction.DoNotRestart, handled: true };
+          }
           return {
             action: CloseAction.DoNotRestart,
             message:

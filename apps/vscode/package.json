@@ -398,7 +398,8 @@
           "tags": [
             "advanced"
           ],
-          "description": "%configuration.format.indentSize.description%"
+          "description": "%configuration.format.indentSize.description%",
+          "maximum": 32
         },
         "aspLsp.format.indentStyle": {
           "type": "string",
@@ -421,7 +422,8 @@
           "tags": [
             "advanced"
           ],
-          "description": "%configuration.format.printWidth.description%"
+          "description": "%configuration.format.printWidth.description%",
+          "maximum": 10000
         },
         "aspLsp.format.endOfLine": {
           "type": "string",
@@ -462,7 +464,8 @@
           "tags": [
             "advanced"
           ],
-          "description": "%configuration.format.maxPreserveNewLines.description%"
+          "description": "%configuration.format.maxPreserveNewLines.description%",
+          "maximum": 100
         },
         "aspLsp.format.indentEmptyLines": {
           "type": "boolean",
@@ -527,7 +530,8 @@
           "tags": [
             "advanced"
           ],
-          "description": "%configuration.format.htmlIndentSize.description%"
+          "description": "%configuration.format.htmlIndentSize.description%",
+          "maximum": 32
         },
         "aspLsp.format.htmlIndentStyle": {
           "type": "string",
@@ -550,7 +554,8 @@
           "tags": [
             "advanced"
           ],
-          "description": "%configuration.format.htmlWrapLineLength.description%"
+          "description": "%configuration.format.htmlWrapLineLength.description%",
+          "maximum": 10000
         },
         "aspLsp.format.htmlWrapAttributes": {
           "type": "string",
@@ -579,7 +584,8 @@
           "tags": [
             "advanced"
           ],
-          "description": "%configuration.format.htmlWrapAttributesIndentSize.description%"
+          "description": "%configuration.format.htmlWrapAttributesIndentSize.description%",
+          "maximum": 32
         },
         "aspLsp.format.htmlIndentInnerHtml": {
           "type": "boolean",
@@ -623,7 +629,8 @@
           "tags": [
             "advanced"
           ],
-          "description": "%configuration.format.cssIndentSize.description%"
+          "description": "%configuration.format.cssIndentSize.description%",
+          "maximum": 32
         },
         "aspLsp.format.cssIndentStyle": {
           "type": "string",
@@ -646,7 +653,8 @@
           "tags": [
             "advanced"
           ],
-          "description": "%configuration.format.cssWrapLineLength.description%"
+          "description": "%configuration.format.cssWrapLineLength.description%",
+          "maximum": 10000
         },
         "aspLsp.format.cssNewlineBetweenRules": {
           "type": "boolean",
@@ -694,7 +702,8 @@
           "tags": [
             "advanced"
           ],
-          "description": "%configuration.format.javascriptIndentSize.description%"
+          "description": "%configuration.format.javascriptIndentSize.description%",
+          "maximum": 32
         },
         "aspLsp.format.javascriptIndentStyle": {
           "type": "string",
@@ -717,7 +726,8 @@
           "tags": [
             "advanced"
           ],
-          "description": "%configuration.format.jscriptIndentSize.description%"
+          "description": "%configuration.format.jscriptIndentSize.description%",
+          "maximum": 32
         },
         "aspLsp.format.jscriptIndentStyle": {
           "type": "string",
@@ -897,7 +907,8 @@
           "tags": [
             "advanced"
           ],
-          "description": "%configuration.format.vbscriptIndentSize.description%"
+          "description": "%configuration.format.vbscriptIndentSize.description%",
+          "maximum": 32
         },
         "aspLsp.format.vbscriptIndentStyle": {
           "type": "string",
@@ -938,7 +949,8 @@
           "tags": [
             "advanced"
           ],
-          "description": "%configuration.format.vbscriptLineContinuationIndentSize.description%"
+          "description": "%configuration.format.vbscriptLineContinuationIndentSize.description%",
+          "maximum": 32
         },
         "aspLsp.format.vbscriptSelectCaseIndent": {
           "type": "string",
