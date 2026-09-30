@@ -310,10 +310,16 @@ func (s *Server) Serve(ctx context.Context) error {
 	interactiveRequestAdmission := newRequestAdmissionLane(interactiveRequestAdmissionCapacity)
 	regularRequestAdmission := newRequestAdmissionLane(requestAdmissionCapacity)
 	backgroundRequestAdmission := newRequestAdmissionLane(requestAdmissionCapacity)
-	lifecycleRequestAdmission := newRequestAdmissionLane(lifecycleRequestAdmissionCapacity)
+	// initialize and shutdown use separate lanes so a client that pipelines
+	// shutdown before the initialize response is not rejected as overloaded.
+	initializeRequestAdmission := newRequestAdmissionLane(lifecycleRequestAdmissionCapacity)
+	shutdownRequestAdmission := newRequestAdmissionLane(lifecycleRequestAdmissionCapacity)
 	requestAdmissionFor := func(method string, class requestWorkClass) *requestAdmissionLane {
-		if lifecycleRequest(method) {
-			return lifecycleRequestAdmission
+		switch method {
+		case "initialize":
+			return initializeRequestAdmission
+		case "shutdown":
+			return shutdownRequestAdmission
 		}
 		switch class {
 		case requestWorkInteractive:
@@ -602,7 +608,7 @@ func (s *Server) Serve(ctx context.Context) error {
 				parent = ctx
 			}
 			item.ctx, item.cancel = context.WithCancel(context.WithValue(parent, runtimeLogSpanKey{}, message.logSpan))
-			if !s.registerRequestCancellation(message.ID, item.cancel, item.sequence) {
+			if !s.registerRequestCancellationEntry(message.ID, requestCancellationEntry{cancel: item.cancel, sequence: item.sequence, lifecycle: lifecycleRequest(message.Method)}) {
 				item.cancel()
 				rejectRequest(message, receivedAt, duplicateRequestIDError())
 				continue
@@ -649,7 +655,7 @@ func isValidRPCNotification(message *rpcMessage) bool {
 		!message.errorPresent
 }
 
-// Keep one bounded admission slot for lifecycle transitions. initialize is
+// Keep one bounded admission slot for each lifecycle transition. initialize is
 // included with shutdown because this server has no separate pre-initialized
 // admission state; a saturated invalidly ordered stream must not prevent the
 // client from completing the LSP handshake.
@@ -726,8 +732,12 @@ func requestRetainedBytes(message *rpcMessage) int {
 }
 
 func (s *Server) registerRequestCancellation(id any, cancel context.CancelFunc, sequence uint64) bool {
+	return s.registerRequestCancellationEntry(id, requestCancellationEntry{cancel: cancel, sequence: sequence})
+}
+
+func (s *Server) registerRequestCancellationEntry(id any, entry requestCancellationEntry) bool {
 	key := requestIDKey(id)
-	if key == "" || cancel == nil {
+	if key == "" || entry.cancel == nil {
 		return false
 	}
 	s.mu.Lock()
@@ -735,7 +745,7 @@ func (s *Server) registerRequestCancellation(id any, cancel context.CancelFunc, 
 		s.mu.Unlock()
 		return false
 	}
-	s.requestCancellations[key] = requestCancellationEntry{cancel: cancel, sequence: sequence}
+	s.requestCancellations[key] = entry
 	s.mu.Unlock()
 	return true
 }
@@ -775,7 +785,7 @@ func (s *Server) cancelRequestsBefore(sequence uint64) {
 	s.mu.Lock()
 	cancellations := make([]context.CancelFunc, 0, len(s.requestCancellations))
 	for _, entry := range s.requestCancellations {
-		if entry.cancel != nil && entry.sequence < sequence {
+		if entry.cancel != nil && !entry.lifecycle && entry.sequence < sequence {
 			cancellations = append(cancellations, entry.cancel)
 		}
 	}

@@ -958,3 +958,46 @@ func waitForConcurrencySignal(t *testing.T, signal <-chan struct{}, failure stri
 		t.Fatal(failure)
 	}
 }
+
+func TestServePipelinedLifecycleRequestsAreNotRejectedOrCancelled(t *testing.T) {
+	releaseInitialize := make(chan struct{})
+	initializeStarted := make(chan struct{})
+	var initializeOnce sync.Once
+	client := startStdioTestClientWithServer(t, func(server *Server) {
+		server.requestDispatchTestHook = func(ctx context.Context, method string) {
+			if method != "initialize" {
+				return
+			}
+			initializeOnce.Do(func() { close(initializeStarted) })
+			select {
+			case <-releaseInitialize:
+			case <-ctx.Done():
+			}
+		}
+	})
+	defer client.close()
+
+	initialize := client.requestAsync("initialize", map[string]any{"capabilities": map[string]any{}})
+	waitForConcurrencySignal(t, initializeStarted, "initialize did not start")
+	if err := client.notify("initialized", map[string]any{}); err != nil {
+		t.Fatal(err)
+	}
+	// A revision-advancing notification must not cancel the in-flight handshake.
+	if err := client.notify("textDocument/didOpen", map[string]any{"textDocument": map[string]any{
+		"uri": "file:///concurrency/pipelined.asp", "languageId": "classic-asp", "version": 1, "text": "<% Dim value %>",
+	}}); err != nil {
+		t.Fatal(err)
+	}
+	shutdown := client.requestAsync("shutdown", nil)
+	select {
+	case response := <-shutdown:
+		t.Fatalf("shutdown answered before the pipelined initialize completed: %#v", response)
+	case <-time.After(50 * time.Millisecond):
+	}
+	close(releaseInitialize)
+
+	if response := client.waitForResponse("initialize", initialize); response.Result == nil {
+		t.Fatalf("initialize returned no result: %#v", response)
+	}
+	client.waitForResponse("shutdown", shutdown)
+}

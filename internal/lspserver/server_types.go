@@ -174,6 +174,9 @@ type semanticTokenCache struct {
 type requestCancellationEntry struct {
 	cancel   context.CancelFunc
 	sequence uint64
+	// lifecycle requests are never stale, so revision-advancing notifications
+	// that arrive after them must not cancel them.
+	lifecycle bool
 }
 
 type diagnosticRevisionJob struct {
