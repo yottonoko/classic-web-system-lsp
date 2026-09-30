@@ -1556,6 +1556,23 @@ func (s *Server) inferVBScriptAssignmentType(parsed *core.ParsedDocument, scope,
 	if strings.EqualFold(strings.TrimSpace(value), "Nothing") {
 		return "Nothing"
 	}
+	variableType := func(identifier string) string {
+		if typeName := info.scopedVariableTypeNames[vbscriptTypeScopeKey(parsed, scope, identifier)]; typeName != "" {
+			return typeName
+		}
+		if typeName := info.variableTypes[strings.ToLower(identifier)]; typeName != "" && !vbscriptNameBoundInScope(parsed, identifier, scope) {
+			return typeName
+		}
+		return ""
+	}
+	// A typed receiver is authoritative: "conn.Execute(sql)" must not fall
+	// through to the text heuristics that assume a RegExp receiver.
+	if typeName, resolved := vbscriptBuiltinMemberChainType(value, variableType); resolved {
+		if isLooseVBTypeName(typeName) {
+			return ""
+		}
+		return typeName
+	}
 	if typeName := inferVBValueTypeForDocument(parsed, value); !isLooseVBTypeName(typeName) {
 		return typeName
 	}
@@ -1566,12 +1583,7 @@ func (s *Server) inferVBScriptAssignmentType(parsed *core.ParsedDocument, scope,
 		}
 	}
 	if identifier := vbscriptBareIdentifier(value); identifier != "" {
-		if typeName := info.scopedVariableTypeNames[vbscriptTypeScopeKey(parsed, scope, identifier)]; typeName != "" {
-			return typeName
-		}
-		if typeName := info.variableTypes[strings.ToLower(identifier)]; typeName != "" && !vbscriptNameBoundInScope(parsed, identifier, scope) {
-			return typeName
-		}
+		return variableType(identifier)
 	}
 	return ""
 }
@@ -2057,10 +2069,24 @@ func (s *Server) vbscriptCallTypeDiagnosticsContextResult(ctx context.Context, p
 			known := false
 			minimum, maximum := -1, -1
 			fullName := name
-			if ownerStart, ownerEnd := vbMemberOwnerBeforeOffset(parsed.Text, start); ownerStart >= 0 {
-				owner := parsed.Text[ownerStart:ownerEnd]
-				fullName = owner + "." + name
-				known, minimum, maximum = vbscriptKnownMemberCall(parsed, start, owner, name, info, declarations)
+			if dot := vbMemberDotBefore(parsed.Text, start); dot >= region.ContentStart {
+				receiverStart, simple := vbReceiverExpressionStart(parsed.Text, dot)
+				switch {
+				case receiverStart < region.ContentStart:
+					// A With-block member or a computed receiver has no
+					// statically known type; never report it as a bare call.
+					known = true
+				case simple:
+					owner := parsed.Text[receiverStart:dot]
+					owner = strings.TrimSpace(owner)
+					fullName = owner + "." + name
+					known, minimum, maximum = vbscriptKnownMemberCall(parsed, start, owner, name, info, declarations)
+				default:
+					receiver := strings.TrimSpace(parsed.Text[receiverStart:dot])
+					fullName = receiver + "." + name
+					known = true
+					minimum, maximum = vbscriptChainMemberArgumentRange(parsed, start, receiver, name, info)
+				}
 			} else if signature, ok := signatures[strings.ToLower(name)]; ok {
 				known = true
 				minimum, maximum = vbscriptParameterRange(signature.Parameters)
@@ -2094,11 +2120,8 @@ func (s *Server) vbscriptCallTypeDiagnosticsContextResult(ctx context.Context, p
 func vbscriptKnownMemberCall(parsed *core.ParsedDocument, offset int, owner, name string, info vbscriptTypeInfo, declarations []vbUsageDeclaration) (bool, int, int) {
 	if typeName, ok := vbscriptBuiltinGlobalObjectType(parsed, owner); ok {
 		if member, exists := vbscriptBuiltinTypeMembers(typeName)[strings.ToLower(name)]; exists {
-			if member.Signature != "" {
-				count := len(vbscriptBuiltinMemberParameters(member))
-				return true, count, count
-			}
-			return true, -1, -1
+			minimum, maximum := vbscriptBuiltinMemberArgumentRange(member)
+			return true, minimum, maximum
 		}
 		return false, -1, -1
 	}
@@ -2121,10 +2144,92 @@ func vbscriptKnownMemberCall(parsed *core.ParsedDocument, offset int, owner, nam
 		return false, -1, -1
 	}
 	member, checked := vbscriptUnionMember(typeName, name, info)
-	if !checked || member == nil {
+	if !checked {
+		return vbscriptKnownBuiltinComMemberCall(typeName, name)
+	}
+	if member == nil {
+		// A configured COM type may describe only part of a built-in type.
+		if candidates := vbscriptConcreteTypeNames(typeName); len(candidates) == 1 {
+			if builtin, ok := vbscriptBuiltinComTypeMembers(strings.ToLower(candidates[0]))[strings.ToLower(name)]; ok {
+				minimum, maximum := vbscriptBuiltinMemberArgumentRange(builtin)
+				return true, minimum, maximum
+			}
+		}
 		return false, -1, -1
 	}
 	return true, -1, -1
+}
+
+// vbscriptChainMemberArgumentRange returns the argument contract of a member
+// called on a chained receiver such as "rs.Fields". Unresolved chains are
+// accepted without a contract.
+func vbscriptChainMemberArgumentRange(parsed *core.ParsedDocument, offset int, receiver, name string, info vbscriptTypeInfo) (int, int) {
+	scope := vbscriptScopeAtOffset(parsed, offset)
+	ownerType := func(owner string) string {
+		if typeName := info.scopedVariableTypeNames[vbscriptTypeScopeKey(parsed, scope, owner)]; typeName != "" {
+			return typeName
+		}
+		if vbscriptNameBoundInScopeAtOffset(parsed, owner, scope, offset) {
+			return ""
+		}
+		if typeName := info.variableTypes[strings.ToLower(owner)]; typeName != "" {
+			return typeName
+		}
+		typeName, _ := vbscriptBuiltinGlobalObjectType(parsed, owner)
+		return typeName
+	}
+	typeName, resolved := vbscriptBuiltinMemberChainType(receiver, ownerType)
+	if !resolved {
+		return -1, -1
+	}
+	candidates := vbscriptConcreteTypeNames(typeName)
+	if len(candidates) != 1 {
+		return -1, -1
+	}
+	member, ok := vbscriptBuiltinTypeMembers(candidates[0])[strings.ToLower(name)]
+	if !ok {
+		return -1, -1
+	}
+	return vbscriptBuiltinMemberArgumentRange(member)
+}
+
+func vbscriptBuiltinMemberArgumentRange(member vbBuiltinMember) (int, int) {
+	if member.Signature == "" {
+		return -1, -1
+	}
+	parameters := vbscriptBuiltinMemberParameters(member)
+	return builtinRequiredParameterCount(parameters), len(parameters)
+}
+
+// vbscriptKnownBuiltinComMemberCall resolves a member call on a variable whose
+// type is a built-in COM stub. COM libraries ship in several versions, so a
+// member missing from the stub is accepted without an argument contract
+// instead of being reported as unknown.
+func vbscriptKnownBuiltinComMemberCall(typeName string, name string) (bool, int, int) {
+	candidates := vbscriptConcreteTypeNames(typeName)
+	if len(candidates) == 0 {
+		return false, -1, -1
+	}
+	minimum, maximum := -1, -1
+	for index, candidate := range candidates {
+		members := vbscriptBuiltinComTypeMembers(strings.ToLower(strings.TrimSpace(candidate)))
+		if members == nil {
+			// Class names cannot contain a dot, so a dotted type is an external
+			// ProgID whose members are unknown rather than missing.
+			return len(candidates) == 1 && strings.Contains(candidate, "."), -1, -1
+		}
+		member, ok := members[strings.ToLower(name)]
+		if !ok {
+			return true, -1, -1
+		}
+		memberMinimum, memberMaximum := vbscriptBuiltinMemberArgumentRange(member)
+		if index == 0 {
+			minimum, maximum = memberMinimum, memberMaximum
+		} else if memberMinimum != minimum || memberMaximum != maximum {
+			minimum, maximum = -1, -1
+		}
+	}
+	return true, minimum, maximum
 }
 
 func vbscriptArgumentCountDiagnosticRange(r lsp.Range, name string, minimum, maximum, actual int) lsp.Diagnostic {

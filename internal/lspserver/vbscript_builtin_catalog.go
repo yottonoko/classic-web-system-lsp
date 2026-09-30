@@ -24,9 +24,10 @@ type localizedBuiltinDocs struct {
 }
 
 type localizedBuiltinParameter struct {
-	Name string
-	EN   string
-	JA   string
+	Name     string
+	Optional bool
+	EN       string
+	JA       string
 }
 
 type vbscriptBuiltinMemberCompletionData struct {
@@ -35,7 +36,12 @@ type vbscriptBuiltinMemberCompletionData struct {
 	Member   string `json:"member"`
 }
 
+// vbscriptBuiltinTypeMembers returns the built-in members of a type keyed by
+// lower-cased member name. Callers must treat the result as read-only.
 func vbscriptBuiltinTypeMembers(typeName string) map[string]vbBuiltinMember {
+	if comMembers := vbscriptBuiltinComTypeMembers(strings.ToLower(strings.TrimSpace(typeName))); comMembers != nil {
+		return comMembers
+	}
 	members := map[string]vbBuiltinMember{}
 	add := func(name string, kind lsp.CompletionItemKind, memberType string) {
 		members[strings.ToLower(name)] = vbBuiltinMember{Name: name, Kind: kind, TypeName: memberType}
@@ -177,52 +183,6 @@ func vbscriptBuiltinTypeMembers(typeName string) map[string]vbBuiltinMember {
 	case "submatches":
 		add("Count", lsp.CompletionItemKindProperty, "Number")
 		addMethod("Item", "String", "SubMatches.Item(index)")
-	case "scripting.filesystemobject":
-		addMethod("GetFile", "Scripting.File", "FileSystemObject.GetFile(path)")
-		addMethod("OpenTextFile", "Scripting.TextStream", "FileSystemObject.OpenTextFile(filename, iomode, create, format)")
-	case "scripting.file":
-		add("Name", lsp.CompletionItemKindProperty, "String")
-		add("Path", lsp.CompletionItemKindProperty, "String")
-		addMethod("OpenAsTextStream", "Scripting.TextStream", "File.OpenAsTextStream(iomode, format)")
-	case "scripting.dictionary":
-		add("Count", lsp.CompletionItemKindProperty, "Number")
-		addMethod("Add", "Variant", "Dictionary.Add(key, item)")
-		addMethod("Exists", "Boolean", "Dictionary.Exists(key)")
-		addMethod("Item", "Variant", "Dictionary.Item(key)")
-	case "adodb.stream":
-		add("Type", lsp.CompletionItemKindProperty, "Number")
-		addMethod("Open", "Variant", "Stream.Open(source, mode, options, userName, password)")
-		addMethod("ReadText", "String", "Stream.ReadText(numChars)")
-		addMethod("WriteText", "Variant", "Stream.WriteText(data, options)")
-	case "adodb.recordset":
-		add("EOF", lsp.CompletionItemKindProperty, "Boolean")
-		add("Fields", lsp.CompletionItemKindProperty, "ADODB.Fields")
-		addMethodDoc("GetRows", "Array", "Recordset.GetRows(rows, start, fields)", localizedBuiltinDocs{
-			EN: "Copies records from a Recordset into a two-dimensional array.",
-			JA: "Recordset から records を 2 次元 array へ copy します。",
-		}, localizedBuiltinParameter{
-			Name: "rows",
-			EN:   "Number of records to retrieve. When omitted, retrieves the remaining records in the Recordset.",
-			JA:   "取得する records 数です。省略すると Recordset の残りを取得します。",
-		}, localizedBuiltinParameter{
-			Name: "start",
-			EN:   "Record number or bookmark where copying starts.",
-			JA:   "copy を開始する record number または bookmark です。",
-		}, localizedBuiltinParameter{
-			Name: "fields",
-			EN:   "Field name/number, or an array of field names/numbers to include.",
-			JA:   "含める field name/number、または field names/numbers の array です。",
-		})
-		addMethod("GetString", "String", "Recordset.GetString(format, numRows, columnDelimiter, rowDelimiter, nullExpr)")
-		addMethod("MoveNext", "Variant", "Recordset.MoveNext()")
-	case "adodb.command":
-		add("CommandText", lsp.CompletionItemKindProperty, "String")
-		add("Parameters", lsp.CompletionItemKindProperty, "ADODB.Parameters")
-		addMethod("CreateParameter", "ADODB.Parameter", "Command.CreateParameter(name, type, direction, size, value)")
-		addMethod("Execute", "ADODB.Recordset", "Command.Execute(recordsAffected, parameters, options)")
-	case "adodb.parameter":
-		add("Name", lsp.CompletionItemKindProperty, "String")
-		add("Value", lsp.CompletionItemKindProperty, "Variant")
 	}
 	return members
 }
@@ -233,6 +193,9 @@ func (s *Server) vbscriptBuiltinMemberCompletionsContext(ctx context.Context, pa
 	}
 	if ctx.Err() != nil || parsed == nil {
 		return nil, false
+	}
+	if items, handled := s.vbscriptChainBuiltinMemberCompletionsContext(ctx, parsed, offset); handled {
+		return items, true
 	}
 	owner, ok := vbCompletionMemberOwnerBefore(parsed.Text, offset)
 	if !ok {
@@ -245,6 +208,34 @@ func (s *Server) vbscriptBuiltinMemberCompletionsContext(ctx context.Context, pa
 	if len(typeNames) == 0 {
 		return nil, isVBScriptBuiltinGlobalObjectName(owner)
 	}
+	return s.vbscriptBuiltinMemberCompletionItems(typeNames)
+}
+
+// vbscriptChainBuiltinMemberCompletionsContext completes members after a
+// chained receiver such as "rs.Fields(0)." when it resolves to a built-in type.
+func (s *Server) vbscriptChainBuiltinMemberCompletionsContext(ctx context.Context, parsed *core.ParsedDocument, offset int) ([]lsp.CompletionItem, bool) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if ctx.Err() != nil || parsed == nil {
+		return nil, false
+	}
+	memberStart := min(max(offset, 0), len(parsed.Text))
+	for memberStart > 0 && isVBIdentifierByte(parsed.Text[memberStart-1]) {
+		memberStart--
+	}
+	dot := vbMemberDotBefore(parsed.Text, memberStart)
+	if dot < 0 {
+		return nil, false
+	}
+	typeNames, handled, complete := s.vbscriptChainReceiverTypesContext(ctx, parsed, dot, offset)
+	if !handled || !complete || ctx.Err() != nil || len(typeNames) == 0 {
+		return nil, false
+	}
+	return s.vbscriptBuiltinMemberCompletionItems(typeNames)
+}
+
+func (s *Server) vbscriptBuiltinMemberCompletionItems(typeNames []string) ([]lsp.CompletionItem, bool) {
 	membersByName, ok := vbscriptCommonBuiltinMembers(typeNames)
 	if !ok || len(membersByName) == 0 {
 		return nil, false
@@ -300,14 +291,15 @@ func vbscriptTypedMemberFromBuiltin(member vbBuiltinMember) vbscriptTypedMember 
 	if member.Kind == lsp.CompletionItemKindMethod {
 		kind = "method"
 	}
-	parameterCount := len(vbscriptBuiltinMemberParameters(member))
+	parameters := vbscriptBuiltinMemberParameters(member)
+	parameterCount := len(parameters)
 	return vbscriptTypedMember{
 		Name:                  member.Name,
 		TypeName:              member.TypeName,
 		Kind:                  kind,
 		ParameterCount:        parameterCount,
 		ChecksArgumentCount:   member.Signature != "",
-		MinimumParameterCount: parameterCount,
+		MinimumParameterCount: builtinRequiredParameterCount(parameters),
 		MaximumParameterCount: parameterCount,
 		ParameterRangeKnown:   member.Signature != "",
 	}
@@ -342,12 +334,8 @@ func (s *Server) vbscriptBuiltinMemberHoverContext(ctx context.Context, parsed *
 	if ctx.Err() != nil || parsed == nil {
 		return nil
 	}
-	owner, memberName, ok := vbMemberAtOffset(parsed.Text, offset)
+	typeNames, memberName, ok := s.vbscriptBuiltinMemberReceiverTypesAtContext(ctx, parsed, offset)
 	if !ok {
-		return nil
-	}
-	typeNames, complete := s.vbscriptKnownTypesForNameAtContext(ctx, parsed, owner, offset)
-	if !complete || ctx.Err() != nil {
 		return nil
 	}
 	common, ok := vbscriptCommonBuiltinMembers(typeNames)
@@ -375,6 +363,43 @@ func (s *Server) vbscriptBuiltinMemberHoverContext(ctx context.Context, parsed *
 	return nil
 }
 
+// vbscriptBuiltinMemberReceiverTypesAtContext returns the receiver types and
+// name of the member under offset, for both "owner.Member" and chained
+// receivers such as "owner.Items(0).Member".
+func (s *Server) vbscriptBuiltinMemberReceiverTypesAtContext(ctx context.Context, parsed *core.ParsedDocument, offset int) ([]string, string, bool) {
+	text := parsed.Text
+	offset = min(max(offset, 0), len(text))
+	start := offset
+	for start > 0 && isVBIdentifierByte(text[start-1]) {
+		start--
+	}
+	end := offset
+	for end < len(text) && isVBIdentifierByte(text[end]) {
+		end++
+	}
+	if start == end {
+		return nil, "", false
+	}
+	if dot := vbMemberDotBefore(text, start); dot >= 0 {
+		typeNames, handled, complete := s.vbscriptChainReceiverTypesContext(ctx, parsed, dot, offset)
+		if !complete || ctx.Err() != nil {
+			return nil, "", false
+		}
+		if handled {
+			return typeNames, text[start:end], len(typeNames) > 0
+		}
+	}
+	owner, memberName, ok := vbMemberAtOffset(text, offset)
+	if !ok {
+		return nil, "", false
+	}
+	typeNames, complete := s.vbscriptKnownTypesForNameAtContext(ctx, parsed, owner, offset)
+	if !complete || ctx.Err() != nil {
+		return nil, "", false
+	}
+	return typeNames, memberName, true
+}
+
 func (s *Server) vbscriptBuiltinMemberSignatureHelpContext(ctx context.Context, parsed *core.ParsedDocument, position lsp.Position) *lsp.SignatureHelp {
 	if ctx == nil {
 		ctx = context.Background()
@@ -392,15 +417,26 @@ func (s *Server) vbscriptBuiltinMemberSignatureHelpContext(ctx context.Context, 
 	if nameStart < 0 {
 		return nil
 	}
-	ownerStart, ownerEnd := vbMemberOwnerBeforeOffset(parsed.Text, nameStart)
-	if ownerStart < 0 {
-		return nil
-	}
-	owner := parsed.Text[ownerStart:ownerEnd]
 	memberName := parsed.Text[nameStart:nameEnd]
-	typeNames, complete := s.vbscriptKnownTypesForNameAtContext(ctx, parsed, owner, offset)
-	if !complete || ctx.Err() != nil {
-		return nil
+	var typeNames []string
+	chained := false
+	if dot := vbMemberDotBefore(parsed.Text, nameStart); dot >= 0 {
+		chainTypes, handled, complete := s.vbscriptChainReceiverTypesContext(ctx, parsed, dot, offset)
+		if !complete || ctx.Err() != nil {
+			return nil
+		}
+		typeNames, chained = chainTypes, handled
+	}
+	if !chained {
+		ownerStart, ownerEnd := vbMemberOwnerBeforeOffset(parsed.Text, nameStart)
+		if ownerStart < 0 {
+			return nil
+		}
+		ownerTypes, complete := s.vbscriptKnownTypesForNameAtContext(ctx, parsed, parsed.Text[ownerStart:ownerEnd], offset)
+		if !complete || ctx.Err() != nil {
+			return nil
+		}
+		typeNames = ownerTypes
 	}
 	common, ok := vbscriptCommonBuiltinMembers(typeNames)
 	if !ok {
@@ -543,17 +579,41 @@ func vbscriptBuiltinMemberParameters(member vbBuiltinMember) []localizedBuiltinP
 	parts := strings.Split(raw, ",")
 	params := make([]localizedBuiltinParameter, 0, len(parts))
 	for _, part := range parts {
-		if name := strings.TrimSpace(part); name != "" {
-			params = append(params, localizedBuiltinParameter{Name: name})
+		name := strings.TrimSpace(part)
+		// Brackets mark an optional parameter: "Open([source], [mode])".
+		optional := len(name) > 2 && name[0] == '[' && name[len(name)-1] == ']'
+		if optional {
+			name = strings.TrimSpace(name[1 : len(name)-1])
+		}
+		if name != "" {
+			params = append(params, localizedBuiltinParameter{Name: name, Optional: optional})
 		}
 	}
 	return params
 }
 
+// builtinRequiredParameterCount counts the leading parameters that cannot be
+// omitted. Everything after the first optional parameter is optional too.
+func builtinRequiredParameterCount(params []localizedBuiltinParameter) int {
+	for index, param := range params {
+		if param.Optional {
+			return index
+		}
+	}
+	return len(params)
+}
+
+func builtinParameterLabel(param localizedBuiltinParameter) string {
+	if param.Optional {
+		return "[" + param.Name + "]"
+	}
+	return param.Name
+}
+
 func builtinParameterNames(params []localizedBuiltinParameter) []string {
 	names := make([]string, 0, len(params))
 	for _, param := range params {
-		names = append(names, param.Name)
+		names = append(names, builtinParameterLabel(param))
 	}
 	return names
 }
@@ -575,7 +635,7 @@ func (s *Server) localizedBuiltinParameterInformation(params []localizedBuiltinP
 		if s.isJapanese() && param.JA != "" {
 			doc = param.JA
 		}
-		items = append(items, lsp.ParameterInformation{Label: param.Name, Documentation: doc})
+		items = append(items, lsp.ParameterInformation{Label: builtinParameterLabel(param), Documentation: doc})
 	}
 	return items
 }

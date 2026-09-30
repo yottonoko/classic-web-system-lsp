@@ -112,6 +112,12 @@ func (s *Server) completion(ctx context.Context, uri string, position lsp.Positi
 		}
 		return lsp.CompletionList{Items: items}
 	}
+	if memberItems, handled := s.vbscriptChainBuiltinMemberCompletionsContext(ctx, parsed, offset); handled {
+		if ctx.Err() != nil {
+			return lsp.CompletionList{Items: []lsp.CompletionItem{}}
+		}
+		return lsp.CompletionList{Items: dedupeCompletionItems(memberItems)}
+	}
 	if target, memberCompletion := vbCompletionMemberTargetAt(parsed, offset); memberCompletion {
 		if target.explicit {
 			if memberItems := s.vbscriptConfiguredMemberCompletionsContext(ctx, parsed, offset); len(memberItems) > 0 {
