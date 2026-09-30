@@ -325,6 +325,7 @@ func (s *Server) diagnosticsForParsedWithProgressResult(ctx context.Context, par
 	s.mu.Lock()
 	ifSyntaxDiagnostics := s.settings.VBScriptIfSyntaxDiagnostics
 	deadCodeDiagnostics := s.settings.VBScriptDeadCodeDiagnostics
+	sqlInjectionSeverity, sqlInjectionDiagnostics := vbscriptSQLInjectionSeverity(s.settings.VBScriptSQLInjectionDiagnostics)
 	unusedVBScriptDiagnostics := s.settings.VBScriptUnusedDiagnostics
 	implicitGlobalDiagnostics := s.settings.VBScriptImplicitGlobalDiagnostics
 	unusedJavaScriptDiagnostics := s.settings.JavaScriptUnusedDiagnostics
@@ -409,6 +410,9 @@ func (s *Server) diagnosticsForParsedWithProgressResult(ctx context.Context, par
 		case 4:
 			if deadCodeDiagnostics {
 				groups[index] = vbscript.DeadCodeDiagnostics(parsed)
+			}
+			if sqlInjectionDiagnostics {
+				groups[index] = append(groups[index], vbscript.SQLInjectionDiagnostics(parsed, sqlInjectionSeverity)...)
 			}
 		case 5:
 			if unusedVBScriptDiagnostics {

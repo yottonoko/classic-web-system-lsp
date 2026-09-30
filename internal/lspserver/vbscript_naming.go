@@ -290,6 +290,30 @@ func normalizeVBIdentifierCaseByKind(input map[string]string) map[string]string 
 	return result
 }
 
+func normalizeVBScriptSQLInjectionDiagnostics(value string) string {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case "hint", "information", "warning":
+		return strings.ToLower(strings.TrimSpace(value))
+	default:
+		return "off"
+	}
+}
+
+// vbscriptSQLInjectionSeverity maps the setting to a severity; ok is false
+// when the diagnostic is turned off.
+func vbscriptSQLInjectionSeverity(setting string) (lsp.DiagnosticSeverity, bool) {
+	switch setting {
+	case "hint":
+		return lsp.DiagnosticSeverityHint, true
+	case "information":
+		return lsp.DiagnosticSeverityInformation, true
+	case "warning":
+		return lsp.DiagnosticSeverityWarning, true
+	default:
+		return 0, false
+	}
+}
+
 func normalizeVBScriptIfSyntaxDiagnostics(value string) string {
 	switch strings.ToLower(strings.TrimSpace(value)) {
 	case "off", "basic", "strict":

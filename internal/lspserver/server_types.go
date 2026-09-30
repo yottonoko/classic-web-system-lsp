@@ -305,6 +305,7 @@ type serverSettings struct {
 	VBScriptSyntaxKeywords                   bool
 	VBScriptAssumeUndefinedGlobals           bool
 	VBScriptIfSyntaxDiagnostics              string
+	VBScriptSQLInjectionDiagnostics          string
 	VBScriptTypeChecking                     string
 	VBScriptGlobals                          map[string]vbscriptGlobalSetting
 	VBScriptComTypes                         map[string]vbscriptComTypeSetting
@@ -602,6 +603,7 @@ func defaultServerSettings() serverSettings {
 		VBScriptImplicitGlobalDiagnostics:  false,
 		VBScriptSyntaxKeywords:             true,
 		VBScriptAssumeUndefinedGlobals:     false,
+		VBScriptSQLInjectionDiagnostics:    "off",
 		JavaScriptUnusedDiagnostics:        true,
 		WindowsPathResolution:              true,
 		ExcelIncludeRelatedIncludeTrees:    true,

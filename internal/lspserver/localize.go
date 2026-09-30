@@ -97,6 +97,13 @@ func (s *Server) localizeDiagnostics(diagnostics []lsp.Diagnostic) []lsp.Diagnos
 			} else {
 				diagnostic.Message = "This VBScript code is unreachable."
 			}
+		case "asp-lsp-vbscript-sql":
+			name := diagnosticDataText(*diagnostic, "name")
+			if ja {
+				diagnostic.Message = "Request の値 '" + name + "' が SQL 文字列に連結されています。ADODB.Command のパラメーターを使ってください。"
+			} else {
+				diagnostic.Message = "Request value '" + name + "' is concatenated into SQL text. Use ADODB.Command parameters instead."
+			}
 		case "asp-lsp-vbscript-syntax":
 			localizeVBScriptSyntaxDiagnostic(diagnostic, ja)
 		case "asp-lsp-vbscript-type":

@@ -112,6 +112,8 @@
   "configuration.vbscript.unusedDiagnostics.description": "未使用の VBScript declaration を hint diagnostic として報告します。",
   "configuration.vbscript.implicitGlobalDiagnostics.description": "Option Explicit が無効なときに script-global scope で暗黙に宣言された変数を warning diagnostic として報告します。",
   "configuration.vbscript.deadCodeDiagnostics.description": "到達不能な VBScript code を hint diagnostic として報告します。",
+  "configuration.vbscript.sqlSuggestOnSpace.description": "VBScript の文字列内で SQL キーワードの後にスペースを入力したとき、SQL 補完を開きます。",
+  "configuration.vbscript.sqlInjectionDiagnostics.description": "SQL 文字列に連結された Request の値を、選択した重要度で報告します。型変換、Replace、ユーザー定義関数を通した値は無害化済みとして扱います。",
   "configuration.vbscript.syntaxSnippets.description": "よく使う制御構文と宣言 block の VBScript syntax snippet completion を有効にします。",
   "configuration.vbscript.syntaxKeywords.description": "文脈に応じた VBScript syntax keyword completion を有効にします。",
   "configuration.vbscript.autoIncludes.description": "対象となる workspace declaration の VBScript auto include completion と quick fix を有効にします。",

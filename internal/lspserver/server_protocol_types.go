@@ -325,6 +325,7 @@ type changeConfigurationParams struct {
 				ImplicitGlobalDiagnostics         *bool                             `json:"implicitGlobalDiagnostics"`
 				DeadCodeDiagnostics               *bool                             `json:"deadCodeDiagnostics"`
 				IfSyntaxDiagnostics               *string                           `json:"ifSyntaxDiagnostics"`
+				SQLInjectionDiagnostics           *string                           `json:"sqlInjectionDiagnostics"`
 				TypeChecking                      *string                           `json:"typeChecking"`
 				Globals                           map[string]vbscriptGlobalSetting  `json:"globals"`
 				ComTypes                          map[string]vbscriptComTypeSetting `json:"comTypes"`

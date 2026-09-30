@@ -31,6 +31,12 @@ func (s *Server) completion(ctx context.Context, uri string, position lsp.Positi
 	}
 	region := completionRegionAt(parsed, offset)
 	if isCSSOnlyCompletionTrigger(completionContext) && (region == nil || region.Language != core.LanguageCSS) {
+		// A space also continues SQL text inside a VBScript string literal.
+		if completionContext.TriggerCharacter == " " && region != nil && region.Language == core.LanguageVBScript {
+			if stringItems, handled := s.vbscriptStringCompletionsContext(ctx, parsed, offset); handled && ctx.Err() == nil {
+				return lsp.CompletionList{Items: stringItems}
+			}
+		}
 		return lsp.CompletionList{Items: []lsp.CompletionItem{}}
 	}
 	if region != nil {
@@ -111,6 +117,12 @@ func (s *Server) completion(ctx context.Context, uri string, position lsp.Positi
 			return lsp.CompletionList{Items: []lsp.CompletionItem{}}
 		}
 		return lsp.CompletionList{Items: items}
+	}
+	if stringItems, handled := s.vbscriptStringCompletionsContext(ctx, parsed, offset); handled {
+		if ctx.Err() != nil {
+			return lsp.CompletionList{Items: []lsp.CompletionItem{}}
+		}
+		return lsp.CompletionList{Items: stringItems}
 	}
 	if memberItems, handled := s.vbscriptChainBuiltinMemberCompletionsContext(ctx, parsed, offset); handled {
 		if ctx.Err() != nil {

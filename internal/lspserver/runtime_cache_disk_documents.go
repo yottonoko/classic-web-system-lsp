@@ -320,6 +320,7 @@ func (s *Server) diagnosticsDiskLookupContext(ctx context.Context, doc *core.Tex
 		"vbscriptImplicitGlobalDiagnostics": settings.VBScriptImplicitGlobalDiagnostics,
 		"javascriptUnusedDiagnostics":       settings.JavaScriptUnusedDiagnostics,
 		"vbscriptIfSyntaxDiagnostics":       settings.VBScriptIfSyntaxDiagnostics,
+		"vbscriptSqlInjectionDiagnostics":   settings.VBScriptSQLInjectionDiagnostics,
 		"vbscriptTypeChecking":              settings.VBScriptTypeChecking,
 		"vbscriptGlobals":                   settings.VBScriptGlobals,
 		"vbscriptComTypes":                  settings.VBScriptComTypes,

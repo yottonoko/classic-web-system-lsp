@@ -33,6 +33,7 @@ func (s *Server) workspaceDiagnosticsSettingsFingerprint() string {
 		"vbscriptDeadCodeDiagnostics":       settings.VBScriptDeadCodeDiagnostics,
 		"vbscriptGlobals":                   settings.VBScriptGlobals,
 		"vbscriptIfSyntaxDiagnostics":       settings.VBScriptIfSyntaxDiagnostics,
+		"vbscriptSqlInjectionDiagnostics":   settings.VBScriptSQLInjectionDiagnostics,
 		"vbscriptTypeChecking":              settings.VBScriptTypeChecking,
 		"vbscriptUnusedDiagnostics":         settings.VBScriptUnusedDiagnostics,
 		"vbscriptImplicitGlobalDiagnostics": settings.VBScriptImplicitGlobalDiagnostics,

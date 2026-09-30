@@ -112,6 +112,8 @@
   "configuration.vbscript.unusedDiagnostics.description": "Report unused VBScript declarations as hint diagnostics.",
   "configuration.vbscript.implicitGlobalDiagnostics.description": "Report variables implicitly declared at script-global scope while Option Explicit is disabled as warning diagnostics.",
   "configuration.vbscript.deadCodeDiagnostics.description": "Report unreachable VBScript code as hint diagnostics.",
+  "configuration.vbscript.sqlSuggestOnSpace.description": "Open SQL completion after typing a space that follows a SQL keyword inside a VBScript string literal.",
+  "configuration.vbscript.sqlInjectionDiagnostics.description": "Report Request values concatenated into SQL strings at the selected severity. Values passed through a conversion, Replace, or a user function are treated as sanitized.",
   "configuration.vbscript.syntaxSnippets.description": "Enable VBScript syntax snippet completions for common control flow and declaration blocks.",
   "configuration.vbscript.syntaxKeywords.description": "Enable context-aware VBScript syntax keyword completions.",
   "configuration.vbscript.autoIncludes.description": "Enable VBScript auto include completions and quick fixes for eligible workspace declarations.",

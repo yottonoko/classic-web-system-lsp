@@ -52,6 +52,7 @@ import {
 } from "./extension-localization";
 import { createProgressController } from "./extension-progress";
 import { autoCloseAspBlock, autoCloseHtmlTag } from "./extension-auto-close";
+import { shouldSuggestSqlAfterSpace } from "./sql-suggest";
 import { showReferences, toggleLineComment } from "./extension-editor-actions";
 import { SharedDiagnosticCollectionProvider } from "./diagnostic-collection-provider";
 
@@ -210,6 +211,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     vscode.workspace.onDidChangeTextDocument((event) => {
       void autoCloseHtmlTag(event, client);
       void autoCloseAspBlock(event);
+      suggestSqlAfterSpace(event);
       if (
         vscode.window.activeTextEditor?.document.uri.toString() === event.document.uri.toString()
       ) {
@@ -1184,5 +1186,29 @@ async function restartServerOnce(context: vscode.ExtensionContext): Promise<void
     await startClient(context);
   } catch (error) {
     await reportServerStartupError(error, context);
+  }
+}
+
+function suggestSqlAfterSpace(event: vscode.TextDocumentChangeEvent): void {
+  const document = event.document;
+  const change = event.contentChanges[0];
+  if (
+    event.contentChanges.length !== 1 ||
+    change?.text !== " " ||
+    !change.range.isEmpty ||
+    (document.languageId !== "classic-asp" && document.languageId !== "vbscript") ||
+    vscode.window.activeTextEditor?.document !== document ||
+    !vscode.workspace
+      .getConfiguration("aspLsp", document.uri)
+      .get("vbscript.sqlSuggestOnSpace", true)
+  ) {
+    return;
+  }
+  const linePrefix = document
+    .lineAt(change.range.start.line)
+    .text.slice(0, change.range.start.character + 1);
+  if (shouldSuggestSqlAfterSpace(linePrefix)) {
+    // The auto flag keeps the widget closed when the server has nothing to offer.
+    void vscode.commands.executeCommand("editor.action.triggerSuggest", { auto: true });
   }
 }

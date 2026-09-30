@@ -1306,6 +1306,22 @@
           "default": true,
           "description": "%configuration.vbscript.deadCodeDiagnostics.description%"
         },
+        "aspLsp.vbscript.sqlInjectionDiagnostics": {
+          "type": "string",
+          "enum": [
+            "off",
+            "hint",
+            "information",
+            "warning"
+          ],
+          "default": "off",
+          "description": "%configuration.vbscript.sqlInjectionDiagnostics.description%"
+        },
+        "aspLsp.vbscript.sqlSuggestOnSpace": {
+          "type": "boolean",
+          "default": true,
+          "description": "%configuration.vbscript.sqlSuggestOnSpace.description%"
+        },
         "aspLsp.vbscript.syntaxSnippets": {
           "type": "boolean",
           "default": true,

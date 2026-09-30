@@ -760,6 +760,13 @@ func (s *Server) handleDidChangeConfiguration(params json.RawMessage) error {
 			diagnosticsSettingsChanged = true
 		}
 	}
+	if p.Settings.AspLsp.VBScript.SQLInjectionDiagnostics != nil {
+		sqlInjectionDiagnostics := normalizeVBScriptSQLInjectionDiagnostics(*p.Settings.AspLsp.VBScript.SQLInjectionDiagnostics)
+		if sqlInjectionDiagnostics != s.settings.VBScriptSQLInjectionDiagnostics {
+			s.settings.VBScriptSQLInjectionDiagnostics = sqlInjectionDiagnostics
+			diagnosticsSettingsChanged = true
+		}
+	}
 	if p.Settings.AspLsp.VBScript.IfSyntaxDiagnostics != nil {
 		ifSyntaxDiagnostics := normalizeVBScriptIfSyntaxDiagnostics(*p.Settings.AspLsp.VBScript.IfSyntaxDiagnostics)
 		if ifSyntaxDiagnostics != s.settings.VBScriptIfSyntaxDiagnostics {

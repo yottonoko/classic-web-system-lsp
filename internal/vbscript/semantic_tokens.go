@@ -218,6 +218,7 @@ func semanticTokens(parsed *core.ParsedDocument, tokenRange *lsp.Range, extra ma
 		}
 	}
 	tokens = append(tokens, includeDirectiveSemanticTokens(doc, parsed.Text)...)
+	tokens = append(tokens, sqlSemanticTokens(doc, parsed)...)
 	if tokenRange != nil {
 		tokens = filterSemanticTokens(tokens, *tokenRange)
 	}
