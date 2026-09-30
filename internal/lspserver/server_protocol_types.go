@@ -2,7 +2,6 @@ package lspserver
 
 import (
 	"encoding/json"
-	"os"
 	"path/filepath"
 	"regexp"
 	"strings"
@@ -15,8 +14,6 @@ func isJavaScriptPosition(doc *core.TextDocument, parsed *core.ParsedDocument, p
 	region := core.RegionAt(parsed, doc.OffsetAt(position))
 	return region != nil && (region.Language == core.LanguageJavaScript || region.Language == core.LanguageJScript)
 }
-
-var _ = os.Stderr
 
 var vbClassDeclarationLinePattern = regexp.MustCompile(`(?i)^\s*Class\s+([A-Za-z_][A-Za-z0-9_]*)`)
 
