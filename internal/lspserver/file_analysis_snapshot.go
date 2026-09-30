@@ -314,6 +314,7 @@ func vbScopeIntervalsForDocument(parsed *core.ParsedDocument) []vbScopeInterval 
 	intervals := []vbScopeInterval{}
 	current := vbLexicalScope{}
 	procedureScopes := vbProcedureScopes(parsed)
+	procedureScopeIndex := newVBProcedureScopeIndex(procedureScopes)
 	for _, region := range parsed.Regions {
 		if region.Language != core.LanguageVBScript {
 			continue
@@ -326,7 +327,7 @@ func vbScopeIntervalsForDocument(parsed *core.ParsedDocument) []vbScopeInterval 
 			for _, statement := range splitVBStatementSegments(parsed.Text[lineStart:lineEnd], lineStart) {
 				trimmed := strings.TrimSpace(statement.Text)
 				lower := strings.ToLower(trimmed)
-				if scope := vbProcedureScopeAtOffset(procedureScopes, statement.Start); scope != "" {
+				if scope := procedureScopeIndex.at(statement.Start); scope != "" {
 					current.Procedure = scope
 				} else if className := vbClassDeclarationName(trimmed); className != "" {
 					current.Class = className

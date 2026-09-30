@@ -299,6 +299,7 @@ func collectVBUsageDeclarations(parsed *core.ParsedDocument) vbUsageDeclarations
 		})
 	}
 	procedureScopes := vbProcedureScopes(parsed)
+	procedureScopeIndex := newVBProcedureScopeIndex(procedureScopes)
 	for _, region := range parsed.Regions {
 		if region.Language != core.LanguageVBScript {
 			continue
@@ -311,7 +312,7 @@ func collectVBUsageDeclarations(parsed *core.ParsedDocument) vbUsageDeclarations
 			line := parsed.Text[lineStart:lineEnd]
 			for _, statement := range splitVBStatementSegments(line, lineStart) {
 				trimmed := statement.Text
-				currentScope := vbProcedureScopeAtOffset(procedureScopes, statement.Start)
+				currentScope := procedureScopeIndex.at(statement.Start)
 				inProcedure := currentScope != ""
 				if header, ok := vbProcedureHeaderAtLine(trimmed); ok && header.HasParams && header.ParamsEnd > header.ParamsStart {
 					for _, declaration := range vbParameterDeclarations(doc, trimmed, statement.Start, header.ParamsStart, header.ParamsEnd, currentScope) {

@@ -488,7 +488,8 @@ func activeVBWithOwnerBefore(parsed *core.ParsedDocument, offset int) string {
 		offset = len(parsed.Text)
 	}
 	procedureScopes := vbProcedureScopes(parsed)
-	activeScope := vbProcedureScopeAtOffset(procedureScopes, offset)
+	procedureScopeIndex := newVBProcedureScopeIndex(procedureScopes)
+	activeScope := procedureScopeIndex.at(offset)
 	stack := []string{}
 	for _, region := range parsed.Regions {
 		if region.Language != core.LanguageVBScript || region.ContentStart >= offset {
@@ -504,7 +505,7 @@ func activeVBWithOwnerBefore(parsed *core.ParsedDocument, offset int) string {
 				lineEnd++
 			}
 			for _, statement := range splitVBStatementSegments(parsed.Text[lineStart:lineEnd], lineStart) {
-				if vbProcedureScopeAtOffset(procedureScopes, statement.Start) != activeScope {
+				if procedureScopeIndex.at(statement.Start) != activeScope {
 					continue
 				}
 				trimmed := strings.TrimSpace(statement.Text)

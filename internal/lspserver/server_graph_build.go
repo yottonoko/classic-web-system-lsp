@@ -735,6 +735,7 @@ func graphAnalysisTypes(parsed *core.ParsedDocument) vbGraphAnalysisTypes {
 		return details
 	}
 	procedureScopes := vbProcedureScopes(parsed)
+	procedureScopeIndex := newVBProcedureScopeIndex(procedureScopes)
 	classOwners := vbClassMemberLineOwners(parsed)
 	doc := core.NewTextDocument(parsed.URI, "classic-asp", 0, parsed.Text)
 	seenLines := map[int]struct{}{}
@@ -759,7 +760,7 @@ func graphAnalysisTypes(parsed *core.ParsedDocument) vbGraphAnalysisTypes {
 						switch parsedAnnotation.kind {
 						case "type":
 							lowerName := strings.ToLower(parsedAnnotation.name)
-							scope := vbProcedureScopeAtOffset(procedureScopes, lineStart)
+							scope := procedureScopeIndex.at(lineStart)
 							memberOf := ""
 							accessor := ""
 							if scope == "" {
@@ -1259,6 +1260,7 @@ var (
 func graphLoopVariableDeclarations(parsed *core.ParsedDocument) []vbUsageDeclaration {
 	doc := core.NewTextDocument(parsed.URI, "classic-asp", 0, parsed.Text)
 	procedureScopes := vbProcedureScopes(parsed)
+	procedureScopeIndex := newVBProcedureScopeIndex(procedureScopes)
 	var declarations []vbUsageDeclaration
 	for _, region := range parsed.Regions {
 		if region.Language != core.LanguageVBScript {
@@ -1270,7 +1272,7 @@ func graphLoopVariableDeclarations(parsed *core.ParsedDocument) []vbUsageDeclara
 				lineEnd++
 			}
 			line := parsed.Text[lineStart:lineEnd]
-			currentScope := vbProcedureScopeAtOffset(procedureScopes, lineStart)
+			currentScope := procedureScopeIndex.at(lineStart)
 			inProcedure := currentScope != ""
 			if inProcedure {
 				for _, pattern := range []*regexp.Regexp{graphForLoopPattern, graphForEachLoopPattern} {
@@ -1306,6 +1308,7 @@ func graphLoopVariableDeclarations(parsed *core.ParsedDocument) []vbUsageDeclara
 func graphReDimDeclarations(parsed *core.ParsedDocument) []vbUsageDeclaration {
 	doc := core.NewTextDocument(parsed.URI, "classic-asp", 0, parsed.Text)
 	procedureScopes := vbProcedureScopes(parsed)
+	procedureScopeIndex := newVBProcedureScopeIndex(procedureScopes)
 	globalNames := map[string]struct{}{}
 	localNamesByScope := map[string]map[string]struct{}{}
 	for _, declaration := range collectVBUsageDeclarations(parsed).Declarations {
@@ -1334,7 +1337,7 @@ func graphReDimDeclarations(parsed *core.ParsedDocument) []vbUsageDeclaration {
 				lineEnd++
 			}
 			line := parsed.Text[lineStart:lineEnd]
-			currentScope := vbProcedureScopeAtOffset(procedureScopes, lineStart)
+			currentScope := procedureScopeIndex.at(lineStart)
 			inProcedure := currentScope != ""
 			if matches := graphReDimPattern.FindStringSubmatchIndex(line); matches != nil {
 				start := lineStart + matches[2]

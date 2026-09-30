@@ -461,6 +461,42 @@ func vbProcedureScopeAtOffset(scopes []vbProcedureScope, offset int) string {
 	return best.Key()
 }
 
+// vbProcedureScopeIndex answers repeated vbProcedureScopeAtOffset queries.
+// Well-formed documents have disjoint procedure ranges, which allows a binary
+// search; overlapping (malformed) ranges fall back to the linear scan.
+type vbProcedureScopeIndex struct {
+	scopes   []vbProcedureScope
+	sorted   []vbProcedureScope
+	disjoint bool
+}
+
+func newVBProcedureScopeIndex(scopes []vbProcedureScope) vbProcedureScopeIndex {
+	sorted := make([]vbProcedureScope, 0, len(scopes))
+	for _, scope := range scopes {
+		if scope.StartOffset == 0 && scope.EndOffset == 0 || scope.StartOffset > scope.EndOffset {
+			continue
+		}
+		sorted = append(sorted, scope)
+	}
+	sort.SliceStable(sorted, func(i, j int) bool { return sorted[i].StartOffset < sorted[j].StartOffset })
+	disjoint := true
+	for index := 1; disjoint && index < len(sorted); index++ {
+		disjoint = sorted[index].StartOffset > sorted[index-1].EndOffset
+	}
+	return vbProcedureScopeIndex{scopes: scopes, sorted: sorted, disjoint: disjoint}
+}
+
+func (index vbProcedureScopeIndex) at(offset int) string {
+	if !index.disjoint {
+		return vbProcedureScopeAtOffset(index.scopes, offset)
+	}
+	position := sort.Search(len(index.sorted), func(i int) bool { return index.sorted[i].StartOffset > offset }) - 1
+	if position < 0 || offset > index.sorted[position].EndOffset {
+		return ""
+	}
+	return index.sorted[position].Key()
+}
+
 // vbProcedureScopeForUsageDeclaration retains the concrete procedure
 // declaration behind a scope key. Scope keys intentionally identify a
 // procedure by owner/name/accessor for lookup, so duplicate procedures need
@@ -1004,6 +1040,7 @@ func implicitVBDeclarations(parsed *core.ParsedDocument) []vbUsageDeclaration {
 		}
 	}
 	procedures := vbProcedureScopes(parsed)
+	procedureIndex := newVBProcedureScopeIndex(procedures)
 	candidates := map[string]vbUsageDeclaration{}
 	for _, region := range parsed.Regions {
 		if region.Language != core.LanguageVBScript {
@@ -1025,7 +1062,7 @@ func implicitVBDeclarations(parsed *core.ParsedDocument) []vbUsageDeclaration {
 				continue
 			}
 			position := doc.PositionAt(start)
-			scope := vbProcedureScopeAtOffset(procedures, start)
+			scope := procedureIndex.at(start)
 			if _, explicitGlobal := explicitGlobals[lower]; explicitGlobal {
 				continue
 			}
@@ -1252,6 +1289,7 @@ func normalizedVBUsageDeclarations(parsed *core.ParsedDocument) []vbUsageDeclara
 func vbParameterDeclarationsFromTokens(parsed *core.ParsedDocument) []vbUsageDeclaration {
 	doc := core.NewTextDocument(parsed.URI, "classic-asp", 0, parsed.Text)
 	scopes := vbProcedureScopes(parsed)
+	scopeIndex := newVBProcedureScopeIndex(scopes)
 	declarations := make([]vbUsageDeclaration, 0)
 	seen := map[string]struct{}{}
 	for _, region := range parsed.Regions {
@@ -1274,7 +1312,7 @@ func vbParameterDeclarationsFromTokens(parsed *core.ParsedDocument) []vbUsageDec
 				// CST procedure nodes start at the first keyword rather than the
 				// line's indentation. Use the declaration name as an in-scope
 				// offset so property accessors retain their qualified scope key.
-				scope := vbProcedureScopeAtOffset(scopes, nameStart)
+				scope := scopeIndex.at(nameStart)
 				if scope == "" {
 					scope = strings.ToLower(parsed.Text[nameStart:nameEnd])
 				}

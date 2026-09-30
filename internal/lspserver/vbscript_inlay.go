@@ -653,6 +653,7 @@ func implicitAssignmentInlayDeclarations(parsed *core.ParsedDocument, includeAwa
 	}
 	candidates := map[string]vbUsageDeclaration{}
 	procedureScopes := vbProcedureScopes(parsed)
+	procedureScopeIndex := newVBProcedureScopeIndex(procedureScopes)
 	for _, region := range parsed.Regions {
 		if region.Language != core.LanguageVBScript {
 			continue
@@ -663,7 +664,7 @@ func implicitAssignmentInlayDeclarations(parsed *core.ParsedDocument, includeAwa
 				lineEnd++
 			}
 			line := parsed.Text[lineStart:lineEnd]
-			currentScope := vbProcedureScopeAtOffset(procedureScopes, lineStart)
+			currentScope := procedureScopeIndex.at(lineStart)
 			inProcedure := currentScope != ""
 			if declaration, ok := implicitAssignmentInlayDeclaration(doc, line, lineStart, currentScope, inProcedure, len(parsed.Includes) > 0 && !includeAware, declared, isBuiltin); ok {
 				if !implicitAssignmentDuplicateOfEarlierIncludeGlobal(parsed, declaration, includedGlobalNames) {
