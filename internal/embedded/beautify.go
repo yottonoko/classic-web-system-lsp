@@ -10,6 +10,7 @@ import (
 )
 
 func FormatJavaScript(source string, options core.FormattingOptions, language core.EmbeddedLanguage) (string, error) {
+	options = core.SanitizeFormattingOptions(options)
 	tabSize, insertSpaces := javascriptIndentOptions(options, language)
 	changes := tsgoadapter.FormatJavaScript(source, typeScriptFormattingOptions(options, tabSize, insertSpaces))
 	return applyTypeScriptChanges(source, changes), nil
@@ -51,6 +52,7 @@ func applyTypeScriptChanges(source string, changes []tsgoadapter.TextChange) str
 }
 
 func FormatCSS(source string, options core.FormattingOptions) (string, error) {
+	options = core.SanitizeFormattingOptions(options)
 	tabSize, insertSpaces := cssIndentOptions(options)
 	beautifyOptions := beautify.Options{
 		"indent_size": tabSize,

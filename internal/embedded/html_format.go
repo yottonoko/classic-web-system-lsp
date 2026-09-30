@@ -13,6 +13,7 @@ import (
 
 // FormatHTML formats a complete HTML fragment with the Go HTML language service.
 func FormatHTML(source string, options core.FormattingOptions) (string, error) {
+	options = core.SanitizeFormattingOptions(options)
 	tabSize, insertSpaces := htmlIndentOptions(options)
 	input, restore := htmlFormatterInput(source, tabSize, insertSpaces, options.FragmentMode)
 	doc := htmlservice.NewTextDocument("file:///format.html", "html", 0, input)

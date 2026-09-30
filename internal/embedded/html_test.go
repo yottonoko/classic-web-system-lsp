@@ -82,3 +82,34 @@ func TestFormatHTMLRoutesEmbeddedCSSSettings(t *testing.T) {
 		t.Fatalf("embedded CSS setting was not routed:\ndefault=%q\ncompact=%q", defaultFormatted, compactFormatted)
 	}
 }
+
+func TestFormattersTolerateOutOfRangeOptions(t *testing.T) {
+	negative := -5
+	source := "<div class=\"a\" id=\"b\"><style>a{b:c}</style><script>var a=1;</script><p>x</p>\n\n\n</div>"
+	for name, options := range map[string]core.FormattingOptions{
+		"unknown wrap attributes": {HTMLWrapAttributes: "bogus"},
+		"unknown brace style":     {CSSBraceStyle: "bogus"},
+		"negative indent":         {TabSize: -3, InsertSpaces: true, HTMLTabSize: -1, CSSTabSize: -1, JavaScriptTabSize: -1},
+		"oversized indent":        {TabSize: 5000, InsertSpaces: true, HTMLWrapAttributes: "force-aligned", HTMLWrapAttributesIndentSize: 5000},
+		"negative newlines":       {MaxPreserveNewLines: &negative},
+	} {
+		formatted, err := FormatHTML(source, options)
+		if err != nil || formatted == "" {
+			t.Fatalf("%s: FormatHTML() = %q, %v", name, formatted, err)
+		}
+		for _, line := range strings.Split(formatted, "\n") {
+			if indent := len(line) - len(strings.TrimLeft(line, " ")); indent > 8*32 {
+				t.Fatalf("%s: line indented by %d columns", name, indent)
+			}
+		}
+		if _, err := FormatCSS("a{b:c}", options); err != nil {
+			t.Fatalf("%s: FormatCSS() error = %v", name, err)
+		}
+		if _, err := FormatJavaScript("function f(){return 1}", options, core.LanguageJavaScript); err != nil {
+			t.Fatalf("%s: FormatJavaScript() error = %v", name, err)
+		}
+		parsed := core.ParseDocument("file:///site/options.asp", "<% If a Then %>\n<p>x</p>\n<% End If %>\n", core.Settings{})
+		options.FormatHTML, options.FormatCSS, options.FormatJavaScript = FormatHTML, FormatCSS, FormatJavaScript
+		core.FormatDocument(parsed, options)
+	}
+}

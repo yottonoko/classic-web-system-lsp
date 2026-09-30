@@ -80,6 +80,7 @@ type FormattingOptions struct {
 }
 
 func FormatDocument(parsed *ParsedDocument, options FormattingOptions) []lsp.TextEdit {
+	options = SanitizeFormattingOptions(options)
 	formatted := ""
 	if shouldFormatWholeHTMLDocument(parsed, options) {
 		var err error
@@ -108,6 +109,7 @@ func FormatRange(parsed *ParsedDocument, r lsp.Range, options FormattingOptions)
 	if parsed == nil {
 		return nil
 	}
+	options = SanitizeFormattingOptions(options)
 	source := NewTextDocument(parsed.URI, "classic-asp", 0, parsed.Text)
 	start := source.OffsetAt(r.Start)
 	end := source.OffsetAt(r.End)
@@ -182,17 +184,26 @@ func protectRegionsForHTMLFormatting(parsed *ParsedDocument) (string, []protecte
 	var out strings.Builder
 	holes := []protectedHTMLRegion{}
 	cursor := 0
+	// Collision checks rescan the whole source per hole, so only run them when
+	// the source mentions a placeholder prefix at all.
+	aspTokenSource, elementTokenSource := "", ""
+	if strings.Contains(parsed.Text, aspHTMLPlaceholderPrefix) {
+		aspTokenSource = parsed.Text
+	}
+	if containsASCIIFold(parsed.Text, htmlPlaceholderElementPrefix) {
+		elementTokenSource = parsed.Text
+	}
 	for _, region := range regions {
 		if !protectRegionDuringHTMLFormatting(region) || region.Start < cursor {
 			continue
 		}
 		out.WriteString(parsed.Text[cursor:region.Start])
 		if region.Kind == RegionStyle || region.Kind == RegionClientScript || region.Kind == RegionServerScript {
-			token := htmlPlaceholderElementName(parsed.Text, len(holes))
+			token := htmlPlaceholderElementName(elementTokenSource, len(holes))
 			out.WriteString("<" + token + "></" + token + ">")
 			holes = append(holes, protectedHTMLRegion{Region: region, Token: token, IsElement: true})
 		} else {
-			token := aspHTMLPlaceholderToken(parsed.Text, len(holes))
+			token := aspHTMLPlaceholderToken(aspTokenSource, len(holes))
 			out.WriteString(token)
 			holes = append(holes, protectedHTMLRegion{Region: region, Token: token})
 		}
@@ -206,9 +217,14 @@ func protectRegionDuringHTMLFormatting(region Region) bool {
 	return isASPHole(region) || region.Kind == RegionStyle || region.Kind == RegionClientScript || region.Kind == RegionServerScript
 }
 
+const (
+	aspHTMLPlaceholderPrefix     = "__ASP_LSP_FORMAT_HOLE_"
+	htmlPlaceholderElementPrefix = "asp-lsp-format-hole-"
+)
+
 func aspHTMLPlaceholderToken(source string, index int) string {
 	for {
-		token := "__ASP_LSP_FORMAT_HOLE_" + strconv.Itoa(index) + "__"
+		token := aspHTMLPlaceholderPrefix + strconv.Itoa(index) + "__"
 		if !strings.Contains(source, token) {
 			return token
 		}
@@ -218,7 +234,7 @@ func aspHTMLPlaceholderToken(source string, index int) string {
 
 func htmlPlaceholderElementName(source string, index int) string {
 	for {
-		token := "asp-lsp-format-hole-" + strconv.Itoa(index)
+		token := htmlPlaceholderElementPrefix + strconv.Itoa(index)
 		if !strings.Contains(strings.ToLower(source), token) {
 			return token
 		}
@@ -227,27 +243,38 @@ func htmlPlaceholderElementName(source string, index int) string {
 }
 
 func restoreRegionsAfterHTMLFormatting(formatted string, source string, holes []protectedHTMLRegion, options FormattingOptions) (string, bool) {
+	// Placeholders keep their source order through HTML formatting, so restore
+	// them in one forward pass instead of rescanning and copying the whole
+	// document for every hole.
+	var out strings.Builder
+	out.Grow(len(formatted))
+	cursor := 0
 	for _, hole := range holes {
-		start, end, ok := protectedRegionPlaceholderRange(formatted, hole)
+		start, end, ok := protectedRegionPlaceholderRange(formatted[cursor:], hole)
 		if !ok {
 			return "", false
 		}
+		out.WriteString(formatted[cursor : cursor+start])
+		restored := out.String()
+		offset := len(restored)
 		replacement := formatRegionForHTMLRestore(source, hole.Region, options)
 		if strings.Contains(replacement, "\n") {
 			if tagIndentIgnored(hole.Region, options) {
-				if _, ok := leadingWhitespaceBeforeOffset(formatted, start); !ok && protectedRegionPrefersOwnLine(hole) {
-					replacement = "\n" + leadingWhitespaceAtLineStart(formatted, start) + replacement
+				if _, ok := leadingWhitespaceBeforeOffset(restored, offset); !ok && protectedRegionPrefersOwnLine(hole) {
+					replacement = "\n" + leadingWhitespaceAtLineStart(restored, offset) + replacement
 				}
-			} else if prefix, ok := leadingWhitespaceBeforeOffset(formatted, start); ok {
+			} else if prefix, ok := leadingWhitespaceBeforeOffset(restored, offset); ok {
 				replacement = strings.ReplaceAll(replacement, "\n", "\n"+prefix)
 			} else if protectedRegionPrefersOwnLine(hole) {
-				prefix := leadingWhitespaceAtLineStart(formatted, start)
+				prefix := leadingWhitespaceAtLineStart(restored, offset)
 				replacement = "\n" + prefix + strings.ReplaceAll(replacement, "\n", "\n"+prefix)
 			}
 		}
-		formatted = formatted[:start] + replacement + formatted[end:]
+		out.WriteString(replacement)
+		cursor += end
 	}
-	return formatted, true
+	out.WriteString(formatted[cursor:])
+	return out.String(), true
 }
 
 func protectedRegionPrefersOwnLine(hole protectedHTMLRegion) bool {

@@ -841,16 +841,14 @@ func (v VirtualDocument) SourceRange(source *TextDocument, start, end int) (lsp.
 		return source.Range(sourceOffset, sourceOffset), true
 	}
 	lastOffset := max(start, end-1)
-	var segment SourceMapSegment
-	found := false
-	for _, candidate := range v.Segments {
-		if start >= candidate.VirtualStart && start < candidate.VirtualEnd {
-			segment = candidate
-			found = true
-			break
-		}
+	index := sort.Search(len(v.Segments), func(index int) bool {
+		return v.Segments[index].VirtualEnd > start
+	})
+	if index >= len(v.Segments) {
+		return lsp.Range{}, false
 	}
-	if !found || lastOffset >= segment.VirtualEnd {
+	segment := v.Segments[index]
+	if start < segment.VirtualStart || lastOffset >= segment.VirtualEnd {
 		return lsp.Range{}, false
 	}
 	sourceStart := segment.SourceStart + (start - segment.VirtualStart)
