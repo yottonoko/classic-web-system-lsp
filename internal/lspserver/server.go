@@ -26,6 +26,7 @@ type Server struct {
 	diagnosticPublicationGateOnce                    sync.Once
 	diagnosticPublicationGate                        chan struct{}
 	debugLogWriter                                   *debugLogFileWriter
+	debugLogTargets                                  debugLogTargetCache
 	htmlMu                                           sync.Mutex
 	cssMu                                            sync.Mutex
 	javascriptMu                                     sync.Mutex

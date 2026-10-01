@@ -14,7 +14,10 @@ import (
 const (
 	defaultDebugLogMaxQueuedEntries = 10_000
 	defaultDebugLogMaxQueuedBytes   = 1024 * 1024
-	debugLogFileMode                = 0o600
+	// debugLogFileMaxBatchBytes caps one append so a burst of lines costs one
+	// open and write instead of one per line.
+	debugLogFileMaxBatchBytes = 64 * 1024
+	debugLogFileMode          = 0o600
 )
 
 var errDebugLogFileNotRegular = errors.New("debug log path is not a regular file")
@@ -55,6 +58,7 @@ type debugLogFileWriter struct {
 	failedPaths  map[string]struct{}
 	flushing     bool
 	queuedBytes  int
+	queuedTrace  int
 	droppedTrace int
 	droppedLog   int
 	flushDone    chan struct{}
@@ -100,6 +104,9 @@ func (w *debugLogFileWriter) enqueue(entry debugLogFileEntry) {
 	}
 	w.queue = append(w.queue, queued)
 	w.queuedBytes += queued.byteLength
+	if strings.EqualFold(entry.level, "trace") {
+		w.queuedTrace++
+	}
 	if !w.flushing {
 		w.flushing = true
 		w.flushDone = make(chan struct{})
@@ -116,12 +123,16 @@ func (w *debugLogFileWriter) canQueueLocked(entry queuedDebugLogFileEntry) bool 
 }
 
 func (w *debugLogFileWriter) dropOldestTraceLocked() bool {
+	if w.queuedTrace == 0 {
+		return false
+	}
 	for index, entry := range w.queue {
 		if !strings.EqualFold(entry.level, "trace") {
 			continue
 		}
 		w.queue = append(w.queue[:index], w.queue[index+1:]...)
 		w.queuedBytes -= entry.byteLength
+		w.queuedTrace--
 		w.droppedTrace++
 		return true
 	}
@@ -140,8 +151,24 @@ func (w *debugLogFileWriter) flushAsync() {
 			return
 		}
 		entry := w.queue[0]
-		w.queue = w.queue[1:]
-		w.queuedBytes -= entry.byteLength
+		var lines strings.Builder
+		count := 0
+		for count < len(w.queue) {
+			next := w.queue[count]
+			if next.filePath != entry.filePath || next.root != entry.root || next.relative != entry.relative {
+				break
+			}
+			if count > 0 && lines.Len()+next.byteLength > debugLogFileMaxBatchBytes {
+				break
+			}
+			lines.WriteString(next.line)
+			w.queuedBytes -= next.byteLength
+			if strings.EqualFold(next.level, "trace") {
+				w.queuedTrace--
+			}
+			count++
+		}
+		w.queue = w.queue[count:]
 		notice := w.droppedNoticeLocked(entry.debugLogFileEntry)
 		w.mu.Unlock()
 		if notice != "" {
@@ -150,7 +177,7 @@ func (w *debugLogFileWriter) flushAsync() {
 				continue
 			}
 		}
-		if err := w.writeLineEntry(entry.debugLogFileEntry, entry.line); err != nil {
+		if err := w.writeLineEntry(entry.debugLogFileEntry, lines.String()); err != nil {
 			w.markFailed(entry.filePath, err)
 		}
 	}
@@ -192,6 +219,16 @@ func (w *debugLogFileWriter) adoptTarget(entry *debugLogFileEntry) {
 	if !keepIncoming {
 		_ = incoming.Close()
 	}
+}
+
+func (w *debugLogFileWriter) adoptedTarget(filePath string) (debugLogFileTarget, bool) {
+	if w == nil {
+		return debugLogFileTarget{}, false
+	}
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	target, ok := w.targets[filePath]
+	return target, ok && target.root != nil
 }
 
 func (w *debugLogFileWriter) rootUsedLocked(root *os.Root) bool {

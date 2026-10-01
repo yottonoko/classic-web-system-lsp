@@ -12,6 +12,7 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/yottonoko/classic-web-system-lsp/internal/vbscript"
@@ -84,15 +85,73 @@ func (s *Server) logDebugFile(level, category, message string) {
 }
 
 func (s *Server) logDebugFileWithMetadata(level, category, message string, metadata map[string]any) {
-	target, ok := s.debugLogFileTarget()
+	if s.debugLogWriter == nil {
+		return
+	}
+	target, ok := s.cachedDebugLogFileTarget()
 	if !ok {
 		return
 	}
-	if s.debugLogWriter == nil {
-		_ = target.root.Close()
-		return
-	}
 	s.debugLogWriter.enqueue(debugLogFileEntry{filePath: target.filePath, root: target.root, relative: target.relative, level: level, category: category, message: message, metadata: metadata})
+}
+
+// debugLogTargetRecheckInterval bounds how long a resolved debug log target is
+// reused. Resolving it stats every workspace root, which made each log line
+// cost several network round trips on network drives.
+const debugLogTargetRecheckInterval = 5 * time.Second
+
+type debugLogTargetCache struct {
+	mu       sync.Mutex
+	key      string
+	filePath string
+	ok       bool
+	expires  time.Time
+}
+
+func (s *Server) debugLogFileTargetKey() (string, bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if !s.settings.DebugLogFileEnabled {
+		return "", false
+	}
+	var key strings.Builder
+	for _, part := range []string{s.settings.DebugLogFilePath, s.settings.CacheDirectory, s.rootPath, os.Getenv("ASP_LSP_DEFAULT_DEBUG_LOG_FILE")} {
+		key.WriteString(part)
+		key.WriteByte(0)
+	}
+	for _, root := range s.workspaceRoots {
+		key.WriteString(root.Path)
+		key.WriteByte(0)
+	}
+	return key.String(), true
+}
+
+// cachedDebugLogFileTarget reuses the root handle the writer already holds for
+// the resolved log file until the settings change or the recheck interval ends.
+func (s *Server) cachedDebugLogFileTarget() (debugLogFileTarget, bool) {
+	key, enabled := s.debugLogFileTargetKey()
+	if !enabled {
+		return debugLogFileTarget{}, false
+	}
+	now := time.Now()
+	cache := &s.debugLogTargets
+	cache.mu.Lock()
+	fresh := cache.key == key && now.Before(cache.expires)
+	filePath, ok := cache.filePath, cache.ok
+	cache.mu.Unlock()
+	if fresh {
+		if !ok {
+			return debugLogFileTarget{}, false
+		}
+		if target, adopted := s.debugLogWriter.adoptedTarget(filePath); adopted {
+			return target, true
+		}
+	}
+	target, ok := s.debugLogFileTarget()
+	cache.mu.Lock()
+	cache.key, cache.filePath, cache.ok, cache.expires = key, target.filePath, ok, now.Add(debugLogTargetRecheckInterval)
+	cache.mu.Unlock()
+	return target, ok
 }
 
 func (s *Server) debugLogFilePath() string {

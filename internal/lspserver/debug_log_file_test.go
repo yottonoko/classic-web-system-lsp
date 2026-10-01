@@ -402,3 +402,41 @@ func assertDebugLogFilePermissions(t *testing.T, path string) {
 		t.Fatalf("debug log permissions = %04o, want %04o", got, debugLogFileMode)
 	}
 }
+
+func TestDebugLogFileCachedTargetFollowsSettingChanges(t *testing.T) {
+	root := t.TempDir()
+	server := New(strings.NewReader(""), io.Discard, io.Discard)
+	server.rootPath = root
+	server.rootURI = filePathURI(root)
+	server.workspaceRoots = []workspaceRoot{{Path: root, URI: filePathURI(root)}}
+	defer server.debugLogWriter.closeRoots()
+	firstPath := filepath.Join(root, "first.log")
+	secondPath := filepath.Join(root, "second.log")
+	server.settings.DebugLogFileEnabled = true
+	server.settings.DebugLogFilePath = firstPath
+	server.logDebugFile("DEBUG", "cache.test", "first line")
+	server.logDebugFile("DEBUG", "cache.test", "first again")
+	server.settings.DebugLogFilePath = secondPath
+	server.logDebugFile("DEBUG", "cache.test", "second line")
+	server.settings.DebugLogFileEnabled = false
+	server.logDebugFile("DEBUG", "cache.test", "disabled line")
+	server.debugLogWriter.wait()
+
+	first, err := os.ReadFile(firstPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := os.ReadFile(secondPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(first), "first line") || !strings.Contains(string(first), "first again") || strings.Contains(string(first), "second line") {
+		t.Fatalf("first log = %q", first)
+	}
+	if !strings.Contains(string(second), "second line") || strings.Contains(string(second), "first") {
+		t.Fatalf("second log = %q", second)
+	}
+	if strings.Contains(string(first)+string(second), "disabled line") {
+		t.Fatal("disabled debug log file still received a line")
+	}
+}
