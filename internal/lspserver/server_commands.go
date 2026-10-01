@@ -40,6 +40,8 @@ func (s *Server) workspaceDiagnostics(ctx context.Context) map[string]any {
 	settingsKey := s.workspaceDiagnosticsSettingsFingerprint()
 	workspaceDiagnosticsStarted := time.Now()
 	s.logWorkspaceDiagnosticsWorkerStarted(uris)
+	// Pages usually share include targets; resolve each one once per pass.
+	ctx = withIncludeResolutionMemo(ctx)
 	itemsByIndex := make([]any, len(uris))
 	var cacheHits atomic.Int64
 	var cacheMisses atomic.Int64

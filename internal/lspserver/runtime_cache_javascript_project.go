@@ -690,6 +690,10 @@ func isJavaScriptProjectFingerprintFile(path string) bool {
 }
 
 func (s *Server) diskIncludeFingerprint(parsed *core.ParsedDocument) string {
+	return s.diskIncludeFingerprintContext(context.Background(), parsed)
+}
+
+func (s *Server) diskIncludeFingerprintContext(ctx context.Context, parsed *core.ParsedDocument) string {
 	if parsed == nil {
 		return ""
 	}
@@ -703,7 +707,7 @@ func (s *Server) diskIncludeFingerprint(parsed *core.ParsedDocument) string {
 	}
 	resolved := make([]resolvedInclude, 0, len(parsed.Includes))
 	for _, include := range parsed.Includes {
-		details, ok := s.includeTargetDetailsForMode(parsed.URI, include.Path, include.Mode)
+		details, ok := s.includeTargetDetailsForModeContext(ctx, parsed.URI, include.Path, include.Mode)
 		resolved = append(resolved, resolvedInclude{
 			include: include,
 			path:    details.Path,

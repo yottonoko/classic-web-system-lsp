@@ -1,6 +1,7 @@
 package lspserver
 
 import (
+	"context"
 	"strings"
 
 	"github.com/yottonoko/classic-web-system-lsp/internal/core"
@@ -71,6 +72,13 @@ func (s *Server) parseTextDocumentWithSnapshotSchedule(doc *core.TextDocument, d
 }
 
 func (s *Server) parseText(uri string, text string, defaultLanguage string) *core.ParsedDocument {
+	return s.parseTextContext(context.Background(), uri, text, defaultLanguage)
+}
+
+// parseTextContext parses text like parseText. ctx only carries pass-scoped
+// state, such as an include resolution memo, for validating a disk-cache hit;
+// it does not cancel the parse.
+func (s *Server) parseTextContext(ctx context.Context, uri string, text string, defaultLanguage string) *core.ParsedDocument {
 	if cached := s.cachedParsedText(uri, text, defaultLanguage); cached != nil {
 		s.touchDocumentStore(uri)
 		return cached
@@ -92,7 +100,7 @@ func (s *Server) parseText(uri string, text string, defaultLanguage string) *cor
 		return flight.parsed
 	}
 
-	parsed, snapshot, restored := s.readDiskParsedDocument(doc, defaultLanguage)
+	parsed, snapshot, restored := s.readDiskParsedDocumentContext(ctx, doc, defaultLanguage)
 	if !restored {
 		s.mu.Lock()
 		testHook := s.documentParseTestHook

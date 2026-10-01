@@ -129,6 +129,8 @@ func (s *Server) workspaceGraphDocumentsContextWithProgressResult(ctx context.Co
 	sort.Strings(keys)
 	parsed := make([]*core.ParsedDocument, len(keys))
 	var completed atomic.Int64
+	// Pages usually share include targets; resolve each one once per pass.
+	memoCtx := withIncludeResolutionMemo(ctx)
 	parse := func(index int) {
 		if ctx.Err() != nil {
 			return
@@ -144,7 +146,7 @@ func (s *Server) workspaceGraphDocumentsContextWithProgressResult(ctx context.Co
 		if source.URI == "" {
 			return
 		}
-		parsed[index] = s.parseText(source.URI, source.Text, defaultLanguage)
+		parsed[index] = s.parseTextContext(memoCtx, source.URI, source.Text, defaultLanguage)
 	}
 	if shouldParallelParseGraphSources(keys, documents) {
 		s.analysisWorkers.parallelForBulk(ctx, len(keys), func(workerCtx context.Context, index int) {
@@ -323,14 +325,14 @@ func (s *Server) workspaceGraphSourceDocumentsContext(ctx context.Context) graph
 	}
 	sort.Strings(keys)
 	parsed := make([]*core.ParsedDocument, len(keys))
-	s.analysisWorkers.parallelForBulk(ctx, len(keys), func(workerCtx context.Context, index int) {
+	s.analysisWorkers.parallelForBulk(withIncludeResolutionMemo(ctx), len(keys), func(workerCtx context.Context, index int) {
 		if workerCtx.Err() != nil {
 			return
 		}
 		key := keys[index]
 		source := documents[key]
 		if source.URI != "" {
-			parsed[index] = s.parseText(source.URI, source.Text, defaultLanguage)
+			parsed[index] = s.parseTextContext(workerCtx, source.URI, source.Text, defaultLanguage)
 		}
 	})
 	if ctx.Err() != nil {

@@ -1241,7 +1241,7 @@ func (s *Server) parsedIncludeFileContext(ctx context.Context, path string) *cor
 	if ctx.Err() != nil {
 		return nil
 	}
-	parsed := s.parseText(uri, content, defaultLanguage)
+	parsed := s.parseTextContext(ctx, uri, content, defaultLanguage)
 	if ctx.Err() != nil {
 		return nil
 	}

@@ -722,7 +722,8 @@ func (s *Server) workspaceReferenceDocumentsForScope(ctx context.Context, parsed
 		progress(0, len(scope.FileNames), "")
 	}
 	parsedKey := workspacepkg.FileIdentityKeyFromURI(parsed.URI)
-	s.analysisWorkers.parallelForBulk(ctx, len(scope.FileNames), func(workerCtx context.Context, index int) {
+	// Pages in the scope usually share include targets; resolve each one once.
+	s.analysisWorkers.parallelForBulk(withIncludeResolutionMemo(ctx), len(scope.FileNames), func(workerCtx context.Context, index int) {
 		if workerCtx.Err() != nil {
 			return
 		}

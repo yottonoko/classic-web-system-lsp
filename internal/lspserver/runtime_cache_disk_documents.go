@@ -184,6 +184,10 @@ func (s *Server) parsedDiskLookup(doc *core.TextDocument, defaultLanguage string
 }
 
 func (s *Server) readDiskParsedDocument(doc *core.TextDocument, defaultLanguage string) (*core.ParsedDocument, *fileAnalysisSnapshot, bool) {
+	return s.readDiskParsedDocumentContext(context.Background(), doc, defaultLanguage)
+}
+
+func (s *Server) readDiskParsedDocumentContext(ctx context.Context, doc *core.TextDocument, defaultLanguage string) (*core.ParsedDocument, *fileAnalysisSnapshot, bool) {
 	cache := s.diskCacheForUse()
 	if cache == nil || !cache.Enabled() {
 		return nil, nil, false
@@ -199,7 +203,7 @@ func (s *Server) readDiskParsedDocument(doc *core.TextDocument, defaultLanguage 
 		if json.Unmarshal(entry.AnalysisSnapshot, &restored) == nil &&
 			restored.SchemaVersion == fileAnalysisSnapshotSchemaVersion &&
 			restored.URI == doc.URI &&
-			restored.IncludeResolutionFingerprint == s.includeResolutionFingerprint(entry.Parsed) {
+			restored.IncludeResolutionFingerprint == s.includeResolutionFingerprintContext(ctx, entry.Parsed) {
 			snapshot = &restored
 			components = append(components, "fileAnalysis")
 			seedParsedAnalysis(entry.Parsed, snapshot)
@@ -324,7 +328,7 @@ func (s *Server) diagnosticsDiskLookupContext(ctx context.Context, doc *core.Tex
 		"vbscriptTypeChecking":              settings.VBScriptTypeChecking,
 		"vbscriptGlobals":                   settings.VBScriptGlobals,
 		"vbscriptComTypes":                  settings.VBScriptComTypes,
-		"includeFingerprint":                s.diskIncludeFingerprint(parsed),
+		"includeFingerprint":                s.diskIncludeFingerprintContext(ctx, parsed),
 		"javascriptAutoImports":             settings.JavaScriptAutoImports,
 		"javascriptIgnoreProjectConfig":     settings.JavaScriptIgnoreProjectConfig,
 		"javascriptCompilerOptions":         settings.JavaScriptCompilerOptions,

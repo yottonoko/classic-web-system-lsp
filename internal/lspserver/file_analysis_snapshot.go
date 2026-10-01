@@ -1,6 +1,7 @@
 package lspserver
 
 import (
+	"context"
 	"encoding/json"
 	"strconv"
 	"strings"
@@ -77,6 +78,10 @@ type symbolOccurrenceFact struct {
 }
 
 func (s *Server) buildFileAnalysisSnapshot(parsed *core.ParsedDocument) *fileAnalysisSnapshot {
+	return s.buildFileAnalysisSnapshotContext(context.Background(), parsed)
+}
+
+func (s *Server) buildFileAnalysisSnapshotContext(ctx context.Context, parsed *core.ParsedDocument) *fileAnalysisSnapshot {
 	if parsed == nil {
 		return nil
 	}
@@ -106,7 +111,7 @@ func (s *Server) buildFileAnalysisSnapshot(parsed *core.ParsedDocument) *fileAna
 		Members:                      graphMemberOccurrences(parsed),
 		Summary:                      summarizeVBScriptFileAnalysis(parsed),
 		SymbolFacts:                  buildSymbolAnalysisFacts(parsed, symbols, usage, assignments),
-		IncludeResolutionFingerprint: s.includeResolutionFingerprint(parsed),
+		IncludeResolutionFingerprint: s.includeResolutionFingerprintContext(ctx, parsed),
 		VirtualDocuments:             map[core.EmbeddedLanguage]core.VirtualDocument{},
 		VBDocumentSymbols:            vbscript.DocumentSymbols(parsed),
 		VBFoldingRanges:              vbscript.FoldingRanges(parsed),
@@ -121,7 +126,7 @@ func (s *Server) buildFileAnalysisSnapshot(parsed *core.ParsedDocument) *fileAna
 	}
 	for _, include := range parsed.Includes {
 		resolved := resolvedIncludeSnapshot{Path: include.Path, Mode: include.Mode, Range: include.Range}
-		if details, ok := s.includeTargetDetailsForMode(parsed.URI, include.Path, include.Mode); ok {
+		if details, ok := s.includeTargetDetailsForModeContext(ctx, parsed.URI, include.Path, include.Mode); ok {
 			resolved.ResolvedPath = details.Path
 			resolved.Exists = details.Exists
 			if details.Path != "" {
@@ -140,6 +145,8 @@ func (s *Server) scheduleFileAnalysisSnapshot(doc *core.TextDocument, parsed *co
 	document := core.NewTextDocument(doc.URI, doc.LanguageID, doc.Version, doc.Text)
 	key := "file-analysis\x00" + workspacepkg.FileIdentityKeyFromURI(document.URI)
 	s.runAsyncDiskCacheWriteKey(key, func() {
+		// The fingerprint and the snapshot resolve the same includes.
+		ctx := withIncludeResolutionMemo(context.Background())
 		cache := s.diskCacheForUse()
 		if cache == nil || !cache.Enabled() {
 			return
@@ -149,10 +156,10 @@ func (s *Server) scheduleFileAnalysisSnapshot(doc *core.TextDocument, parsed *co
 		}
 		lookup := s.parsedDiskLookup(document, defaultLanguage)
 		validateSource := s.diskCacheUsesDefaultDirectory()
-		includeResolution := s.includeResolutionFingerprint(parsed)
+		includeResolution := s.includeResolutionFingerprintContext(ctx, parsed)
 		snapshot := s.cachedFileAnalysisSnapshot(parsed)
 		if snapshot == nil || snapshot.IncludeResolutionFingerprint != includeResolution {
-			snapshot = s.buildFileAnalysisSnapshot(parsed)
+			snapshot = s.buildFileAnalysisSnapshotContext(ctx, parsed)
 			s.rememberFileAnalysisSnapshot(parsed, snapshot)
 		}
 		s.writeDiskParsedDocumentToCache(cache, document, defaultLanguage, parsed, snapshot, lookup, validateSource)
@@ -414,13 +421,17 @@ func snapshotRangeKey(value lsp.Range) string {
 }
 
 func (s *Server) includeResolutionFingerprint(parsed *core.ParsedDocument) string {
+	return s.includeResolutionFingerprintContext(context.Background(), parsed)
+}
+
+func (s *Server) includeResolutionFingerprintContext(ctx context.Context, parsed *core.ParsedDocument) string {
 	if parsed == nil || len(parsed.Includes) == 0 {
 		return ""
 	}
 	parts := make([]string, 0, len(parsed.Includes))
 	for _, include := range parsed.Includes {
 		part := include.Mode + "\x00" + include.Path
-		if details, ok := s.includeTargetDetailsForMode(parsed.URI, include.Path, include.Mode); ok {
+		if details, ok := s.includeTargetDetailsForModeContext(ctx, parsed.URI, include.Path, include.Mode); ok {
 			part += "\x00" + details.Path + "\x00" + strconv.FormatBool(details.Exists)
 		}
 		parts = append(parts, part)
@@ -451,7 +462,8 @@ func (s *Server) ensureFileAnalysisSnapshot(doc *core.TextDocument, parsed *core
 	if parsed == nil || doc == nil {
 		return nil
 	}
-	includeResolution := s.includeResolutionFingerprint(parsed)
+	ctx := withIncludeResolutionMemo(context.Background())
+	includeResolution := s.includeResolutionFingerprintContext(ctx, parsed)
 	if snapshot := s.cachedFileAnalysisSnapshot(parsed); snapshot != nil && snapshot.IncludeResolutionFingerprint == includeResolution {
 		return snapshot
 	}
@@ -460,7 +472,7 @@ func (s *Server) ensureFileAnalysisSnapshot(doc *core.TextDocument, parsed *core
 		s.rememberFileAnalysisSnapshot(parsed, snapshot)
 		return snapshot
 	}
-	snapshot := s.buildFileAnalysisSnapshot(parsed)
+	snapshot := s.buildFileAnalysisSnapshotContext(ctx, parsed)
 	s.rememberFileAnalysisSnapshot(parsed, snapshot)
 	s.writeDiskParsedDocument(doc, defaultLanguage, parsed, snapshot)
 	return snapshot
