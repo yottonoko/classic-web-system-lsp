@@ -157,7 +157,7 @@
   "configuration.cache.ttlHours.description": "bbolt 解析データベースのエントリが期限切れになるまでの時間です。",
   "configuration.cache.maxSizeMb.description": "bbolt 解析データベースの目標サイズを MB で指定します。解析中のデータに必要な場合は、このサイズを超えることがあります。",
   "configuration.cache.gzip.description": "bbolt 解析データベースのレコードを gzip で圧縮します。復元時の CPU 負荷を抑えるため、既定では無効です。",
-  "configuration.memory.maxCacheBytes.description": "asp-lsp が低優先度 cache を退避し始める、process 内 cache memory 推定値の最大 byte 数です。既定値は 512 MiB です。",
+  "configuration.memory.maxCacheBytes.description": "asp-lsp が低優先度 cache を退避し始める、process 内 cache memory 推定値の最大 byte 数です。既定値は 2 GiB です。",
   "configuration.memory.debugTelemetry.description": "debug log file 出力が有効なとき、memory budget snapshot と退避詳細を asp-lsp debug log file に書き込みます。",
   "configuration.network.profile.description": "filesystem performance profile です。auto は UNC path や一般的な SMB/NFS mount point で network-drive 既定を有効にします。local は即時 filesystem 確認を維持し、network は TTL cache、高い include read 並列数、watch freshness 既定、fast case resolution を有効にします。",
   "configuration.network.statCacheTtlMs.description": "stat/exists cache TTL を millisecond で上書きします。-1 は選択 profile の既定値、0 は stat/exists cache 無効です。",

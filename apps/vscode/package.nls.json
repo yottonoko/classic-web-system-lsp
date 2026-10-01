@@ -157,7 +157,7 @@
   "configuration.cache.ttlHours.description": "Hours before bbolt analysis database entries expire.",
   "configuration.cache.maxSizeMb.description": "Target bbolt analysis database size in megabytes. The database may exceed this target when active analysis data requires more space.",
   "configuration.cache.gzip.description": "Compresses bbolt analysis database records with gzip. Disabled by default to minimize restore CPU overhead.",
-  "configuration.memory.maxCacheBytes.description": "Maximum estimated in-process cache memory in bytes before asp-lsp evicts lower-priority caches. The default is 512 MiB.",
+  "configuration.memory.maxCacheBytes.description": "Maximum estimated in-process cache memory in bytes before asp-lsp evicts lower-priority caches. The default is 2 GiB.",
   "configuration.memory.debugTelemetry.description": "Write memory budget snapshots and eviction details to the asp-lsp debug log file when debug log file output is enabled.",
   "configuration.network.profile.description": "Filesystem performance profile. auto enables network-drive defaults for UNC paths and common SMB/NFS mount points; local keeps immediate filesystem checks; network enables TTL caches, higher include-read concurrency, watch freshness defaults, and fast case resolution.",
   "configuration.network.statCacheTtlMs.description": "Override stat/exists cache TTL in milliseconds. -1 uses the selected profile default, and 0 disables stat/exists caching.",

@@ -1648,7 +1648,7 @@
         "aspLsp.memory.maxCacheBytes": {
           "type": "number",
           "minimum": 1,
-          "default": 536870912,
+          "default": 2147483648,
           "description": "%configuration.memory.maxCacheBytes.description%",
           "tags": [
             "advanced"

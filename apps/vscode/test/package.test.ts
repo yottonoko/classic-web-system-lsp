@@ -2183,7 +2183,7 @@ describe("VS Code extension package", () => {
     }
     expect(
       manifest.contributes?.configuration?.properties?.["aspLsp.memory.maxCacheBytes"],
-    ).toEqual(expect.objectContaining({ type: "number", default: 536870912, minimum: 1 }));
+    ).toEqual(expect.objectContaining({ type: "number", default: 2147483648, minimum: 1 }));
     expect(
       manifest.contributes?.configuration?.properties?.["aspLsp.memory.debugTelemetry"],
     ).toEqual(expect.objectContaining({ type: "boolean", default: false }));

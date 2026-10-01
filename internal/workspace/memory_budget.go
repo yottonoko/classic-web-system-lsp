@@ -6,7 +6,7 @@ import (
 	"sort"
 )
 
-const DefaultMemoryMaxCacheBytes = 512 * 1024 * 1024
+const DefaultMemoryMaxCacheBytes = 2 * 1024 * 1024 * 1024
 
 type RegisteredCache interface {
 	Name() string
