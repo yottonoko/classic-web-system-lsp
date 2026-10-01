@@ -782,6 +782,7 @@ func (s *Server) publishWorkspaceIndexCandidate(ctx context.Context, generation 
 	s.workspace = merged
 	s.markJavaScriptDocumentsChangedLocked()
 	s.clearJavaScriptProjectConfigCacheLocked()
+	s.markWorkspaceDiagnosticsChanged()
 	return true, false
 }
 

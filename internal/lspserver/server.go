@@ -4,6 +4,7 @@ import (
 	"context"
 	"io"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/yottonoko/classic-web-system-lsp/internal/core"
@@ -99,6 +100,8 @@ type Server struct {
 	workspaceDiagnosticsProcessCache                 bool
 	workspaceDiagnosticsItems                        map[string]workspaceDiagnosticsItemCacheEntry
 	workspaceDiagnosticsRevisions                    map[string]uint64
+	workspaceDiagnosticsEpoch                        atomic.Uint64
+	workspaceDiagnosticsLastPass                     workspaceDiagnosticsPassState
 	workspaceArtifacts                               map[workspaceDocumentID]*workspaceDocumentArtifactManifest
 	workspaceArtifactRevisions                       map[workspaceDocumentID]uint64
 	workspaceVBAutoIncludeCatalog                    *workspaceVBAutoIncludeCatalog

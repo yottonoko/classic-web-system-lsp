@@ -534,3 +534,69 @@ var broken = ;
 		t.Fatalf("open document sources = %q, want JavaScript unused hints", open)
 	}
 }
+
+func TestStdioParityWorkspaceDiagnosticsRepeatedPullsReportOnlyChanges(t *testing.T) {
+	client := startStdioTestClient(t)
+	defer client.close()
+
+	root := t.TempDir()
+	clean := "<script>\nvar ok = 1;\n</script>"
+	stableURI := pathToFileURI(filepath.Join(root, "stable.asp"))
+	editedURI := pathToFileURI(filepath.Join(root, "edited.asp"))
+	for _, uri := range []string{stableURI, editedURI} {
+		if err := os.WriteFile(fileURIPath(uri), []byte(clean), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	initializeWithConfigurationAndWaitForWorkspaceIndex(t, client, map[string]any{
+		"processId":    nil,
+		"rootUri":      pathToFileURI(root),
+		"capabilities": map[string]any{},
+	}, map[string]any{"aspLsp": map[string]any{"diagnostics": map[string]any{"debounceMs": 0}}})
+
+	type workspaceItem struct {
+		URI      string            `json:"uri"`
+		Kind     string            `json:"kind"`
+		ResultID string            `json:"resultId"`
+		Items    []json.RawMessage `json:"items"`
+	}
+	pull := func(previous []map[string]any) map[string]workspaceItem {
+		t.Helper()
+		response := client.request("workspace/diagnostic", map[string]any{"previousResultIds": previous})
+		var report struct {
+			Items []workspaceItem `json:"items"`
+		}
+		if err := json.Unmarshal([]byte(mustJSONText(t, response.Result)), &report); err != nil {
+			t.Fatal(err)
+		}
+		items := map[string]workspaceItem{}
+		for _, item := range report.Items {
+			items[item.URI] = item
+		}
+		return items
+	}
+
+	first := pull([]map[string]any{})
+	previous := []map[string]any{}
+	for _, uri := range []string{stableURI, editedURI} {
+		item := first[uri]
+		if item.Kind != "full" || item.ResultID == "" {
+			t.Fatalf("first pull item for %s = %#v, want a full report with a result ID", uri, item)
+		}
+		previous = append(previous, map[string]any{"uri": uri, "value": item.ResultID})
+	}
+	// VS Code pulls again two seconds after every response; with nothing
+	// changed the server must not re-check and re-send the whole workspace.
+	if second := pull(previous); len(second) != 0 {
+		t.Fatalf("unchanged workspace pull reported %#v, want no items", second)
+	}
+
+	openClassicASPDocumentWithDiagnostics(t, client, editedURI, "<script>\nvar broken = ;\n</script>")
+	third := pull(previous)
+	if item := third[stableURI]; item.Kind != "unchanged" || item.ResultID != first[stableURI].ResultID {
+		t.Fatalf("stable document after an edit elsewhere = %#v, want an unchanged report", item)
+	}
+	if item := third[editedURI]; item.Kind != "full" || item.ResultID == first[editedURI].ResultID || len(item.Items) == 0 {
+		t.Fatalf("edited document = %#v, want a full report with the new diagnostics", item)
+	}
+}

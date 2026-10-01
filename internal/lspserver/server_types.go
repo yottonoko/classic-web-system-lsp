@@ -174,9 +174,10 @@ type semanticTokenCache struct {
 type requestCancellationEntry struct {
 	cancel   context.CancelFunc
 	sequence uint64
-	// lifecycle requests are never stale, so revision-advancing notifications
-	// that arrive after them must not cancel them.
-	lifecycle bool
+	// Lifecycle requests and workspace-wide pulls do not belong to one
+	// document revision, so revision-advancing notifications that arrive after
+	// them must not cancel them.
+	revisionIndependent bool
 }
 
 type diagnosticRevisionJob struct {

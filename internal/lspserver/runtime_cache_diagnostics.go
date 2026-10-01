@@ -319,6 +319,7 @@ func (s *Server) clearRuntimeProcessCachesContext(ctx context.Context) bool {
 	s.publishedDiagnosticRevisions = map[string]map[string]diagnosticTargetRevision{}
 	s.workspaceDiagnosticsItems = map[string]workspaceDiagnosticsItemCacheEntry{}
 	s.workspaceDiagnosticsRevisions = map[string]uint64{}
+	s.markWorkspaceDiagnosticsChanged()
 	s.workspaceArtifacts = map[workspaceDocumentID]*workspaceDocumentArtifactManifest{}
 	s.workspaceArtifactRevisions = map[workspaceDocumentID]uint64{}
 	s.markWorkspaceVBAutoIncludeCatalogIncompleteLocked(s.workspaceIndexGeneration)

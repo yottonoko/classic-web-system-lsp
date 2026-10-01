@@ -132,3 +132,25 @@ func TestStdioParityCancelsQueuedRequestWithoutBlockingNotifications(t *testing.
 		t.Fatal("cancelled request did not return promptly")
 	}
 }
+
+func TestServerKeepsWorkspaceDiagnosticPullsAcrossRevisions(t *testing.T) {
+	server := New(nil, nil, nil)
+	pull, cancelPull := context.WithCancel(t.Context())
+	document, cancelDocument := context.WithCancel(t.Context())
+	defer cancelPull()
+	defer cancelDocument()
+	server.registerRequestCancellationEntry("pull", requestCancellationEntry{cancel: cancelPull, sequence: 4, revisionIndependent: revisionIndependentRequest("workspace/diagnostic")})
+	server.registerRequestCancellationEntry("document", requestCancellationEntry{cancel: cancelDocument, sequence: 4, revisionIndependent: revisionIndependentRequest("textDocument/diagnostic")})
+
+	server.cancelRequestsBefore(5)
+	select {
+	case <-document.Done():
+	case <-time.After(time.Second):
+		t.Fatal("document diagnostic pull older than the revision was not cancelled")
+	}
+	select {
+	case <-pull.Done():
+		t.Fatal("workspace diagnostic pass was cancelled by an unrelated revision")
+	default:
+	}
+}

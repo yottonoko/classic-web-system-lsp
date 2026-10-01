@@ -104,7 +104,7 @@ func TestCancelledWorkspaceDiagnosticsLogsCancelledTerminalState(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 
-	server.workspaceDiagnostics(ctx)
+	server.workspaceDiagnostics(ctx, nil)
 
 	logs := output.String()
 	for _, expected := range []string{"vbscript.worker.started", "vbscript.worker.cancelled"} {

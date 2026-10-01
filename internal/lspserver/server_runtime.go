@@ -608,7 +608,7 @@ func (s *Server) Serve(ctx context.Context) error {
 				parent = ctx
 			}
 			item.ctx, item.cancel = context.WithCancel(context.WithValue(parent, runtimeLogSpanKey{}, message.logSpan))
-			if !s.registerRequestCancellationEntry(message.ID, requestCancellationEntry{cancel: item.cancel, sequence: item.sequence, lifecycle: lifecycleRequest(message.Method)}) {
+			if !s.registerRequestCancellationEntry(message.ID, requestCancellationEntry{cancel: item.cancel, sequence: item.sequence, revisionIndependent: revisionIndependentRequest(message.Method)}) {
 				item.cancel()
 				rejectRequest(message, receivedAt, duplicateRequestIDError())
 				continue
@@ -661,6 +661,13 @@ func isValidRPCNotification(message *rpcMessage) bool {
 // client from completing the LSP handshake.
 func lifecycleRequest(method string) bool {
 	return method == "initialize" || method == "shutdown"
+}
+
+// revisionIndependentRequest reports requests that edits must not cancel. A
+// workspace diagnostic pass checks every document; restarting it on each
+// keystroke means a large workspace never finishes a pass.
+func revisionIndependentRequest(method string) bool {
+	return lifecycleRequest(method) || method == "workspace/diagnostic"
 }
 
 func serialLSPRequest(method string, _ json.RawMessage) bool {
@@ -785,7 +792,7 @@ func (s *Server) cancelRequestsBefore(sequence uint64) {
 	s.mu.Lock()
 	cancellations := make([]context.CancelFunc, 0, len(s.requestCancellations))
 	for _, entry := range s.requestCancellations {
-		if entry.cancel != nil && !entry.lifecycle && entry.sequence < sequence {
+		if entry.cancel != nil && !entry.revisionIndependent && entry.sequence < sequence {
 			cancellations = append(cancellations, entry.cancel)
 		}
 	}

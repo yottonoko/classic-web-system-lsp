@@ -522,7 +522,7 @@ func (s *Server) handleRequest(ctx context.Context, method string, params json.R
 		}
 		return map[string]any{"kind": "full", "items": items}, nil
 	case "workspace/diagnostic":
-		return s.workspaceDiagnostics(ctx), nil
+		return s.workspaceDiagnostics(ctx, workspaceDiagnosticsPreviousResultIDs(params)), nil
 	case "workspace/executeCommand":
 		var p executeCommandParams
 		if err := json.Unmarshal(params, &p); err != nil {

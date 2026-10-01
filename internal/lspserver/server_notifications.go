@@ -16,6 +16,15 @@ func (s *Server) handleNotification(ctx context.Context, method string, params j
 	return s.handleNotificationMessage(ctx, message)
 }
 
+func notificationMayChangeWorkspaceDiagnostics(method string) bool {
+	switch method {
+	case "$/cancelRequest", "$/setTrace", "$/progress", "window/workDoneProgress/cancel":
+		return false
+	default:
+		return true
+	}
+}
+
 func (s *Server) handleNotificationMessage(ctx context.Context, message *rpcMessage) error {
 	if message == nil {
 		return malformedNotification(fmt.Errorf("notification message is nil"))
@@ -27,6 +36,11 @@ func (s *Server) handleNotificationMessage(ctx context.Context, message *rpcMess
 	s.mu.Unlock()
 	if shuttingDown {
 		return nil
+	}
+	if notificationMayChangeWorkspaceDiagnostics(method) {
+		// Mark after the state change so a pass that starts in between is
+		// still treated as stale by the next pull.
+		defer s.markWorkspaceDiagnosticsChanged()
 	}
 	if revisionAdvancingNotification(method) {
 		if !prepareRevisionAdvancingNotification(message) {

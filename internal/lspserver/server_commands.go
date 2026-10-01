@@ -15,7 +15,14 @@ import (
 	workspacepkg "github.com/yottonoko/classic-web-system-lsp/internal/workspace"
 )
 
-func (s *Server) workspaceDiagnostics(ctx context.Context) map[string]any {
+func (s *Server) workspaceDiagnostics(ctx context.Context, previousResultIDs map[string]string) map[string]any {
+	epoch := s.workspaceDiagnosticsEpoch.Load()
+	settingsKey := s.workspaceDiagnosticsSettingsFingerprint()
+	if s.workspaceDiagnosticsPassCurrent(epoch, settingsKey, previousResultIDs) {
+		// Reporting no items keeps every diagnostic the client already holds.
+		s.logDebugSummaryEvent("workspaceDiagnostics.cache", "[asp-lsp] workspaceDiagnostics.unchanged", map[string]any{"cache": "pass"})
+		return map[string]any{"items": []any{}}
+	}
 	s.mu.Lock()
 	openURIs := make([]string, 0, len(s.documents))
 	open := make(map[string]struct{}, len(s.documents))
@@ -37,13 +44,13 @@ func (s *Server) workspaceDiagnostics(ctx context.Context) map[string]any {
 	taskID, _ := s.beginProgressTask("workspace.diagnostics", "analyzing", "workspace.diagnostics", "workspace.diagnostics", "", len(uris), false)
 	progressState := "failed"
 	defer func() { s.finishProgressTask(taskID, "workspace.diagnostics", progressState) }()
-	settingsKey := s.workspaceDiagnosticsSettingsFingerprint()
 	closedSettingsKey := settingsKey + "\x00without-editor-hints"
 	workspaceDiagnosticsStarted := time.Now()
 	s.logWorkspaceDiagnosticsWorkerStarted(uris)
 	// Pages usually share include targets; resolve each one once per pass.
 	ctx = withIncludeResolutionMemo(ctx)
 	itemsByIndex := make([]any, len(uris))
+	resultIDsByIndex := make([]string, len(uris))
 	var cacheHits atomic.Int64
 	var cacheMisses atomic.Int64
 	var completed atomic.Int64
@@ -79,11 +86,23 @@ func (s *Server) workspaceDiagnostics(ctx context.Context) map[string]any {
 			}
 			s.rememberWorkspaceDiagnosticsItem(uri, doc, itemSettingsKey, diagnostics)
 		}
-		itemsByIndex[index] = map[string]any{
-			"uri":     uri,
-			"version": version,
-			"kind":    "full",
-			"items":   diagnostics,
+		resultID := workspaceDiagnosticsResultID(diagnostics)
+		resultIDsByIndex[index] = resultID
+		if previousResultIDs[workspacepkg.FileIdentityKeyFromURI(uri)] == resultID {
+			itemsByIndex[index] = map[string]any{
+				"uri":      uri,
+				"version":  version,
+				"kind":     "unchanged",
+				"resultId": resultID,
+			}
+		} else {
+			itemsByIndex[index] = map[string]any{
+				"uri":      uri,
+				"version":  version,
+				"kind":     "full",
+				"resultId": resultID,
+				"items":    diagnostics,
+			}
 		}
 		label := "workspace.diagnostics.indexed"
 		if isOpen {
@@ -101,6 +120,13 @@ func (s *Server) workspaceDiagnostics(ctx context.Context) map[string]any {
 	if ctx.Err() == nil {
 		s.updateProgressTask(taskID, "workspace.diagnostics", "workspace.diagnostics", "", len(uris), len(uris), nil, "completed")
 		progressState = "completed"
+		closedResultIDs := make(map[string]string, len(workspaceURIs))
+		for index := len(openURIs); index < len(uris); index++ {
+			closedResultIDs[workspacepkg.FileIdentityKeyFromURI(uris[index])] = resultIDsByIndex[index]
+		}
+		s.mu.Lock()
+		s.workspaceDiagnosticsLastPass = workspaceDiagnosticsPassState{epoch: epoch, settingsKey: settingsKey, closedResultIDs: closedResultIDs}
+		s.mu.Unlock()
 	} else {
 		progressState = "cancelled"
 	}
@@ -264,6 +290,7 @@ func (s *Server) clearWorkspaceDiagnosticsCaches(_ bool) {
 	s.workspaceDiagnosticsItems = map[string]workspaceDiagnosticsItemCacheEntry{}
 	s.workspaceDiagnosticsRevisions = map[string]uint64{}
 	s.mu.Unlock()
+	s.markWorkspaceDiagnosticsChanged()
 }
 
 func (s *Server) logWorkspaceDiagnosticsWorkerStarted(uris []string) {

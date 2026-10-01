@@ -252,6 +252,7 @@ func (s *Server) refreshWorkspaceSymbolDocuments(docs []*core.TextDocument, cach
 		if current := s.workspace[doc.URI]; current == doc || (current != nil && current.Text == doc.Text) {
 			s.workspace[doc.URI] = updated
 			s.markJavaScriptDocumentsChangedLocked()
+			s.markWorkspaceDiagnosticsChanged()
 		}
 		s.mu.Unlock()
 	}
