@@ -456,7 +456,7 @@ func (s *Server) handleNotificationMessage(ctx context.Context, message *rpcMess
 		s.mu.Unlock()
 		if path != "" && !eligible {
 			s.mu.Lock()
-			delete(s.workspace, p.TextDocument.URI)
+			s.deleteWorkspaceDocumentLocked(p.TextDocument.URI)
 			workspaceDoc = nil
 			s.mu.Unlock()
 		}

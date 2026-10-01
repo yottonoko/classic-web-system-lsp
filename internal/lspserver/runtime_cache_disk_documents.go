@@ -152,10 +152,8 @@ func (s *Server) currentDocumentText(uri string) (string, bool) {
 		return doc.Text, true
 	}
 	if strings.HasPrefix(strings.ToLower(uri), "file:") {
-		for candidateURI, doc := range s.workspace {
-			if doc != nil && workspacepkg.SameFileIdentityURI(candidateURI, uri) {
-				return doc.Text, true
-			}
+		if doc := s.workspaceDocumentWithIdentityLocked(uri); doc != nil {
+			return doc.Text, true
 		}
 	}
 	return "", false

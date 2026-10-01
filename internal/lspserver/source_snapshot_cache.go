@@ -415,12 +415,7 @@ func (s *Server) workspaceDocumentByURILocked(uri string) *core.TextDocument {
 	if doc := s.workspace[uri]; doc != nil {
 		return doc
 	}
-	for candidateURI, doc := range s.workspace {
-		if workspacepkg.SameFileIdentityURI(candidateURI, uri) {
-			return doc
-		}
-	}
-	return nil
+	return s.workspaceDocumentWithIdentityLocked(uri)
 }
 
 func (s *Server) rememberSourceTextLocked(uri, text string) {

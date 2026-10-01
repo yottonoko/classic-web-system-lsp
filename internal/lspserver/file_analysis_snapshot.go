@@ -177,11 +177,8 @@ func (s *Server) fileAnalysisSnapshotTaskCurrent(doc *core.TextDocument, parsed 
 		current = s.workspace[doc.URI]
 	}
 	if current == nil && strings.HasPrefix(strings.ToLower(doc.URI), "file:") {
-		for candidateURI, candidate := range s.workspace {
-			if workspacepkg.SameFileIdentityURI(candidateURI, doc.URI) {
-				current = candidate
-				break
-			}
+		if candidates := s.workspaceURIsForIdentityLocked(doc.URI); len(candidates) > 0 {
+			current = s.workspace[candidates[0]]
 		}
 	}
 	if current != nil && (current.Text != doc.Text || current.Version != doc.Version) {

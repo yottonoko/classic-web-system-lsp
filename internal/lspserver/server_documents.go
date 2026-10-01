@@ -29,10 +29,8 @@ func (s *Server) documentByURI(uri string) *core.TextDocument {
 				return doc
 			}
 		}
-		for candidateURI, doc := range s.workspace {
-			if workspacepkg.SameFileIdentityURI(candidateURI, uri) {
-				return doc
-			}
+		if doc := s.workspaceDocumentWithIdentityLocked(uri); doc != nil {
+			return doc
 		}
 	}
 	return nil
@@ -347,7 +345,7 @@ func (s *Server) indexSavedWorkspaceFile(path string, doc *core.TextDocument) {
 	if !s.workspaceFileEligibleForAutomaticIndex(cleanPath) {
 		uri := filePathURI(cleanPath)
 		s.mu.Lock()
-		delete(s.workspace, uri)
+		s.deleteWorkspaceDocumentLocked(uri)
 		s.deleteParsedCacheForURILocked(uri)
 		s.mu.Unlock()
 		return
@@ -549,11 +547,7 @@ func (s *Server) didChangeWatchedFiles(params didChangeWatchedFilesParams) error
 			s.mu.Lock()
 			openDoc := s.openDocumentByURILocked(uri)
 			if openDoc == nil {
-				for candidateURI := range s.workspace {
-					if workspacepkg.SameFileIdentityURI(candidateURI, uri) {
-						delete(s.workspace, candidateURI)
-					}
-				}
+				s.deleteWorkspaceDocumentsWithIdentityLocked(uri)
 				s.deleteParsedCacheForURILocked(uri)
 			}
 			s.mu.Unlock()
@@ -584,11 +578,7 @@ func (s *Server) didChangeWatchedFiles(params didChangeWatchedFilesParams) error
 			changedPublicBoundary[cleanPath] = true
 			deletedWorkspacePaths[cleanPath] = struct{}{}
 			s.mu.Lock()
-			for candidateURI := range s.workspace {
-				if workspacepkg.SameFileIdentityURI(candidateURI, uri) {
-					delete(s.workspace, candidateURI)
-				}
-			}
+			s.deleteWorkspaceDocumentsWithIdentityLocked(uri)
 			s.deleteParsedCacheForURILocked(uri)
 			s.mu.Unlock()
 			if openDoc == nil {
@@ -602,16 +592,12 @@ func (s *Server) didChangeWatchedFiles(params didChangeWatchedFilesParams) error
 				changedPublicBoundary[cleanPath] = !oldTextKnown || includePublicBoundaryFingerprint(oldText) != includePublicBoundaryFingerprint(content)
 				diskDoc := core.NewTextDocument(uri, "classic-asp", 0, content)
 				s.mu.Lock()
-				s.workspace[uri] = diskDoc
+				s.setWorkspaceDocumentLocked(uri, diskDoc)
 				s.mu.Unlock()
 			} else {
 				changedPublicBoundary[cleanPath] = true
 				s.mu.Lock()
-				for candidateURI := range s.workspace {
-					if workspacepkg.SameFileIdentityURI(candidateURI, uri) {
-						delete(s.workspace, candidateURI)
-					}
-				}
+				s.deleteWorkspaceDocumentsWithIdentityLocked(uri)
 				s.mu.Unlock()
 			}
 			changedWorkspaceDocuments[cleanPath] = openDoc
@@ -626,7 +612,7 @@ func (s *Server) didChangeWatchedFiles(params didChangeWatchedFilesParams) error
 		changedWorkspaceDocuments[cleanPath] = doc
 		referenceDocumentChanges = append(referenceDocumentChanges, referenceDocumentChange{path: cleanPath, previous: oldDoc, current: doc, previousParsed: oldParsed})
 		s.mu.Lock()
-		s.workspace[uri] = doc
+		s.setWorkspaceDocumentLocked(uri, doc)
 		s.deleteParsedCacheForURILocked(uri)
 		s.mu.Unlock()
 	}

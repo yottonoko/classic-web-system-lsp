@@ -57,6 +57,7 @@ type Server struct {
 	trustedRootStats                                 trustedRootStatCoalescer
 	trustedPaths                                     trustedPathCache
 	workspace                                        map[string]*core.TextDocument
+	workspaceURIs                                    workspaceURIIndex
 	html                                             embedded.HTML
 	css                                              embedded.CSS
 	semantic                                         map[string]semanticTokenCache

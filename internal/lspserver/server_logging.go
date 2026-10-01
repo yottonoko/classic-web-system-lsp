@@ -880,12 +880,7 @@ func (s *Server) inMemoryDocumentAtPath(path string) bool {
 		}
 	}
 	if !found {
-		for candidateURI, document := range s.workspace {
-			if document != nil && workspacepkg.SameFileIdentityURI(candidateURI, uri) {
-				found = true
-				break
-			}
-		}
+		found = s.workspaceDocumentWithIdentityLocked(uri) != nil
 	}
 	s.mu.Unlock()
 	return found && workspacePathWithinAnyBoundary(&s.trustedPaths, cleanPath, roots, includePaths, virtualRoots)
