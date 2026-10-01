@@ -74,10 +74,14 @@ func (s *Server) workspaceIndexDiskEntries(docs map[string]*core.TextDocument, f
 		keys = append(keys, uri)
 	}
 	sort.Strings(keys)
-	for _, uri := range keys {
+	prepared := make([]workspacepkg.DiskWorkspaceIndexedDocument, len(keys))
+	present := make([]bool, len(keys))
+	// Each stat validates the trusted root and path, so run them in parallel.
+	s.analysisWorkers.parallelForBulk(context.Background(), len(keys), func(_ context.Context, index int) {
+		uri := keys[index]
 		doc := docs[uri]
 		if doc == nil {
-			continue
+			return
 		}
 		path := fileURIPath(uri)
 		entry := workspacepkg.DiskWorkspaceIndexedDocument{URI: uri, FileName: path, Size: int64(len(doc.Text)), Text: doc.Text}
@@ -88,7 +92,13 @@ func (s *Server) workspaceIndexDiskEntries(docs map[string]*core.TextDocument, f
 		if freshness == "watch" || freshness == "ttl" {
 			entry.ContentHash = workspacepkg.DiskContentHash(doc.Text)
 		}
-		entries = append(entries, entry)
+		prepared[index] = entry
+		present[index] = true
+	})
+	for index, entry := range prepared {
+		if present[index] {
+			entries = append(entries, entry)
+		}
 	}
 	return entries
 }
@@ -437,7 +447,7 @@ func (s *Server) syncWorkspaceIncludeGraphCacheGuarded(ctx context.Context, gene
 	if workers == nil {
 		workers = &analysisWorkerPool{}
 	}
-	workers.parallelForBulk(ctx, len(documents), func(workerCtx context.Context, index int) {
+	workers.parallelForBulk(withIncludeResolutionMemo(ctx), len(documents), func(workerCtx context.Context, index int) {
 		prepared[index] = s.prepareWorkspaceIncludeGraphDocument(workerCtx, documents[index], documentTestHook)
 	})
 	if ctx.Err() != nil {

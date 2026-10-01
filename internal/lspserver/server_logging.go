@@ -653,6 +653,17 @@ func (s *Server) includeTargetDetailsForModeContext(ctx context.Context, ownerUR
 	if includePath == "" {
 		return includeTargetDetails{}, false
 	}
+	if memo := includeResolutionMemoFromContext(ctx); memo != nil {
+		if key, ok := newIncludeResolutionMemoKey(ownerURI, includePath, mode); ok {
+			return memo.resolve(ctx, key, func() (includeTargetDetails, bool) {
+				return s.resolveIncludeTargetDetailsContext(ctx, ownerURI, includePath, mode)
+			})
+		}
+	}
+	return s.resolveIncludeTargetDetailsContext(ctx, ownerURI, includePath, mode)
+}
+
+func (s *Server) resolveIncludeTargetDetailsContext(ctx context.Context, ownerURI, includePath, mode string) (includeTargetDetails, bool) {
 	candidatePaths := []string{}
 	s.mu.Lock()
 	workspaceRoots := append([]workspaceRoot(nil), s.workspaceRoots...)
