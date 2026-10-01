@@ -1,6 +1,7 @@
 package lspserver
 
 import (
+	"maps"
 	"math"
 	"strings"
 	"sync"
@@ -140,12 +141,18 @@ func (c *analysisCache) memoryEstimateWithExternalParsed(external map[*core.Pars
 	if c == nil {
 		return 0, 0
 	}
+	// Hold the cache lock only to snapshot its maps. Collecting the owners of
+	// every external parsed document is the slow part, and holding the lock
+	// through it blocked writers such as edits for the whole pressure check.
 	c.mu.RLock()
-	defer c.mu.RUnlock()
+	cachedDeclarations := maps.Clone(c.declarations)
+	cachedSnapshots := maps.Clone(c.snapshots)
+	cachedWorkspaceSnapshots := maps.Clone(c.workspaceSnapshots)
+	c.mu.RUnlock()
 	var bytes int64
-	declarationOwners := make(map[*vbUsageDeclaration]struct{}, len(c.declarations))
-	parsedOwners := make(map[*core.ParsedDocument]struct{}, len(c.declarations)+len(c.snapshots)+len(c.workspaceSnapshots))
-	for parsed, declarations := range c.declarations {
+	declarationOwners := make(map[*vbUsageDeclaration]struct{}, len(cachedDeclarations))
+	parsedOwners := make(map[*core.ParsedDocument]struct{}, len(cachedDeclarations)+len(cachedSnapshots)+len(cachedWorkspaceSnapshots))
+	for parsed, declarations := range cachedDeclarations {
 		parsedOwners[parsed] = struct{}{}
 		backing := unsafe.SliceData(declarations)
 		if backing == nil {
@@ -159,8 +166,8 @@ func (c *analysisCache) memoryEstimateWithExternalParsed(external map[*core.Pars
 		declarationOwners[backing] = struct{}{}
 		bytes = addAnalysisCacheBytes(bytes, estimateAnalysisDeclarationStorageBytes(nil, declarations))
 	}
-	fileSnapshots := make(map[*fileAnalysisSnapshot]analysisSnapshotOwner, len(c.snapshots))
-	for parsed, snapshot := range c.snapshots {
+	fileSnapshots := make(map[*fileAnalysisSnapshot]analysisSnapshotOwner, len(cachedSnapshots))
+	for parsed, snapshot := range cachedSnapshots {
 		parsedOwners[parsed] = struct{}{}
 		if snapshot == nil {
 			continue
@@ -176,8 +183,8 @@ func (c *analysisCache) memoryEstimateWithExternalParsed(external map[*core.Pars
 	for _, owner := range fileSnapshots {
 		bytes = addAnalysisCacheBytes(bytes, owner.bytes)
 	}
-	workspaceSnapshots := make(map[*workspaceArtifactSnapshot]analysisSnapshotOwner, len(c.workspaceSnapshots))
-	for key, snapshot := range c.workspaceSnapshots {
+	workspaceSnapshots := make(map[*workspaceArtifactSnapshot]analysisSnapshotOwner, len(cachedWorkspaceSnapshots))
+	for key, snapshot := range cachedWorkspaceSnapshots {
 		parsedOwners[key.parsed] = struct{}{}
 		if snapshot == nil {
 			continue
@@ -217,7 +224,7 @@ func (c *analysisCache) memoryEstimateWithExternalParsed(external map[*core.Pars
 			}
 		}
 	}
-	return bytes, len(c.declarations) + len(c.snapshots) + len(c.workspaceSnapshots)
+	return bytes, len(cachedDeclarations) + len(cachedSnapshots) + len(cachedWorkspaceSnapshots)
 }
 
 type analysisSnapshotOwner struct {

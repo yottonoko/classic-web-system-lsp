@@ -1,6 +1,7 @@
 package lspserver
 
 import (
+	"maps"
 	"math"
 	"os"
 	"path/filepath"
@@ -130,9 +131,13 @@ func finiteRuntimeMemoryLimit(limit int64) int64 {
 func (s *Server) registeredAnalysisSnapshotCache() workspacepkg.RegisteredCache {
 	return &serverRegisteredCache{name: "analysisSnapshots", priority: 5,
 		estimate: func() (int64, int) {
-			return s.withParsedCacheOwnership(func(external map[*core.ParsedDocument]struct{}) (int64, int) {
-				return s.analysisCache.memoryEstimateWithExternalParsed(external)
-			})
+			// The walk over cached analysis is the slowest part of a pressure
+			// check, so run it outside Server.mu. A stale owner set only skews
+			// this estimate; eviction still takes both locks together.
+			s.mu.Lock()
+			external := s.analysisExternalParsedOwnerSetLocked()
+			s.mu.Unlock()
+			return s.analysisCache.memoryEstimateWithExternalParsed(external)
 		},
 		evict: func(target int64) int64 {
 			freed, _ := s.withParsedCacheOwnership(func(external map[*core.ParsedDocument]struct{}) (int64, int) {
@@ -523,9 +528,12 @@ func (s *Server) logDiskCacheOpenWarningOnce(err error) {
 func (s *Server) registeredParsedCache() workspacepkg.RegisteredCache {
 	return &serverRegisteredCache{name: "parsedDocuments", priority: 10,
 		estimate: func() (int64, int) {
+			// Parsed documents guard their own analysis state, so only the
+			// entry snapshot needs Server.mu.
 			s.mu.Lock()
-			defer s.mu.Unlock()
-			ownership := parsedDocumentCacheOwnershipForEntries(s.parsedCache)
+			entries := maps.Clone(s.parsedCache)
+			s.mu.Unlock()
+			ownership := parsedDocumentCacheOwnershipForEntries(entries)
 			return ownership.bytes(), ownership.entries
 		},
 		evict: func(target int64) int64 {

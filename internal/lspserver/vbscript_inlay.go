@@ -501,17 +501,26 @@ func precedingVBTypeAnnotation(parsed *core.ParsedDocument, declarationLine int,
 
 const vbscriptSourceLinesAnalysisKey = "lspserver.vb-source-lines.v1"
 
+// vbSourceLines is the runtime-cached line split of a document. The lines are
+// substrings of the document text, which the parsed document already charges,
+// so only the slice of string headers is retained here.
+type vbSourceLines []string
+
+func (lines vbSourceLines) EstimateBytes() int64 {
+	return int64(cap(lines)) * 16
+}
+
 func vbscriptSourceLines(parsed *core.ParsedDocument) []string {
 	if parsed == nil {
 		return nil
 	}
 	if value, ok := parsed.LoadRuntimeAnalysis(vbscriptSourceLinesAnalysisKey); ok {
-		if cached, ok := value.([]string); ok {
+		if cached, ok := value.(vbSourceLines); ok {
 			return cached
 		}
 	}
 	lines := strings.Split(parsed.Text, "\n")
-	parsed.StoreRuntimeAnalysis(vbscriptSourceLinesAnalysisKey, lines)
+	parsed.StoreRuntimeAnalysis(vbscriptSourceLinesAnalysisKey, vbSourceLines(lines))
 	return lines
 }
 

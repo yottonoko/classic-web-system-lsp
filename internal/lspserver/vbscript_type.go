@@ -372,6 +372,14 @@ type vbAssignment struct {
 	SetRange  lsp.Range
 }
 
+// vbAssignmentList is the runtime-cached form of a document's assignments. It
+// reports its own size so memory accounting does not record every string.
+type vbAssignmentList []vbAssignment
+
+func (list vbAssignmentList) EstimateBytes() int64 {
+	return estimateVBAssignmentsBytes(list)
+}
+
 func (s *Server) vbscriptTypeDiagnostics(parsed *core.ParsedDocument) []lsp.Diagnostic {
 	return s.vbscriptTypeDiagnosticsContext(context.Background(), parsed)
 }
@@ -1618,13 +1626,13 @@ func vbscriptAssignments(parsed *core.ParsedDocument) []vbAssignment {
 	}
 	const analysisKey = "lspserver.vb-assignments.v2"
 	if value, ok := parsed.LoadRuntimeAnalysis(analysisKey); ok {
-		if cached, ok := value.([]vbAssignment); ok {
+		if cached, ok := value.(vbAssignmentList); ok {
 			return cached
 		}
 	}
 	var cached []vbAssignment
 	if parsed.LoadAnalysis(analysisKey, &cached) {
-		parsed.StoreRuntimeAnalysis(analysisKey, cached)
+		parsed.StoreRuntimeAnalysis(analysisKey, vbAssignmentList(cached))
 		return cached
 	}
 	doc := vbTextDocument(parsed)
@@ -1657,7 +1665,7 @@ func vbscriptAssignments(parsed *core.ParsedDocument) []vbAssignment {
 			}
 		}
 	}
-	parsed.StoreRuntimeAnalysis(analysisKey, assignments)
+	parsed.StoreRuntimeAnalysis(analysisKey, vbAssignmentList(assignments))
 	parsed.StoreAnalysis(analysisKey, assignments)
 	return assignments
 }

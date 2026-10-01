@@ -276,3 +276,41 @@ func publicSummaryNames(symbols []vbPublicSummarySymbol) []string {
 	}
 	return names
 }
+
+func TestRuntimeCachedVBScriptFactsAreChargedAsSingleOwners(t *testing.T) {
+	const source = `<%
+Public Function SharedName(value)
+  SharedName = value
+End Function
+Dim first, second
+first = SharedName("a")
+second = "b"
+%>`
+	parsed := core.ParseDocument("file:///tmp/runtime-owners.asp", source, core.Settings{DefaultLanguage: "VBScript"})
+	if summary := summarizeVBScriptFileAnalysis(parsed); len(summary.VBScript.PublicSymbols) == 0 {
+		t.Fatalf("summary has no public symbols: %#v", summary)
+	}
+	if assignments := vbscriptAssignments(parsed); len(assignments) < 2 {
+		t.Fatalf("assignments = %#v", assignments)
+	}
+	if lines := vbscriptSourceLines(parsed); len(lines) < 2 {
+		t.Fatalf("lines = %#v", lines)
+	}
+
+	// Each fact is one runtime entry; walking its strings individually would
+	// report one owner per symbol, name, and line instead.
+	cached := core.ParseDocument(parsed.URI, source, core.Settings{DefaultLanguage: "VBScript"})
+	for _, key := range []string{vbFileAnalysisSummaryAnalysisKey, "lspserver.vb-assignments.v2", vbscriptSourceLinesAnalysisKey} {
+		value, ok := parsed.LoadRuntimeAnalysis(key)
+		if !ok {
+			t.Fatalf("missing runtime analysis %s", key)
+		}
+		if _, ok := value.(interface{ EstimateBytes() int64 }); !ok {
+			t.Fatalf("runtime analysis %s (%T) has no size estimate", key, value)
+		}
+		cached.StoreRuntimeAnalysis(key, value)
+	}
+	if owners := cached.RuntimeAnalysisMemoryOwners(); len(owners) != 3 {
+		t.Fatalf("runtime owners = %d, want 3: %#v", len(owners), owners)
+	}
+}

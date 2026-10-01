@@ -60,6 +60,13 @@ type vbExternalRefUsage struct {
 	Ranges []lsp.Range
 }
 
+// EstimateBytes lets memory accounting charge a cached summary as one owner.
+// Walking it reflectively records every string as a separate owner, which
+// makes pressure checks scale with the number of symbols in the workspace.
+func (summary vbFileAnalysisSummary) EstimateBytes() int64 {
+	return estimateVBFileAnalysisSummaryBytes(summary)
+}
+
 func collectVBScriptPublicSummarySymbols(parsed *core.ParsedDocument) []vbPublicSummarySymbol {
 	types := graphAnalysisTypes(parsed)
 	declarations := collectVBNamingDeclarations(parsed)
@@ -93,8 +100,10 @@ func collectVBScriptPublicSummarySymbols(parsed *core.ParsedDocument) []vbPublic
 	return symbols
 }
 
+const vbFileAnalysisSummaryAnalysisKey = "lspserver.vb-file-summary.v2"
+
 func summarizeVBScriptFileAnalysis(parsed *core.ParsedDocument) vbFileAnalysisSummary {
-	const analysisKey = "lspserver.vb-file-summary.v2"
+	const analysisKey = vbFileAnalysisSummaryAnalysisKey
 	if value, ok := parsed.LoadRuntimeAnalysis(analysisKey); ok {
 		if cached, ok := value.(vbFileAnalysisSummary); ok {
 			return cached

@@ -8,7 +8,6 @@ import (
 	"strings"
 	"sync"
 	"sync/atomic"
-	"unique"
 	"unsafe"
 
 	"github.com/yottonoko/classic-web-system-lsp/internal/lsp"
@@ -942,13 +941,27 @@ func runtimeValueExclusiveEstimator(value reflect.Value) (int64, bool) {
 	return estimator.EstimateExclusiveRuntimeBytes(), true
 }
 
-// exportedMemoryOwnerIdentity canonicalizes reflected backing identities into
-// pointer-sized handles. Equal backings still compare equal, while callers that
-// collect owners from many documents hash them far more cheaply than the
-// reflected struct, which carries a reflect.Type interface.
+// runtimeAnalysisOwnerHandle is the exported form of a backing identity. It
+// replaces the reflect.Type interface with the type descriptor's address, which
+// is stable for the life of the process, so callers that collect owners from
+// many documents hash plain words instead of an interface.
+type runtimeAnalysisOwnerHandle struct {
+	kind     reflect.Kind
+	typeKey  uintptr
+	pointer  uintptr
+	length   int
+	capacity int
+}
+
+// exportedMemoryOwnerIdentity converts reflected backing identities into
+// cheaply hashable handles. Equal backings still compare equal.
 func exportedMemoryOwnerIdentity(identity any) any {
 	if backing, ok := identity.(runtimeAnalysisBackingIdentity); ok {
-		return unique.Make(backing)
+		handle := runtimeAnalysisOwnerHandle{kind: backing.kind, pointer: backing.pointer, length: backing.length, capacity: backing.capacity}
+		if backing.typeKey != nil {
+			handle.typeKey = reflect.ValueOf(backing.typeKey).Pointer()
+		}
+		return handle
 	}
 	return identity
 }

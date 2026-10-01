@@ -1,6 +1,8 @@
 package core
 
 import (
+	"reflect"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -256,4 +258,24 @@ func TestParsedDocumentAnalysisLockAllowsConcurrentInheritance(t *testing.T) {
 		}()
 	}
 	group.Wait()
+}
+
+func TestExportedMemoryOwnerIdentityComparesBackings(t *testing.T) {
+	text := strings.Repeat("owner", 8)
+	backing, ok := runtimeValueBackingIdentity(reflect.ValueOf(text))
+	if !ok {
+		t.Fatal("string has no backing identity")
+	}
+	same, _ := runtimeValueBackingIdentity(reflect.ValueOf(text))
+	if exportedMemoryOwnerIdentity(backing) != exportedMemoryOwnerIdentity(same) {
+		t.Fatal("equal backings exported different identities")
+	}
+	bytes := []byte(text)
+	other, _ := runtimeValueBackingIdentity(reflect.ValueOf(bytes))
+	if exportedMemoryOwnerIdentity(backing) == exportedMemoryOwnerIdentity(other) {
+		t.Fatal("distinct backings exported equal identities")
+	}
+	if got := exportedMemoryOwnerIdentity("plain"); got != "plain" {
+		t.Fatalf("non-backing identity = %#v, want it unchanged", got)
+	}
 }
