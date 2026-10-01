@@ -23,6 +23,28 @@ type diagnosticsSnapshot struct {
 
 const localSyntaxDiagnosticsAnalysisKey = "lspserver.local-syntax-diagnostics.v1"
 
+type editorHintsOmittedContextKey struct{}
+
+// withoutEditorHints marks a diagnostics pass over documents that are not open
+// in an editor. Editors render hint diagnostics only inside an open editor, and
+// the JavaScript unused-variable hints need a full type check of every script,
+// which dominated workspace diagnostics on script-heavy pages.
+func withoutEditorHints(ctx context.Context) context.Context {
+	return context.WithValue(ctx, editorHintsOmittedContextKey{}, true)
+}
+
+func editorHintsOmitted(ctx context.Context) bool {
+	omitted, _ := ctx.Value(editorHintsOmittedContextKey{}).(bool)
+	return omitted
+}
+
+// javaScriptUnusedDiagnosticsForContext reports whether a pass computes the
+// JavaScript unused hints. Disk cache lookups use the same value, so a pass
+// without editor hints shares entries with the setting turned off.
+func javaScriptUnusedDiagnosticsForContext(ctx context.Context, settings serverSettings) bool {
+	return settings.JavaScriptUnusedDiagnostics && (ctx == nil || !editorHintsOmitted(ctx))
+}
+
 const (
 	htmlDiagnosticsAnalysisKey = "lspserver.html-diagnostics.v1"
 	cssDiagnosticsAnalysisKey  = "lspserver.css-diagnostics.v1"
@@ -328,7 +350,7 @@ func (s *Server) diagnosticsForParsedWithProgressResult(ctx context.Context, par
 	sqlInjectionSeverity, sqlInjectionDiagnostics := vbscriptSQLInjectionSeverity(s.settings.VBScriptSQLInjectionDiagnostics)
 	unusedVBScriptDiagnostics := s.settings.VBScriptUnusedDiagnostics
 	implicitGlobalDiagnostics := s.settings.VBScriptImplicitGlobalDiagnostics
-	unusedJavaScriptDiagnostics := s.settings.JavaScriptUnusedDiagnostics
+	unusedJavaScriptDiagnostics := javaScriptUnusedDiagnosticsForContext(ctx, s.settings)
 	locale := s.settings.Locale
 	checkJS := s.settings.CheckJS
 	s.mu.Unlock()

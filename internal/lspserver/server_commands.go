@@ -38,6 +38,7 @@ func (s *Server) workspaceDiagnostics(ctx context.Context) map[string]any {
 	progressState := "failed"
 	defer func() { s.finishProgressTask(taskID, "workspace.diagnostics", progressState) }()
 	settingsKey := s.workspaceDiagnosticsSettingsFingerprint()
+	closedSettingsKey := settingsKey + "\x00without-editor-hints"
 	workspaceDiagnosticsStarted := time.Now()
 	s.logWorkspaceDiagnosticsWorkerStarted(uris)
 	// Pages usually share include targets; resolve each one once per pass.
@@ -53,10 +54,16 @@ func (s *Server) workspaceDiagnostics(ctx context.Context) map[string]any {
 		uri := uris[index]
 		doc, _ := s.parsed(uri)
 		var version any
-		if _, isOpen := open[uri]; isOpen && doc != nil {
+		_, isOpen := open[uri]
+		if isOpen && doc != nil {
 			version = doc.Version
 		}
-		diagnostics, cached := s.cachedWorkspaceDiagnosticsItem(uri, doc, settingsKey)
+		itemSettingsKey := settingsKey
+		if !isOpen {
+			workerCtx = withoutEditorHints(workerCtx)
+			itemSettingsKey = closedSettingsKey
+		}
+		diagnostics, cached := s.cachedWorkspaceDiagnosticsItem(uri, doc, itemSettingsKey)
 		if cached {
 			cacheHits.Add(1)
 			diagnostics = diagnosticsForDocumentURI(uri, diagnostics)
@@ -70,7 +77,7 @@ func (s *Server) workspaceDiagnostics(ctx context.Context) map[string]any {
 			if snapshot.ok {
 				diagnostics = nonNilDiagnostics(diagnosticsForDocumentURI(uri, snapshot.diagnostics))
 			}
-			s.rememberWorkspaceDiagnosticsItem(uri, doc, settingsKey, diagnostics)
+			s.rememberWorkspaceDiagnosticsItem(uri, doc, itemSettingsKey, diagnostics)
 		}
 		itemsByIndex[index] = map[string]any{
 			"uri":     uri,
@@ -79,7 +86,7 @@ func (s *Server) workspaceDiagnostics(ctx context.Context) map[string]any {
 			"items":   diagnostics,
 		}
 		label := "workspace.diagnostics.indexed"
-		if _, isOpen := open[uri]; isOpen {
+		if isOpen {
 			label = "workspace.diagnostics.openDocuments"
 		}
 		current := int(completed.Add(1))

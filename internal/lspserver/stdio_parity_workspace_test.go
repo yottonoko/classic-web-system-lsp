@@ -1,6 +1,7 @@
 package lspserver
 
 import (
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -476,4 +477,60 @@ func payloadBytesFromLogText(t *testing.T, text string) int {
 		t.Fatal(err)
 	}
 	return value
+}
+
+func TestStdioParityWorkspaceDiagnosticsSkipJavaScriptUnusedHintsForClosedDocuments(t *testing.T) {
+	client := startStdioTestClient(t)
+	defer client.close()
+
+	root := t.TempDir()
+	source := `<script>
+function demo(unusedParam) {
+  const unusedLocal = 1;
+  return 1;
+}
+var broken = ;
+</script>`
+	closedPath := filepath.Join(root, "closed.asp")
+	openPath := filepath.Join(root, "open.asp")
+	for _, path := range []string{closedPath, openPath} {
+		if err := os.WriteFile(path, []byte(source), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	initializeWithConfigurationAndWaitForWorkspaceIndex(t, client, map[string]any{
+		"processId":    nil,
+		"rootUri":      pathToFileURI(root),
+		"capabilities": map[string]any{},
+	}, map[string]any{"aspLsp": map[string]any{"diagnostics": map[string]any{"debounceMs": 0}}})
+	openClassicASPDocumentWithDiagnostics(t, client, pathToFileURI(openPath), source)
+
+	response := client.request("workspace/diagnostic", map[string]any{"previousResultIds": []any{}})
+	var report struct {
+		Items []struct {
+			URI   string `json:"uri"`
+			Items []struct {
+				Source string `json:"source"`
+			} `json:"items"`
+		} `json:"items"`
+	}
+	if err := json.Unmarshal([]byte(mustJSONText(t, response.Result)), &report); err != nil {
+		t.Fatal(err)
+	}
+	sources := map[string][]string{}
+	for _, item := range report.Items {
+		for _, diagnostic := range item.Items {
+			sources[item.URI] = append(sources[item.URI], diagnostic.Source)
+		}
+	}
+	closed := strings.Join(sources[pathToFileURI(closedPath)], ",")
+	open := strings.Join(sources[pathToFileURI(openPath)], ",")
+	// Syntax errors still reach the Problems view for every document; the
+	// unused hints, which need a full type check, are kept for open editors.
+	if !strings.Contains(closed, "asp-lsp-typescript") || strings.Contains(closed, "asp-lsp-typescript-unused") {
+		t.Fatalf("closed document sources = %q, want JavaScript syntax diagnostics without unused hints", closed)
+	}
+	if !strings.Contains(open, "asp-lsp-typescript-unused") {
+		t.Fatalf("open document sources = %q, want JavaScript unused hints", open)
+	}
 }

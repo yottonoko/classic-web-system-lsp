@@ -322,7 +322,7 @@ func (s *Server) diagnosticsDiskLookupContext(ctx context.Context, doc *core.Tex
 		"vbscriptDeadCodeDiagnostics":       settings.VBScriptDeadCodeDiagnostics,
 		"vbscriptUnusedDiagnostics":         settings.VBScriptUnusedDiagnostics,
 		"vbscriptImplicitGlobalDiagnostics": settings.VBScriptImplicitGlobalDiagnostics,
-		"javascriptUnusedDiagnostics":       settings.JavaScriptUnusedDiagnostics,
+		"javascriptUnusedDiagnostics":       javaScriptUnusedDiagnosticsForContext(ctx, settings),
 		"vbscriptIfSyntaxDiagnostics":       settings.VBScriptIfSyntaxDiagnostics,
 		"vbscriptSqlInjectionDiagnostics":   settings.VBScriptSQLInjectionDiagnostics,
 		"vbscriptTypeChecking":              settings.VBScriptTypeChecking,
