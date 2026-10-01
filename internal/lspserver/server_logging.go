@@ -561,7 +561,7 @@ func initializeResult() map[string]any {
 				},
 			},
 		},
-		"serverInfo": map[string]any{"name": "asp-lsp-go", "version": "0.9.2-go"},
+		"serverInfo": map[string]any{"name": "asp-lsp-go", "version": "0.9.3-go"},
 	}
 }
 
