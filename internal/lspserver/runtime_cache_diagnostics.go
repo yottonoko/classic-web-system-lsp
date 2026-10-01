@@ -282,6 +282,7 @@ func (s *Server) clearRuntimeProcessCachesContext(ctx context.Context) bool {
 	if ctx.Err() != nil {
 		return false
 	}
+	s.invalidateGitIgnoreGlobs()
 	s.stopDocumentOpenAnalysisWorkers()
 	if ctx.Err() != nil {
 		return false

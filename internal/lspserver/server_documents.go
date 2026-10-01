@@ -497,6 +497,9 @@ func (s *Server) didChangeWatchedFiles(params didChangeWatchedFilesParams) error
 			continue
 		}
 		cleanPath := filepath.Clean(path)
+		if strings.EqualFold(filepath.Base(cleanPath), ".gitignore") {
+			s.invalidateGitIgnoreGlobs()
+		}
 		isASP := isWorkspaceASPFile(cleanPath)
 		isJavaScript := isJavaScriptProjectFile(cleanPath)
 		directlyReferenced := s.workspacePathDirectlyReferenced(cleanPath)

@@ -244,6 +244,9 @@ func (s *Server) fsReadDirContext(ctx context.Context, path string) (*workspacep
 
 func (s *Server) invalidateFsPath(path string) {
 	s.trustedPaths.forget(path)
+	if strings.EqualFold(filepath.Base(filepath.Clean(path)), ".gitignore") {
+		s.invalidateGitIgnoreGlobs()
+	}
 	trustedPath, ok := s.trustedFilesystemPath(path)
 	if !ok {
 		return

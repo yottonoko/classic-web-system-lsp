@@ -344,6 +344,7 @@ func (s *Server) handleDidChangeConfiguration(params json.RawMessage) error {
 	if p.Settings.AspLsp.Workspace.RespectGitIgnore != nil {
 		if respectGitIgnore := *p.Settings.AspLsp.Workspace.RespectGitIgnore; respectGitIgnore != s.settings.WorkspaceRespectGitIgnore {
 			s.settings.WorkspaceRespectGitIgnore = respectGitIgnore
+			s.invalidateGitIgnoreGlobs()
 			reindexWorkspace = true
 		}
 	}

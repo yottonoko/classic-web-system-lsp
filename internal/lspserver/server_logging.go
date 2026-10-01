@@ -1253,7 +1253,7 @@ func (s *Server) readGitIgnoreGlobs(rootPath string) []string {
 	return s.readGitIgnoreGlobsContext(withSourceReadBoundaries(context.Background(), rootPath), rootPath)
 }
 
-func (s *Server) readGitIgnoreGlobsContext(ctx context.Context, rootPath string) []string {
+func (s *Server) scanGitIgnoreGlobsContext(ctx context.Context, rootPath string) []string {
 	globs := []string{}
 	_ = filepath.WalkDir(rootPath, func(path string, entry os.DirEntry, walkErr error) error {
 		if ctx.Err() != nil {

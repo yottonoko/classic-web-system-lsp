@@ -56,6 +56,7 @@ type Server struct {
 	trustedFilesystemRootCacheGeneration             uint64
 	trustedRootStats                                 trustedRootStatCoalescer
 	trustedPaths                                     trustedPathCache
+	gitIgnoreGlobs                                   gitIgnoreGlobsCache
 	workspace                                        map[string]*core.TextDocument
 	workspaceURIs                                    workspaceURIIndex
 	html                                             embedded.HTML

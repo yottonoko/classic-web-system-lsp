@@ -249,6 +249,7 @@ func (s *Server) reindexWorkspaceContext(ctx context.Context) bool {
 	if ctx == nil {
 		ctx = context.Background()
 	}
+	s.invalidateGitIgnoreGlobs()
 	s.workspaceIndexStateMu.Lock()
 	defer s.workspaceIndexStateMu.Unlock()
 	s.mu.Lock()

@@ -940,8 +940,9 @@ async function startClient(context: vscode.ExtensionContext): Promise<void> {
     run: { command: serverPath.command, args: ["--stdio"], options: { env: serverEnv } },
     debug: { command: serverPath.command, args: ["--stdio"], options: { env: serverEnv } },
   };
+  // .gitignore changes let the server drop its cached ignore rules.
   const nextFileSystemWatcher = vscode.workspace.createFileSystemWatcher(
-    "**/*.{asp,asa,inc,vbs,js,jsx,mjs,cjs,ts,tsx,mts,cts,d.ts}",
+    "**/{*.asp,*.asa,*.inc,*.vbs,*.js,*.jsx,*.mjs,*.cjs,*.ts,*.tsx,*.mts,*.cts,*.d.ts,.gitignore}",
   );
   fileSystemWatcher?.dispose();
   fileSystemWatcher = nextFileSystemWatcher;
