@@ -620,12 +620,11 @@ func cachedReferenceShard(parsed *core.ParsedDocument) *ReferenceShard {
 	return nil
 }
 
-// SeedReferenceShard restores a validated reference shard into a parsed document's persistent and runtime caches.
+// SeedReferenceShard restores a validated reference shard into a parsed document's runtime cache.
 func SeedReferenceShard(parsed *core.ParsedDocument, shard *ReferenceShard) {
 	if parsed == nil || shard == nil || shard.Version != referenceShardVersion || shard.Declarations == nil || shard.Postings == nil {
 		return
 	}
-	parsed.StoreAnalysis(referenceShardAnalysisKey, shard)
 	parsed.StoreRuntimeAnalysis(referenceShardAnalysisKey, shard)
 }
 

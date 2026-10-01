@@ -482,10 +482,12 @@ func seedParsedAnalysis(parsed *core.ParsedDocument, snapshot *fileAnalysisSnaps
 	if parsed == nil || snapshot == nil {
 		return
 	}
+	// Facts that are only read back through runtime analysis are seeded as
+	// runtime values; encoding them again as JSON would duplicate the restored
+	// snapshot in memory without ever being decoded.
 	vbscript.SeedReferenceShard(parsed, snapshot.ReferenceShard)
 	snapshot.Symbols = vbscript.BuildSymbolIndex(parsed)
 	parsed.StoreAnalysis(vbReferenceDocumentFactsAnalysisKey, snapshot.ReferenceFacts)
-	parsed.StoreAnalysis("vbscript.symbol-index.v2", snapshot.Symbols)
 	parsed.StoreAnalysis("vbscript.signatures-by-name.v2", snapshot.Signatures)
 	parsed.StoreAnalysis("vbscript.signatures.v1", snapshot.SignatureList)
 	parsed.StoreAnalysis("lspserver.vb-usage.v2", snapshot.Usage)
@@ -493,7 +495,7 @@ func seedParsedAnalysis(parsed *core.ParsedDocument, snapshot *fileAnalysisSnaps
 	parsed.StoreAnalysis("lspserver.vb-assignments.v2", snapshot.Assignments)
 	parsed.StoreAnalysis("lspserver.graph-analysis-types.v6", snapshot.AnalysisTypes)
 	parsed.StoreAnalysis("lspserver.graph-member-occurrences.v1", snapshot.Members)
-	parsed.StoreAnalysis("lspserver.vb-file-summary.v2", snapshot.Summary)
+	parsed.StoreRuntimeAnalysis(vbFileAnalysisSummaryAnalysisKey, snapshot.Summary)
 	parsed.StoreAnalysis("vbscript.document-symbols.v1", snapshot.VBDocumentSymbols)
 	parsed.StoreAnalysis("vbscript.folding-ranges.v1", snapshot.VBFoldingRanges)
 	parsed.StoreAnalysis("core.document-colors.v1", snapshot.DocumentColors)

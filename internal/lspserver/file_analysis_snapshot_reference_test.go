@@ -212,3 +212,35 @@ End Sub
 		t.Fatalf("restored snapshot seeded the legacy signature analysis key: %#v", legacy)
 	}
 }
+
+func TestSeedParsedAnalysisSeedsRuntimeOnlyFactsWithoutJSONCopies(t *testing.T) {
+	const source = `<%
+Public Function SharedName(value)
+  SharedName = value
+End Function
+Response.Write SharedName("x")
+%>`
+	server := New(nil, io.Discard, io.Discard)
+	parsed := core.ParseDocument("file:///tmp/seed-runtime-only.asp", source, core.Settings{DefaultLanguage: "VBScript"})
+	snapshot := server.buildFileAnalysisSnapshot(parsed)
+	if len(snapshot.Summary.VBScript.PublicSymbols) == 0 {
+		t.Fatalf("snapshot summary has no public symbols: %#v", snapshot.Summary)
+	}
+	// The restored document has no source, so any fact rebuilt instead of
+	// seeded would be empty.
+	restored := core.ParseDocument(parsed.URI, "", core.Settings{DefaultLanguage: "VBScript"})
+	seedParsedAnalysis(restored, snapshot)
+
+	stored := restored.AnalysisSnapshot()
+	for _, key := range []string{"vbscript.reference-shard.v3", "vbscript.symbol-index.v2", vbFileAnalysisSummaryAnalysisKey} {
+		if _, ok := stored[key]; ok {
+			t.Fatalf("seeded analysis kept a JSON copy of %s", key)
+		}
+	}
+	if got := summarizeVBScriptFileAnalysis(restored); len(got.VBScript.PublicSymbols) != len(snapshot.Summary.VBScript.PublicSymbols) {
+		t.Fatalf("seeded summary = %#v, want %#v", got.VBScript.PublicSymbols, snapshot.Summary.VBScript.PublicSymbols)
+	}
+	if got := vbscript.BuildReferenceShard(restored); len(got.PostingsFor("sharedname")) == 0 {
+		t.Fatalf("seeded reference shard = %#v", got)
+	}
+}
