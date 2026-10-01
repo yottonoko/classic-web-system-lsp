@@ -452,7 +452,7 @@ func (p *javaScriptProjectPreparation) matchesLocked(s *Server, root string, def
 		p.ignoreProjectConfig != ignoreProjectConfig || !slices.Equal(p.explicitTypes, explicitTypes) || !reflect.DeepEqual(p.compilerOptions, explicitCompilerOptions) {
 		return false
 	}
-	if len(p.dirtyOwners) > 0 {
+	if len(p.dirtyOwners) > 0 || len(p.dirtyWorkspaceFiles) > 0 {
 		return false
 	}
 	if p.documentGeneration == s.javascriptDocumentGeneration && s.javascriptDocumentGeneration != 0 {

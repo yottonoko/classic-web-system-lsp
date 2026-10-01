@@ -544,7 +544,7 @@ func TestJavaScriptMemberCompletionExcludesServerGlobalExtras(t *testing.T) {
 	}
 }
 
-func TestJavaScriptProjectPreparationReusesSnapshotAndInvalidatesWatchedFiles(t *testing.T) {
+func TestJavaScriptProjectPreparationReusesSnapshotAndAppliesWatchedFilesWithoutWalking(t *testing.T) {
 	server := New(strings.NewReader(""), io.Discard, io.Discard)
 	server.rootPath = t.TempDir()
 	uri := pathToFileURI(filepath.Join(server.rootPath, "prepared.asp"))
@@ -562,19 +562,46 @@ func TestJavaScriptProjectPreparationReusesSnapshotAndInvalidatesWatchedFiles(t 
 		t.Fatalf("warm preparation rebuilt: first=%#v second=%#v cacheReused=%v", first.state, second.state, server.javascriptPreparation == preparation)
 	}
 
+	walks, upserts, deletes := 0, 0, 0
+	server.mu.Lock()
+	server.javascriptWorkspaceWalkTestHook = func(string) { walks++ }
+	server.javascriptProjectDeltaTestHook = func(upserted, deleted int) {
+		upserts += upserted
+		deletes += deleted
+	}
+	server.mu.Unlock()
 	helperPath := filepath.Join(server.rootPath, "helper.js")
+	helperProjectPath := javaScriptProjectPath(helperPath)
 	if err := os.WriteFile(helperPath, []byte("export const helperValue = 1;\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	if err := server.didChangeWatchedFiles(didChangeWatchedFilesParams{Changes: []fileEvent{{URI: pathToFileURI(helperPath), Type: fileChangeCreated}}}); err != nil {
 		t.Fatal(err)
 	}
-	if server.javascriptPreparation == preparation {
-		t.Fatal("watched JavaScript file reused stale preparation cache")
+	if server.javascriptPreparation != preparation {
+		t.Fatal("watched JavaScript file dropped the preparation instead of marking the file")
 	}
-	third, ok := server.prepareJavaScriptRequest(uri, position)
-	if !ok || server.javascriptPreparation == preparation || third.state.Builds <= second.state.Builds {
-		t.Fatalf("invalidated preparation was not rebuilt: second=%#v third=%#v", second.state, third.state)
+	if _, ok := server.prepareJavaScriptRequest(uri, position); !ok {
+		t.Fatal("preparation after a created JavaScript file failed")
+	}
+	if walks != 0 || upserts != 1 || deletes != 0 || server.javascriptPreparation.workspaceFiles[helperProjectPath] == "" || server.javascriptPreparation.autoImportExports[helperProjectPath] == nil {
+		t.Fatalf("created file: walks=%d upserts=%d deletes=%d workspaceFiles=%v", walks, upserts, deletes, server.javascriptPreparation.workspaceFiles)
+	}
+
+	if err := os.Remove(helperPath); err != nil {
+		t.Fatal(err)
+	}
+	if err := server.didChangeWatchedFiles(didChangeWatchedFilesParams{Changes: []fileEvent{{URI: pathToFileURI(helperPath), Type: fileChangeDeleted}}}); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := server.prepareJavaScriptRequest(uri, position); !ok {
+		t.Fatal("preparation after a deleted JavaScript file failed")
+	}
+	if _, kept := server.javascriptPreparation.workspaceFiles[helperProjectPath]; walks != 0 || deletes != 1 || kept || server.javascriptPreparation.autoImportExports[helperProjectPath] != nil {
+		t.Fatalf("deleted file: walks=%d upserts=%d deletes=%d kept=%v", walks, upserts, deletes, kept)
+	}
+	if len(server.javascriptPreparation.dirtyWorkspaceFiles) != 0 {
+		t.Fatalf("applied workspace files stayed dirty: %v", server.javascriptPreparation.dirtyWorkspaceFiles)
 	}
 }
 
@@ -938,4 +965,35 @@ func positionAtSuffix(text, suffix string) (position lsp.Position) {
 	lineStart := strings.LastIndex(text[:offset], "\n") + 1
 	position.Character = offset - lineStart
 	return position
+}
+
+func TestJavaScriptWorkspaceFileMembershipMatchesWalkRules(t *testing.T) {
+	root := t.TempDir()
+	for _, directory := range []string{"js", "build", "nested", filepath.Join("node_modules", "lib")} {
+		if err := os.MkdirAll(filepath.Join(root, directory), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.WriteFile(filepath.Join(root, "nested", "jsconfig.json"), []byte("{}"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	filter := javaScriptWorkspaceFileFilter{root: root, workspaceFilter: javascriptProjectDiscoverySettings{}.filterForRoot(root)}
+	for _, test := range []struct {
+		path              string
+		included, decided bool
+	}{
+		{filepath.Join(root, "js", "app.js"), true, true},
+		{filepath.Join(root, "app.ts"), true, true},
+		{filepath.Join(root, "js", "page.asp"), false, true},
+		{filepath.Join(root, "build", "bundle.js"), false, true},
+		{filepath.Join(root, "node_modules", "lib", "index.js"), false, true},
+		{filepath.Join(filepath.Dir(root), "outside.js"), false, true},
+		// A nested project is kept only when it holds the requesting document.
+		{filepath.Join(root, "nested", "module.js"), false, false},
+	} {
+		included, decided := filter.membership(test.path)
+		if included != test.included || decided != test.decided {
+			t.Errorf("membership(%s) = %v, %v; want %v, %v", test.path, included, decided, test.included, test.decided)
+		}
+	}
 }

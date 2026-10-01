@@ -155,12 +155,24 @@ func (s *Server) prepareJavaScriptRequestContext(ctx context.Context, sourceURI 
 		allowedAmbientTypes[javaScriptAmbientDirectoryName(typeName)] = struct{}{}
 	}
 	projectOptions := tsgoadapter.ProjectOptions{Types: embeddedTypes, TypesConfigured: typesConfigured, CompilerOptions: compilerOptions}
+	fileFilter := javaScriptWorkspaceFileFilter{root: root, typesConfigured: typesConfigured, allowedAmbientTypes: allowedAmbientTypes}
+	if root != "" {
+		fileFilter.workspaceFilter = discoverySettings.filterForRoot(root)
+	}
 	if reusePreparation {
-		if request, ok, handled := s.prepareJavaScriptRequestDelta(project, previousPreparation, sourceURI, position, documentGeneration, mappingGeneration, projectOptions); handled {
+		if request, ok, handled := s.prepareJavaScriptRequestDelta(ctx, project, previousPreparation, sourceURI, position, documentGeneration, mappingGeneration, projectOptions, fileFilter); handled {
 			if ok {
 				s.logJavaScriptProjectPreparation(sourceURI, false, request.state)
 			}
 			return request, ok
+		}
+		s.mu.Lock()
+		workspaceFilesStale := len(previousPreparation.dirtyWorkspaceFiles) > 0
+		s.mu.Unlock()
+		if workspaceFilesStale {
+			// The delta could not apply changed workspace files, so rediscover them.
+			workspaceFiles = nil
+			autoImportExports = nil
 		}
 	}
 
@@ -182,7 +194,6 @@ func (s *Server) prepareJavaScriptRequestContext(ctx context.Context, sourceURI 
 	}
 	var active *javaScriptVirtualFile
 	if workspaceFiles == nil && root != "" {
-		workspaceFilter := discoverySettings.filterForRoot(root)
 		workspacePaths := make([]string, 0, 256)
 		walkErr := filepath.WalkDir(root, func(path string, entry os.DirEntry, walkErr error) error {
 			if ctx.Err() != nil {
@@ -198,51 +209,17 @@ func (s *Server) prepareJavaScriptRequestContext(ctx context.Context, sourceURI 
 				return nil
 			}
 			if entry.IsDir() {
-				relative, relativeErr := filepath.Rel(root, path)
-				if relativeErr != nil {
-					return nil
-				}
-				if relative != "." && workspaceFilter.skipsDirectory(filepath.ToSlash(relative)) {
-					return filepath.SkipDir
-				}
-				name := strings.ToLower(entry.Name())
-				if name == ".git" || name == ".codex" || name == "dist" || name == "out" || name == "build" || name == "third_party" || name == "vendor" {
-					return filepath.SkipDir
-				}
-				if name == "node_modules" && len(allowedAmbientTypes) == 0 {
+				if fileFilter.skipsDirectory(path, entry.Name()) {
 					return filepath.SkipDir
 				}
 				if path != root && !pathContainsFile(path, fileURIPath(sourceURI)) && directoryHasJavaScriptProjectConfig(path) {
 					return filepath.SkipDir
 				}
-				parent := strings.ToLower(filepath.Base(filepath.Dir(path)))
-				if parent == "node_modules" && name != "@types" {
-					return filepath.SkipDir
-				}
 				return nil
 			}
-			normalized := filepath.ToSlash(path)
-			lower := strings.ToLower(normalized)
-			if packageName, ambient := javaScriptAmbientPackageName(lower); ambient {
-				if typesConfigured {
-					if _, allowed := allowedAmbientTypes[packageName]; !allowed {
-						return nil
-					}
-				} else if packageName == "node" {
-					return nil
-				}
+			if fileFilter.includesFile(path) {
+				workspacePaths = append(workspacePaths, path)
 			}
-			if !isJavaScriptModuleFile(normalized) && filepath.Base(lower) != "package.json" {
-				return nil
-			}
-			relative, relativeErr := filepath.Rel(root, path)
-			if relativeErr != nil || relative == "." || !workspaceFilter.allowsFile(filepath.ToSlash(relative)) {
-				return nil
-			}
-			if strings.Contains(lower, "/node_modules/") && !strings.Contains(lower, "/node_modules/@types/") {
-				return nil
-			}
-			workspacePaths = append(workspacePaths, path)
 			return nil
 		})
 		if walkErr != nil && ctx.Err() != nil {
@@ -407,12 +384,25 @@ func (p *javaScriptProjectPreparation) markChangedDocumentsDirty(documents []*co
 	}
 }
 
-func (s *Server) prepareJavaScriptRequestDelta(project *tsgoadapter.Project, preparation *javaScriptProjectPreparation, sourceURI string, position lsp.Position, documentGeneration, mappingGeneration uint64, options tsgoadapter.ProjectOptions) (*javaScriptRequest, bool, bool) {
+func (s *Server) prepareJavaScriptRequestDelta(ctx context.Context, project *tsgoadapter.Project, preparation *javaScriptProjectPreparation, sourceURI string, position lsp.Position, documentGeneration, mappingGeneration uint64, options tsgoadapter.ProjectOptions, fileFilter javaScriptWorkspaceFileFilter) (*javaScriptRequest, bool, bool) {
 	s.mu.Lock()
-	if s.javascriptPreparation != preparation || preparation == nil || len(preparation.dirtyOwners) == 0 {
+	if s.javascriptPreparation != preparation || preparation == nil || len(preparation.dirtyOwners) == 0 && len(preparation.dirtyWorkspaceFiles) == 0 {
 		s.mu.Unlock()
 		return nil, false, false
 	}
+	type workspaceFileDelta struct {
+		path       string
+		sequence   uint64
+		overridden bool
+	}
+	workspaceFileDeltas := make([]workspaceFileDelta, 0, len(preparation.dirtyWorkspaceFiles))
+	for path, sequence := range preparation.dirtyWorkspaceFiles {
+		uri := filePathURI(path)
+		// Documents held in memory replace the disk copy in the project.
+		overridden := s.openDocumentByURILocked(uri) != nil || s.workspaceDocumentByURILocked(uri) != nil
+		workspaceFileDeltas = append(workspaceFileDeltas, workspaceFileDelta{path: path, sequence: sequence, overridden: overridden})
+	}
+	previousWorkspaceFiles := preparation.workspaceFiles
 	type ownerDelta struct {
 		uri              string
 		snapshot         javaScriptDocumentSnapshot
@@ -451,6 +441,50 @@ func (s *Server) prepareJavaScriptRequestDelta(project *tsgoadapter.Project, pre
 	deleteSet := map[string]struct{}{}
 	autoImportExports := preparation.autoImportExports
 	autoImportExportsChanged := false
+	var workspaceFiles map[string]string
+	if len(workspaceFileDeltas) > 0 {
+		sort.Slice(workspaceFileDeltas, func(i, j int) bool { return workspaceFileDeltas[i].path < workspaceFileDeltas[j].path })
+		workspaceFiles = maps.Clone(previousWorkspaceFiles)
+		if workspaceFiles == nil {
+			workspaceFiles = map[string]string{}
+		}
+		autoImportExports = cloneJavaScriptAutoImportExports(autoImportExports)
+		autoImportExportsChanged = true
+		for _, delta := range workspaceFileDeltas {
+			included, decided := fileFilter.membership(delta.path)
+			if !decided {
+				return nil, false, false
+			}
+			projectPath := javaScriptProjectPath(delta.path)
+			text, present := "", false
+			if included {
+				if contents, err := s.readSourceFileBytes(ctx, delta.path, s.includeReadLimiter); err == nil {
+					text, present = string(contents), true
+				} else if ctx.Err() != nil {
+					return nil, false, false
+				}
+			}
+			previousText, previouslyPresent := workspaceFiles[projectPath]
+			if present {
+				workspaceFiles[projectPath] = text
+			} else {
+				delete(workspaceFiles, projectPath)
+			}
+			if delta.overridden {
+				continue
+			}
+			switch {
+			case present && (!previouslyPresent || previousText != text):
+				upserts[projectPath] = text
+				if isJavaScriptModuleFile(delta.path) {
+					autoImportExports[projectPath] = exportedJavaScriptNames(text)
+				}
+			case !present && previouslyPresent:
+				delete(autoImportExports, projectPath)
+				deleteSet[projectPath] = struct{}{}
+			}
+		}
+	}
 	for index := range deltas {
 		delta := &deltas[index]
 		previousTextByPath := make(map[string]string, len(delta.previousMappings))
@@ -534,6 +568,14 @@ func (s *Server) prepareJavaScriptRequestDelta(project *tsgoadapter.Project, pre
 			break
 		}
 	}
+	if samePreparation && workspaceFiles != nil {
+		preparation.workspaceFiles = workspaceFiles
+		for _, delta := range workspaceFileDeltas {
+			if preparation.dirtyWorkspaceFiles[delta.path] == delta.sequence {
+				delete(preparation.dirtyWorkspaceFiles, delta.path)
+			}
+		}
+	}
 	if samePreparation {
 		// UpdateDelta has already changed the project, so the mappings must
 		// follow it even when a document moved on meanwhile. Otherwise the next
@@ -556,7 +598,7 @@ func (s *Server) prepareJavaScriptRequestDelta(project *tsgoadapter.Project, pre
 				delete(preparation.dirtyOwners, delta.uri)
 			}
 		}
-		if current && len(preparation.dirtyOwners) == 0 && s.javascriptDocumentGeneration == documentGeneration && s.javascriptMappingGeneration == mappingGeneration {
+		if current && len(preparation.dirtyOwners) == 0 && len(preparation.dirtyWorkspaceFiles) == 0 && s.javascriptDocumentGeneration == documentGeneration && s.javascriptMappingGeneration == mappingGeneration {
 			preparation.documentGeneration = documentGeneration
 			preparation.mappingGeneration = mappingGeneration
 		}
@@ -572,4 +614,89 @@ func (s *Server) prepareJavaScriptRequestDelta(project *tsgoadapter.Project, pre
 		return nil, false, true
 	}
 	return &javaScriptRequest{project: project, active: active, files: preparation.mappings, state: state, cache: preparation.serviceCache}, true, true
+}
+
+// javaScriptWorkspaceFileFilter holds the rules that decide which workspace
+// files belong to the JavaScript project. Nested JavaScript projects are
+// checked by the callers because the workspace walk keeps the one that holds
+// the requesting document.
+type javaScriptWorkspaceFileFilter struct {
+	root                string
+	workspaceFilter     workspaceIndexFileDiscoveryFilter
+	typesConfigured     bool
+	allowedAmbientTypes map[string]struct{}
+}
+
+func (f javaScriptWorkspaceFileFilter) skipsDirectory(path, name string) bool {
+	relative, err := filepath.Rel(f.root, path)
+	if err != nil {
+		return false
+	}
+	if relative != "." && f.workspaceFilter.skipsDirectory(filepath.ToSlash(relative)) {
+		return true
+	}
+	lower := strings.ToLower(name)
+	switch lower {
+	case ".git", ".codex", "dist", "out", "build", "third_party", "vendor":
+		return true
+	}
+	if lower == "node_modules" && len(f.allowedAmbientTypes) == 0 {
+		return true
+	}
+	parent := strings.ToLower(filepath.Base(filepath.Dir(path)))
+	return parent == "node_modules" && lower != "@types"
+}
+
+func (f javaScriptWorkspaceFileFilter) includesFile(path string) bool {
+	normalized := filepath.ToSlash(path)
+	lower := strings.ToLower(normalized)
+	if packageName, ambient := javaScriptAmbientPackageName(lower); ambient {
+		if f.typesConfigured {
+			if _, allowed := f.allowedAmbientTypes[packageName]; !allowed {
+				return false
+			}
+		} else if packageName == "node" {
+			return false
+		}
+	}
+	if !isJavaScriptModuleFile(normalized) && filepath.Base(lower) != "package.json" {
+		return false
+	}
+	relative, err := filepath.Rel(f.root, path)
+	if err != nil || relative == "." || !f.workspaceFilter.allowsFile(filepath.ToSlash(relative)) {
+		return false
+	}
+	return !strings.Contains(lower, "/node_modules/") || strings.Contains(lower, "/node_modules/@types/")
+}
+
+// membership decides whether one changed file belongs to the project without
+// walking the workspace. decided is false when a nested JavaScript project
+// directory could change the answer.
+func (f javaScriptWorkspaceFileFilter) membership(path string) (included, decided bool) {
+	if f.root == "" {
+		return false, false
+	}
+	relative, err := filepath.Rel(f.root, path)
+	if err != nil || relative == ".." || strings.HasPrefix(relative, ".."+string(filepath.Separator)) {
+		return false, true
+	}
+	if relative == "." {
+		return false, true
+	}
+	directory := f.root
+	if f.skipsDirectory(directory, filepath.Base(directory)) {
+		return false, true
+	}
+	if parent := filepath.Dir(relative); parent != "." {
+		for _, part := range strings.Split(parent, string(filepath.Separator)) {
+			directory = filepath.Join(directory, part)
+			if f.skipsDirectory(directory, part) {
+				return false, true
+			}
+			if directoryHasJavaScriptProjectConfig(directory) {
+				return false, false
+			}
+		}
+	}
+	return f.includesFile(path), true
 }

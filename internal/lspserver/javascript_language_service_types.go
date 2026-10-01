@@ -2,6 +2,7 @@ package lspserver
 
 import (
 	"context"
+	"path/filepath"
 	"strconv"
 	"sync"
 
@@ -175,4 +176,17 @@ type javaScriptProjectPreparation struct {
 	jqueryCompletion    bool
 	serviceCache        *javaScriptServiceResultCache
 	dirtyOwners         map[string]struct{}
+	// dirtyWorkspaceFiles maps watched workspace files changed since the
+	// preparation was built to the sequence of their latest change, so a
+	// request rereads only those files instead of walking the workspace.
+	dirtyWorkspaceFiles    map[string]uint64
+	dirtyWorkspaceSequence uint64
+}
+
+func (p *javaScriptProjectPreparation) markWorkspaceFileDirty(path string) {
+	if p.dirtyWorkspaceFiles == nil {
+		p.dirtyWorkspaceFiles = map[string]uint64{}
+	}
+	p.dirtyWorkspaceSequence++
+	p.dirtyWorkspaceFiles[filepath.Clean(path)] = p.dirtyWorkspaceSequence
 }

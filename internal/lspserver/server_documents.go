@@ -696,6 +696,15 @@ func (s *Server) didChangeWatchedFiles(params didChangeWatchedFilesParams) error
 	if javascriptProjectChanged {
 		if javascriptProjectConfigChanged {
 			s.resetJavaScriptProjectLocked()
+		} else if s.javascriptPreparation != nil && s.javascriptPreparation.workspaceFiles != nil {
+			// Reread only the changed files on the next request; walking the
+			// workspace again costs a round trip per directory on network drives.
+			for _, change := range javascriptProjectChanges {
+				if path := fileURIPath(change.URI); path != "" {
+					s.javascriptPreparation.markWorkspaceFileDirty(path)
+				}
+			}
+			s.markJavaScriptDocumentsChangedLocked()
 		} else {
 			s.javascriptPreparation = nil
 			s.markJavaScriptDocumentsChangedLocked()
