@@ -8,6 +8,7 @@ import (
 
 	"github.com/yottonoko/classic-web-system-lsp/internal/core"
 	"github.com/yottonoko/classic-web-system-lsp/internal/lsp"
+	"github.com/yottonoko/classic-web-system-lsp/internal/vbscript"
 	workspacepkg "github.com/yottonoko/classic-web-system-lsp/internal/workspace"
 )
 
@@ -311,7 +312,12 @@ func (s *Server) buildWorkspaceVBAutoIncludeCatalog(ctx context.Context, generat
 		if workerCtx.Err() != nil {
 			return
 		}
+		// The catalog only needs export summaries. Release the shard's
+		// document CST afterwards so a cold workspace scan does not retain a
+		// CST for every page; later requests rebuild it on demand.
+		referenceShard := vbscript.BuildReferenceShard(parsed)
 		resolved[index].summaries = workspaceTopLevelVBExportSummaries(summarizeVBScriptFileAnalysis(parsed).VBScript.Exports)
+		referenceShard.ReleaseDocumentCST()
 	})
 	if ctx.Err() != nil {
 		return workspaceVBAutoIncludeCatalogBuild{}, false

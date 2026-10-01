@@ -151,6 +151,7 @@ type Server struct {
 	workspaceIndexCancel                             context.CancelFunc
 	workspaceIndexParent                             context.Context
 	workspaceIndexDone                               chan struct{}
+	workspaceReferenceIndexReadySignal               chan struct{}
 	workspaceIndexDiskCacheUseMu                     sync.Mutex
 	workspaceIndexDiskCommitMu                       sync.Mutex
 	workspaceCacheRestoreLimiter                     chan struct{}

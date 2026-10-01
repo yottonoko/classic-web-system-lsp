@@ -107,6 +107,7 @@ func (s *Server) scheduleWorkspaceIndex(reason string) {
 	done := make(chan struct{})
 	s.workspaceIndexCancel = cancel
 	s.workspaceIndexDone = done
+	s.workspaceReferenceIndexReadySignal = make(chan struct{})
 	// A workspace reference count cannot be final while the document universe
 	// for this generation is still changing. Start a fresh reference generation
 	// so an older, smaller universe can never be presented as complete.
@@ -253,6 +254,39 @@ func (s *Server) runWorkspaceIndexWorker(ctx context.Context, reason string, gen
 		s.reportWorkspaceIndexBuildFailure(taskID, reason, result.err, progressState)
 		return
 	}
+	if done := s.updateProgressTaskImmediate(taskID, "workspace.index", "workspace.index.finalize", "reference universe", 0, 1, nil, "running"); done != nil {
+		<-done
+	}
+	referenceFingerprint := s.workspaceReferenceUniverseFingerprint()
+	if done := s.updateProgressTaskImmediate(taskID, "workspace.index", "workspace.index.finalize", "reference universe", 1, 1, nil, "running"); done != nil {
+		<-done
+	}
+	// Reference counts depend on the document universe and include topology,
+	// not on the auto-include catalog, so publish readiness before the
+	// catalog rebuild instead of making pending CodeLens batches wait for it.
+	s.workspaceIndexStateMu.RLock()
+	if !s.workspaceIndexGenerationCurrent(ctx, generation) {
+		s.workspaceIndexStateMu.RUnlock()
+		result := s.workspaceIndexBuildInterruption(ctx, generation)
+		progressState = s.workspaceIndexBuildProgressState(result.err)
+		s.reportWorkspaceIndexBuildFailure(taskID, reason, result.err, progressState)
+		return
+	}
+	promoted := 0
+	s.mu.Lock()
+	if s.workspaceIndexGeneration == generation && !s.workspaceIndexClosed && s.workspaceIncludeGraphComplete {
+		promoted = s.promoteWorkspaceReferenceCountsLocked(generation, referenceFingerprint)
+		s.workspaceReferenceReadyFingerprint = referenceFingerprint
+		s.workspaceReferenceIndexReadyGeneration = generation
+		s.signalWorkspaceReferenceIndexReadyLocked()
+	}
+	s.mu.Unlock()
+	s.workspaceIndexStateMu.RUnlock()
+	if promoted > 0 {
+		s.logDebugSummaryEvent("referenceCache.promotion", "[asp-lsp] referenceCache.promoted unchanged workspace counts="+strconv.Itoa(promoted), map[string]any{
+			"counts": promoted, "generation": generation,
+		})
+	}
 	s.updateProgressTask(taskID, "workspace.index", "workspace.index.catalog", "", 0, 0, nil, "running")
 	if !s.rebuildWorkspaceVBAutoIncludeCatalog(ctx, generation) {
 		result := s.workspaceIndexBuildInterruption(ctx, generation)
@@ -262,13 +296,6 @@ func (s *Server) runWorkspaceIndexWorker(ctx context.Context, reason string, gen
 		progressState = s.workspaceIndexBuildProgressState(result.err)
 		s.reportWorkspaceIndexBuildFailure(taskID, reason, result.err, progressState)
 		return
-	}
-	if done := s.updateProgressTaskImmediate(taskID, "workspace.index", "workspace.index.finalize", "reference universe", 0, 1, nil, "running"); done != nil {
-		<-done
-	}
-	referenceFingerprint := s.workspaceReferenceUniverseFingerprint()
-	if done := s.updateProgressTaskImmediate(taskID, "workspace.index", "workspace.index.finalize", "reference universe", 1, 1, nil, "running"); done != nil {
-		<-done
 	}
 	s.workspaceIndexStateMu.RLock()
 	defer s.workspaceIndexStateMu.RUnlock()
@@ -283,19 +310,6 @@ func (s *Server) runWorkspaceIndexWorker(ctx context.Context, reason string, gen
 	}), map[string]any{
 		"documents": len(docs), "generation": generation, "reason": reason, "source": map[bool]string{true: "analysisDatabase", false: "filesystem"}[cacheHit],
 	})
-	promoted := 0
-	s.mu.Lock()
-	if s.workspaceIndexGeneration == generation && !s.workspaceIndexClosed && s.workspaceIncludeGraphComplete {
-		promoted = s.promoteWorkspaceReferenceCountsLocked(generation, referenceFingerprint)
-		s.workspaceReferenceReadyFingerprint = referenceFingerprint
-		s.workspaceReferenceIndexReadyGeneration = generation
-	}
-	s.mu.Unlock()
-	if promoted > 0 {
-		s.logDebugSummaryEvent("referenceCache.promotion", "[asp-lsp] referenceCache.promoted unchanged workspace counts="+strconv.Itoa(promoted), map[string]any{
-			"counts": promoted, "generation": generation,
-		})
-	}
 	s.reportAsyncRPCWriteError(s.requestVisualRefresh("workspace.index.complete:" + reason))
 	progressState = "completed"
 }
@@ -852,6 +866,7 @@ func (s *Server) waitForCompleteWorkspaceReferenceIndex(ctx context.Context) boo
 	for {
 		s.mu.Lock()
 		done := s.workspaceIndexDone
+		readySignal := s.workspaceReferenceIndexReadySignal
 		generation := s.workspaceIndexGeneration
 		ready := s.workspaceReferenceIndexReadyLocked()
 		s.mu.Unlock()
@@ -860,6 +875,7 @@ func (s *Server) waitForCompleteWorkspaceReferenceIndex(ctx context.Context) boo
 		}
 		select {
 		case <-done:
+		case <-readySignal:
 		case <-ctx.Done():
 			return false
 		}
@@ -869,8 +885,38 @@ func (s *Server) waitForCompleteWorkspaceReferenceIndex(ctx context.Context) boo
 		currentReady := s.workspaceReferenceIndexReadyGeneration == currentGeneration
 		s.mu.Unlock()
 		if currentDone == done && currentGeneration == generation {
-			return currentReady
+			if currentReady {
+				return true
+			}
+			// Readiness is only signalled once per generation; without it the
+			// worker's completion decides.
+			select {
+			case <-done:
+			case <-ctx.Done():
+				return false
+			}
+			s.mu.Lock()
+			currentReady = s.workspaceIndexDone == done && s.workspaceIndexGeneration == generation &&
+				s.workspaceReferenceIndexReadyGeneration == generation
+			sameGeneration := s.workspaceIndexDone == done && s.workspaceIndexGeneration == generation
+			s.mu.Unlock()
+			if sameGeneration {
+				return currentReady
+			}
 		}
+	}
+}
+
+// signalWorkspaceReferenceIndexReadyLocked wakes reference waiters for the
+// current generation. The caller must hold s.mu.
+func (s *Server) signalWorkspaceReferenceIndexReadyLocked() {
+	if s.workspaceReferenceIndexReadySignal == nil {
+		return
+	}
+	select {
+	case <-s.workspaceReferenceIndexReadySignal:
+	default:
+		close(s.workspaceReferenceIndexReadySignal)
 	}
 }
 
