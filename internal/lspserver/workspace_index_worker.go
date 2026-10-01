@@ -606,6 +606,7 @@ func (s *Server) buildWorkspaceIndexWithProgress(ctx context.Context, generation
 	scans := make([]workspaceIndexScan, len(settings.roots))
 	discovered := 0
 	var discoveryProgressMu sync.Mutex
+	var lastDiscoveryProgress time.Time
 	s.analysisWorkers.parallelForBulk(ctx, len(settings.roots), func(workerCtx context.Context, rootIndex int) {
 		root := settings.roots[rootIndex]
 		if root.Path == "" {
@@ -620,7 +621,7 @@ func (s *Server) buildWorkspaceIndexWithProgress(ctx context.Context, generation
 			discoveryProgressMu.Lock()
 			defer discoveryProgressMu.Unlock()
 			discovered++
-			if progress != nil {
+			if progress != nil && workspaceIndexItemProgressDue(&lastDiscoveryProgress, false) {
 				progress("workspace.index.scanRoot", discovered, 0, file.Relative)
 			}
 		})
@@ -677,6 +678,7 @@ func (s *Server) buildWorkspaceIndexWithProgress(ctx context.Context, generation
 	results := make([]workspaceIndexReadResult, len(reads))
 	processedFiles := 0
 	var fileProgressMu sync.Mutex
+	var lastFileProgress time.Time
 	if progress != nil {
 		progress("workspace.index.scanFiles", 0, totalFiles, "")
 	}
@@ -686,7 +688,7 @@ func (s *Server) buildWorkspaceIndexWithProgress(ctx context.Context, generation
 			fileProgressMu.Lock()
 			defer fileProgressMu.Unlock()
 			processedFiles++
-			if progress != nil {
+			if progress != nil && workspaceIndexItemProgressDue(&lastFileProgress, processedFiles == totalFiles) {
 				progress("workspace.index.scanFiles", processedFiles, totalFiles, read.file.Relative)
 			}
 		}()
@@ -891,6 +893,20 @@ func (s *Server) indexWorkspace() {
 	s.activateWorkspaceIndexing(context.Background())
 	s.scheduleWorkspaceIndex("internal.synchronous")
 	s.waitForWorkspaceIndex(context.Background())
+}
+
+const workspaceIndexItemProgressInterval = 50 * time.Millisecond
+
+// workspaceIndexItemProgressDue limits per-file progress updates, which take
+// Server.mu, so parallel file workers do not serialize on progress reporting.
+// The caller must hold the mutex that guards last.
+func workspaceIndexItemProgressDue(last *time.Time, final bool) bool {
+	now := time.Now()
+	if !final && !last.IsZero() && now.Sub(*last) < workspaceIndexItemProgressInterval {
+		return false
+	}
+	*last = now
+	return true
 }
 
 func (s *Server) readWorkspaceIndexFile(ctx context.Context, path, legacyEncoding string, limiter chan struct{}, boundaries ...string) (string, error) {

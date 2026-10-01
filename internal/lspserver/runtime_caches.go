@@ -612,7 +612,7 @@ func (s *Server) registeredDocumentStoreCache() workspacepkg.RegisteredCache {
 					s.demoteDocumentStoreEntryLocked(cached)
 					ledger.addStoreEntry(key, cached)
 				} else {
-					delete(s.documentStore.Cache, key)
+					s.documentStore.Delete(key)
 				}
 				freed = subtractRuntimeCacheBytes(beforeLedger, ledger.total())
 			}

@@ -1,6 +1,7 @@
 package workspace
 
 import (
+	"sort"
 	"strings"
 	"time"
 )
@@ -20,12 +21,46 @@ type CachedDocument struct {
 	DemotedAt            int64
 }
 
+// DocumentStore caches documents by URI. Mutate Cache only through Put and
+// Delete so file-identity lookups stay indexed. Direct map writes that change
+// the entry count or replace an indexed candidate rebuild the index, but a
+// direct replacement under a new file identity is not detected.
 type DocumentStore struct {
 	Cache map[string]*CachedDocument
+
+	identity documentStoreIdentityIndex
+}
+
+type documentStoreIdentityIndex struct {
+	entries    map[string]documentStoreIdentityEntry
+	byIdentity map[string]map[string]struct{}
+}
+
+type documentStoreIdentityEntry struct {
+	cached   *CachedDocument
+	uri      string
+	identity string
 }
 
 func NewDocumentStore() *DocumentStore {
 	return &DocumentStore{Cache: map[string]*CachedDocument{}}
+}
+
+// Put stores cached under key and indexes its file identity.
+func (s *DocumentStore) Put(key string, cached *CachedDocument) {
+	s.Cache[key] = cached
+	if s.identity.entries != nil {
+		s.identity.remove(key)
+		s.identity.add(key, cached)
+	}
+}
+
+// Delete removes the entry stored under key.
+func (s *DocumentStore) Delete(key string) {
+	delete(s.Cache, key)
+	if s.identity.entries != nil {
+		s.identity.remove(key)
+	}
 }
 
 func (s *DocumentStore) CachedDocumentForURI(uri string) *CachedDocument {
@@ -34,11 +69,11 @@ func (s *DocumentStore) CachedDocumentForURI(uri string) *CachedDocument {
 		return cached
 	}
 	if stringsHasFileScheme(uri) {
-		for _, cached := range s.Cache {
-			if SameFileIdentityURI(cached.URI, uri) {
-				s.Touch(cached, 0)
-				return cached
-			}
+		matches := s.identityMatches(uri)
+		if len(matches) > 0 {
+			cached := s.Cache[matches[0]]
+			s.Touch(cached, 0)
+			return cached
 		}
 	}
 	return nil
@@ -52,12 +87,9 @@ func (s *DocumentStore) CachedDocumentsForURI(uri string) []*CachedDocument {
 		}
 		return []*CachedDocument{direct}
 	}
-	fileKey := FileIdentityKeyFromURI(uri)
 	result := []*CachedDocument{}
-	for _, cached := range s.Cache {
-		if FileIdentityKeyFromURI(cached.URI) == fileKey {
-			result = append(result, cached)
-		}
+	for _, key := range s.identityMatches(uri) {
+		result = append(result, s.Cache[key])
 	}
 	if direct != nil && !cachedDocumentSliceContains(result, direct) {
 		result = append([]*CachedDocument{direct}, result...)
@@ -69,10 +101,80 @@ func (s *DocumentStore) CachedDocumentsForURI(uri string) []*CachedDocument {
 }
 
 func (s *DocumentStore) DeleteCachedDocumentsForURI(uri string) {
-	for key, cached := range s.Cache {
-		if key == uri || stringsHasFileScheme(uri) && SameFileIdentityURI(cached.URI, uri) {
-			delete(s.Cache, key)
+	if stringsHasFileScheme(uri) {
+		for _, key := range s.identityMatches(uri) {
+			s.Delete(key)
 		}
+	}
+	if _, ok := s.Cache[uri]; ok {
+		s.Delete(uri)
+	}
+}
+
+// identityMatches returns the sorted keys whose cached URI shares the file
+// identity of uri.
+func (s *DocumentStore) identityMatches(uri string) []string {
+	identity := FileIdentityKeyFromURI(uri)
+	for attempt := 0; ; attempt++ {
+		if s.identity.entries == nil || len(s.identity.entries) != len(s.Cache) {
+			s.rebuildIdentityIndex()
+		}
+		keys := make([]string, 0, len(s.identity.byIdentity[identity]))
+		stale := false
+		for key := range s.identity.byIdentity[identity] {
+			entry := s.identity.entries[key]
+			if s.Cache[key] != entry.cached || entry.cached == nil || entry.cached.URI != entry.uri {
+				stale = true
+				break
+			}
+			keys = append(keys, key)
+		}
+		if !stale || attempt > 0 {
+			sort.Strings(keys)
+			return keys
+		}
+		s.identity.entries = nil
+	}
+}
+
+func (s *DocumentStore) rebuildIdentityIndex() {
+	s.identity = documentStoreIdentityIndex{
+		entries:    make(map[string]documentStoreIdentityEntry, len(s.Cache)),
+		byIdentity: make(map[string]map[string]struct{}, len(s.Cache)),
+	}
+	for key, cached := range s.Cache {
+		s.identity.add(key, cached)
+	}
+}
+
+func (index *documentStoreIdentityIndex) add(key string, cached *CachedDocument) {
+	entry := documentStoreIdentityEntry{cached: cached}
+	if cached != nil {
+		entry.uri = cached.URI
+		entry.identity = FileIdentityKeyFromURI(cached.URI)
+		keys := index.byIdentity[entry.identity]
+		if keys == nil {
+			keys = map[string]struct{}{}
+			index.byIdentity[entry.identity] = keys
+		}
+		keys[key] = struct{}{}
+	}
+	index.entries[key] = entry
+}
+
+func (index *documentStoreIdentityIndex) remove(key string) {
+	entry, ok := index.entries[key]
+	if !ok {
+		return
+	}
+	delete(index.entries, key)
+	if entry.cached == nil {
+		return
+	}
+	keys := index.byIdentity[entry.identity]
+	delete(keys, key)
+	if len(keys) == 0 {
+		delete(index.byIdentity, entry.identity)
 	}
 }
 

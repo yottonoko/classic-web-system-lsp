@@ -112,12 +112,15 @@ func cloneDiskParsedDocument(parsed *core.ParsedDocument) *core.ParsedDocument {
 	if parsed == nil {
 		return nil
 	}
+	// Snapshot first: it allocates the analysis lock that the shallow copy
+	// shares with the original along with its runtime analysis maps.
+	analysis := parsed.AnalysisSnapshot()
 	clone := *parsed
 	clone.Regions = append([]core.Region(nil), parsed.Regions...)
 	clone.Includes = append([]core.Include(nil), parsed.Includes...)
 	clone.Errors = append([]core.ParseError(nil), parsed.Errors...)
 	clone.ChangeImpact.Languages = append([]core.EmbeddedLanguage(nil), parsed.ChangeImpact.Languages...)
-	clone.Analysis = parsed.AnalysisSnapshot()
+	clone.Analysis = analysis
 	return &clone
 }
 

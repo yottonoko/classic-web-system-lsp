@@ -30,7 +30,7 @@ func (s *Server) rememberParsedDocumentLocked(doc *core.TextDocument, parsed *co
 	cached := s.documentStore.Cache[doc.URI]
 	if cached == nil {
 		cached = &workspacepkg.CachedDocument{URI: doc.URI}
-		s.documentStore.Cache[doc.URI] = cached
+		s.documentStore.Put(doc.URI, cached)
 	}
 	sameSource := cached.Text == doc.Text
 	cached.Text = doc.Text
@@ -54,7 +54,7 @@ func (s *Server) rememberDocumentTextLocked(doc *core.TextDocument) {
 	cached := s.documentStore.Cache[doc.URI]
 	if cached == nil {
 		cached = &workspacepkg.CachedDocument{URI: doc.URI}
-		s.documentStore.Cache[doc.URI] = cached
+		s.documentStore.Put(doc.URI, cached)
 	}
 	cached.Text = doc.Text
 	cached.Version = doc.Version
@@ -75,7 +75,7 @@ func (s *Server) rememberDocumentRevisionLocked(doc *core.TextDocument) {
 	cached := s.documentStore.CachedDocumentForURI(doc.URI)
 	if cached == nil {
 		cached = &workspacepkg.CachedDocument{URI: doc.URI}
-		s.documentStore.Cache[doc.URI] = cached
+		s.documentStore.Put(doc.URI, cached)
 	}
 	if cached.Text != doc.Text {
 		cached.Text = doc.Text
@@ -158,7 +158,7 @@ func (s *Server) demoteParsedCacheEntryLocked(key string, entry parsedDocumentCa
 	}
 	if cached == nil {
 		cached = &workspacepkg.CachedDocument{URI: uri, Text: entry.Text, Version: entry.Version, Parsed: entry.Parsed, ParseDepth: "full"}
-		s.documentStore.Cache[uri] = cached
+		s.documentStore.Put(uri, cached)
 		if identities != nil {
 			identities[identity] = uri
 		}

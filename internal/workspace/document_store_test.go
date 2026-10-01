@@ -72,3 +72,63 @@ func TestDocumentStoreDoesNotDemoteEmptySkeleton(t *testing.T) {
 		t.Fatalf("generation should stay unchanged")
 	}
 }
+
+func TestDocumentStoreIdentityIndexFollowsPutAndDelete(t *testing.T) {
+	store := NewDocumentStore()
+	first := &CachedDocument{URI: "file:///site/default.asp"}
+	second := &CachedDocument{URI: "FILE:///site/default.asp"}
+	other := &CachedDocument{URI: "file:///site/other.asp"}
+	store.Put("a", first)
+	store.Put("b", other)
+	if got := store.CachedDocumentsForURI("file:///site/default.asp"); len(got) != 1 || got[0] != first {
+		t.Fatalf("documents before alias put = %#v, want first", got)
+	}
+
+	store.Put("c", second)
+	if got := store.CachedDocumentsForURI("file:///site/default.asp"); len(got) != 2 || got[0] != first || got[1] != second {
+		t.Fatalf("documents after alias put = %#v, want first and second in key order", got)
+	}
+
+	store.Put("a", other)
+	if got := store.CachedDocumentsForURI("file:///site/default.asp"); len(got) != 1 || got[0] != second {
+		t.Fatalf("documents after replacing a = %#v, want second", got)
+	}
+	if got := store.CachedDocumentsForURI("file:///site/other.asp"); len(got) != 2 {
+		t.Fatalf("other documents after replacing a = %#v, want two entries", got)
+	}
+
+	store.Delete("c")
+	if got := store.CachedDocumentForURI("file:///site/default.asp"); got != nil {
+		t.Fatalf("lookup after delete = %#v, want nil", got)
+	}
+}
+
+func TestDocumentStoreIdentityIndexRebuildsAfterDirectWrites(t *testing.T) {
+	store := NewDocumentStore()
+	first := &CachedDocument{URI: "file:///site/default.asp"}
+	store.Put("a", first)
+	if got := store.CachedDocumentForURI("FILE:///site/default.asp"); got != first {
+		t.Fatalf("indexed lookup = %#v, want first", got)
+	}
+
+	added := &CachedDocument{URI: "file:///site/added.asp"}
+	store.Cache["b"] = added
+	if got := store.CachedDocumentForURI("FILE:///site/added.asp"); got != added {
+		t.Fatalf("lookup after direct insert = %#v, want added", got)
+	}
+
+	replacement := &CachedDocument{URI: "file:///site/default.asp"}
+	store.Cache["a"] = replacement
+	if got := store.CachedDocumentForURI("FILE:///site/default.asp"); got != replacement {
+		t.Fatalf("lookup after direct replacement = %#v, want replacement", got)
+	}
+
+	store.Cache["nil"] = nil
+	store.DeleteCachedDocumentsForURI("FILE:///site/default.asp")
+	if _, ok := store.Cache["a"]; ok {
+		t.Fatalf("identity delete kept a: %#v", store.Cache)
+	}
+	if store.Cache["b"] != added {
+		t.Fatalf("identity delete removed an unrelated entry: %#v", store.Cache)
+	}
+}

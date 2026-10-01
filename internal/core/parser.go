@@ -7,7 +7,9 @@ import (
 	"reflect"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"unique"
+	"unsafe"
 
 	"github.com/yottonoko/classic-web-system-lsp/internal/lsp"
 )
@@ -74,6 +76,8 @@ type ParsedDocument struct {
 	previousRuntimeAnalysis   map[string]any
 	hasPreviousRevision       bool
 	runtimeAnalysisOwnerCache *runtimeAnalysisMemoryOwnerCache
+	// analysisMu holds the *sync.RWMutex returned by analysisLock.
+	analysisMu unsafe.Pointer
 }
 
 type runtimeAnalysisEntry struct {
@@ -122,16 +126,28 @@ type RuntimeAnalysisExclusiveEstimator interface {
 	EstimateExclusiveRuntimeBytes() int64
 }
 
-var parsedAnalysisMu sync.RWMutex
+// analysisLock returns the lock guarding this revision's analysis maps. It is
+// allocated on first use; value copies made afterwards share it, together with
+// the maps they share, with the original.
+func (p *ParsedDocument) analysisLock() *sync.RWMutex {
+	if mu := (*sync.RWMutex)(atomic.LoadPointer(&p.analysisMu)); mu != nil {
+		return mu
+	}
+	mu := new(sync.RWMutex)
+	if atomic.CompareAndSwapPointer(&p.analysisMu, nil, unsafe.Pointer(mu)) {
+		return mu
+	}
+	return (*sync.RWMutex)(atomic.LoadPointer(&p.analysisMu))
+}
 
 // LoadAnalysis decodes a cached source-derived analysis value.
 func (p *ParsedDocument) LoadAnalysis(key string, target any) bool {
 	if p == nil || target == nil {
 		return false
 	}
-	parsedAnalysisMu.RLock()
+	p.analysisLock().RLock()
 	payload := append(json.RawMessage(nil), p.Analysis[key]...)
-	parsedAnalysisMu.RUnlock()
+	p.analysisLock().RUnlock()
 	return len(payload) > 0 && json.Unmarshal(payload, target) == nil
 }
 
@@ -144,12 +160,12 @@ func (p *ParsedDocument) StoreAnalysis(key string, value any) {
 	if err != nil {
 		return
 	}
-	parsedAnalysisMu.Lock()
+	p.analysisLock().Lock()
 	if p.Analysis == nil {
 		p.Analysis = map[string]json.RawMessage{}
 	}
 	p.Analysis[key] = payload
-	parsedAnalysisMu.Unlock()
+	p.analysisLock().Unlock()
 }
 
 // LoadRuntimeAnalysis returns an immutable decoded fact cached for this parsed source.
@@ -157,9 +173,9 @@ func (p *ParsedDocument) LoadRuntimeAnalysis(key string) (any, bool) {
 	if p == nil {
 		return nil, false
 	}
-	parsedAnalysisMu.RLock()
+	p.analysisLock().RLock()
 	entry, ok := p.runtimeAnalysis[key].(*runtimeAnalysisEntry)
-	parsedAnalysisMu.RUnlock()
+	p.analysisLock().RUnlock()
 	if !ok || entry == nil {
 		return nil, false
 	}
@@ -171,7 +187,7 @@ func (p *ParsedDocument) StoreRuntimeAnalysis(key string, value any) {
 	if p == nil || value == nil {
 		return
 	}
-	parsedAnalysisMu.Lock()
+	p.analysisLock().Lock()
 	if p.runtimeAnalysis == nil {
 		p.runtimeAnalysis = map[string]any{}
 	}
@@ -182,7 +198,7 @@ func (p *ParsedDocument) StoreRuntimeAnalysis(key string, value any) {
 	p.runtimeAnalysis[key] = entry
 	delete(p.previousRuntimeAnalysis, key)
 	p.invalidateRuntimeAnalysisMemoryOwnersLocked()
-	parsedAnalysisMu.Unlock()
+	p.analysisLock().Unlock()
 }
 
 func (p *ParsedDocument) invalidateRuntimeAnalysisMemoryOwnersLocked() {
@@ -235,8 +251,8 @@ func (p *ParsedDocument) LoadOrStoreRuntimeAnalysis(key string, value any) (actu
 	if p == nil || value == nil {
 		return nil, false
 	}
-	parsedAnalysisMu.Lock()
-	defer parsedAnalysisMu.Unlock()
+	p.analysisLock().Lock()
+	defer p.analysisLock().Unlock()
 	if entry, ok := p.runtimeAnalysis[key].(*runtimeAnalysisEntry); ok && entry != nil {
 		return entry.value, true
 	}
@@ -260,8 +276,8 @@ func (p *ParsedDocument) ReleasePreviousRuntimeAnalysis(key string, expected any
 	if p == nil || expected == nil {
 		return false
 	}
-	parsedAnalysisMu.Lock()
-	defer parsedAnalysisMu.Unlock()
+	p.analysisLock().Lock()
+	defer p.analysisLock().Unlock()
 	entry, ok := p.runtimeAnalysis[key].(*runtimeAnalysisEntry)
 	if !ok || entry == nil || !sameRuntimeAnalysisValue(entry.value, expected) {
 		return false
@@ -289,9 +305,9 @@ func (p *ParsedDocument) LoadPreviousRuntimeAnalysis(key string) (any, bool) {
 	if p == nil {
 		return nil, false
 	}
-	parsedAnalysisMu.RLock()
+	p.analysisLock().RLock()
 	entry, ok := p.previousRuntimeAnalysis[key].(*runtimeAnalysisEntry)
-	parsedAnalysisMu.RUnlock()
+	p.analysisLock().RUnlock()
 	if !ok || entry == nil {
 		return nil, false
 	}
@@ -302,10 +318,9 @@ func (p *ParsedDocument) inheritPreviousRevision(previous *ParsedDocument) {
 	if p == nil || previous == nil {
 		return
 	}
-	parsedAnalysisMu.Lock()
-	p.previousRevisionText = previous.Text
-	p.hasPreviousRevision = true
 	var inherited map[string]any
+	previousLock := previous.analysisLock()
+	previousLock.RLock()
 	if len(previous.runtimeAnalysis) > 0 {
 		inherited = make(map[string]any, len(previous.runtimeAnalysis))
 		for key, value := range previous.runtimeAnalysis {
@@ -319,11 +334,15 @@ func (p *ParsedDocument) inheritPreviousRevision(previous *ParsedDocument) {
 			inherited[key] = entry
 		}
 	}
+	previousLock.RUnlock()
+	p.analysisLock().Lock()
+	p.previousRevisionText = previous.Text
+	p.hasPreviousRevision = true
 	if !sameRuntimeAnalysisMappings(p.previousRuntimeAnalysis, inherited) {
 		p.previousRuntimeAnalysis = inherited
 		p.invalidateRuntimeAnalysisMemoryOwnersLocked()
 	}
-	parsedAnalysisMu.Unlock()
+	p.analysisLock().Unlock()
 }
 
 func sameRuntimeAnalysisMappings(first, second map[string]any) bool {
@@ -349,12 +368,12 @@ func (p *ParsedDocument) AnalysisSnapshot() map[string]json.RawMessage {
 	if p == nil {
 		return nil
 	}
-	parsedAnalysisMu.RLock()
+	p.analysisLock().RLock()
 	snapshot := make(map[string]json.RawMessage, len(p.Analysis))
 	for key, payload := range p.Analysis {
 		snapshot[key] = append(json.RawMessage(nil), payload...)
 	}
-	parsedAnalysisMu.RUnlock()
+	p.analysisLock().RUnlock()
 	return snapshot
 }
 
@@ -406,14 +425,14 @@ func (p *ParsedDocument) CloneStructural() *ParsedDocument {
 		}
 	}
 
-	parsedAnalysisMu.RLock()
+	p.analysisLock().RLock()
 	if p.Analysis != nil {
 		clone.Analysis = make(map[string]json.RawMessage, len(p.Analysis))
 		for key, payload := range p.Analysis {
 			clone.Analysis[strings.Clone(key)] = append(json.RawMessage(nil), payload...)
 		}
 	}
-	parsedAnalysisMu.RUnlock()
+	p.analysisLock().RUnlock()
 	return clone
 }
 
@@ -454,8 +473,8 @@ func (p *ParsedDocument) EstimateStructuralBytes() int64 {
 	if p == nil {
 		return 0
 	}
-	parsedAnalysisMu.RLock()
-	defer parsedAnalysisMu.RUnlock()
+	p.analysisLock().RLock()
+	defer p.analysisLock().RUnlock()
 	return p.estimateStructuralBytesLocked()
 }
 
@@ -469,16 +488,16 @@ func (p *ParsedDocument) RuntimeAnalysisMemoryOwners() []RuntimeAnalysisMemoryOw
 	}
 
 	for {
-		parsedAnalysisMu.RLock()
+		p.analysisLock().RLock()
 		cache := p.runtimeAnalysisOwnerCache
 		if cache != nil && cache.valid && cache.ownersGeneration == cache.generation && runtimeAnalysisOwnerGenerationsMatch(cache.providerGenerations) {
 			result := cache.owners
-			parsedAnalysisMu.RUnlock()
+			p.analysisLock().RUnlock()
 			return result
 		}
-		parsedAnalysisMu.RUnlock()
+		p.analysisLock().RUnlock()
 
-		parsedAnalysisMu.Lock()
+		p.analysisLock().Lock()
 		cache = p.runtimeAnalysisOwnerCache
 		if cache == nil {
 			cache = &runtimeAnalysisMemoryOwnerCache{}
@@ -486,14 +505,14 @@ func (p *ParsedDocument) RuntimeAnalysisMemoryOwners() []RuntimeAnalysisMemoryOw
 		}
 		if cache.valid && cache.ownersGeneration == cache.generation && runtimeAnalysisOwnerGenerationsMatch(cache.providerGenerations) {
 			result := cache.owners
-			parsedAnalysisMu.Unlock()
+			p.analysisLock().Unlock()
 			return result
 		}
 		generation := cache.generation
 		entries := make([]runtimeAnalysisEntrySnapshot, 0, len(p.runtimeAnalysis)+len(p.previousRuntimeAnalysis))
 		appendRuntimeAnalysisEntrySnapshots(&entries, p.runtimeAnalysis)
 		appendRuntimeAnalysisEntrySnapshots(&entries, p.previousRuntimeAnalysis)
-		parsedAnalysisMu.Unlock()
+		p.analysisLock().Unlock()
 
 		owners := make(map[any]int64, len(entries))
 		providerGenerations := collectRuntimeAnalysisMemoryOwners(owners, entries)
@@ -502,10 +521,10 @@ func (p *ParsedDocument) RuntimeAnalysisMemoryOwners() []RuntimeAnalysisMemoryOw
 			result = append(result, RuntimeAnalysisMemoryOwner{Identity: exportedMemoryOwnerIdentity(identity), Bytes: bytes})
 		}
 
-		parsedAnalysisMu.Lock()
+		p.analysisLock().Lock()
 		cache = p.runtimeAnalysisOwnerCache
 		if cache == nil || cache.generation != generation || !runtimeAnalysisOwnerGenerationsMatch(providerGenerations) {
-			parsedAnalysisMu.Unlock()
+			p.analysisLock().Unlock()
 			continue
 		}
 		if cache.valid && cache.ownersGeneration == generation && runtimeAnalysisOwnerGenerationsMatch(cache.providerGenerations) {
@@ -516,7 +535,7 @@ func (p *ParsedDocument) RuntimeAnalysisMemoryOwners() []RuntimeAnalysisMemoryOw
 			cache.providerGenerations = providerGenerations
 			cache.valid = true
 		}
-		parsedAnalysisMu.Unlock()
+		p.analysisLock().Unlock()
 		return result
 	}
 }
@@ -529,8 +548,8 @@ func (p *ParsedDocument) EstimateStructuralBytesWithoutRevisionText() int64 {
 	if p == nil {
 		return 0
 	}
-	parsedAnalysisMu.RLock()
-	defer parsedAnalysisMu.RUnlock()
+	p.analysisLock().RLock()
+	defer p.analysisLock().RUnlock()
 	return p.estimateStructuralBytesWithoutRevisionTextLocked()
 }
 
@@ -542,8 +561,8 @@ func (p *ParsedDocument) StructuralMemoryOwners() []RuntimeAnalysisMemoryOwner {
 	if p == nil {
 		return nil
 	}
-	parsedAnalysisMu.RLock()
-	defer parsedAnalysisMu.RUnlock()
+	p.analysisLock().RLock()
+	defer p.analysisLock().RUnlock()
 	owners := p.structuralMemoryOwnersLocked()
 	result := make([]RuntimeAnalysisMemoryOwner, 0, len(owners))
 	for identity, bytes := range owners {
@@ -569,8 +588,8 @@ type parsedDocumentMemorySnapshot struct {
 }
 
 func (p *ParsedDocument) memoryAccountingSnapshot() parsedDocumentMemorySnapshot {
-	parsedAnalysisMu.RLock()
-	defer parsedAnalysisMu.RUnlock()
+	p.analysisLock().RLock()
+	defer p.analysisLock().RUnlock()
 
 	snapshot := parsedDocumentMemorySnapshot{
 		structuralBytes:  p.estimateStructuralBytesWithoutRevisionTextLocked(),

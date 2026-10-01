@@ -212,3 +212,48 @@ func TestLoadOrStoreRuntimeAnalysisDoesNotReleaseSkippedInheritance(t *testing.T
 		t.Fatal("release reported a skipped predecessor")
 	}
 }
+
+func TestParsedDocumentAnalysisLockIsPerDocumentAndSharedByCopies(t *testing.T) {
+	first := ParseDocument("file:///analysis-lock-first.asp", "<% Dim first %>", Settings{DefaultLanguage: "VBScript"})
+	second := ParseDocument("file:///analysis-lock-second.asp", "<% Dim second %>", Settings{DefaultLanguage: "VBScript"})
+	first.StoreRuntimeAnalysis("test.lock", "first")
+	copied := *first
+	if copied.analysisLock() != first.analysisLock() {
+		t.Fatal("value copy made after storing analysis does not share the analysis lock")
+	}
+	if first.analysisLock() == second.analysisLock() {
+		t.Fatal("distinct documents share one analysis lock")
+	}
+
+	// Holding one document's lock must not block analysis on another document.
+	first.analysisLock().Lock()
+	done := make(chan struct{})
+	go func() {
+		second.StoreRuntimeAnalysis("test.lock", "second")
+		close(done)
+	}()
+	<-done
+	first.analysisLock().Unlock()
+	if value, ok := second.LoadRuntimeAnalysis("test.lock"); !ok || value != "second" {
+		t.Fatalf("second runtime analysis = %#v, present=%t", value, ok)
+	}
+}
+
+func TestParsedDocumentAnalysisLockAllowsConcurrentInheritance(t *testing.T) {
+	previous := ParseDocument("file:///analysis-lock-inherit.asp", "<% Dim before %>", Settings{DefaultLanguage: "VBScript"})
+	previous.StoreRuntimeAnalysis("test.inherit", "before")
+	var group sync.WaitGroup
+	for index := range 8 {
+		group.Add(1)
+		go func() {
+			defer group.Done()
+			updated := ParseDocument(previous.URI, "<% Dim after %>", Settings{DefaultLanguage: "VBScript"})
+			updated.inheritPreviousRevision(previous)
+			previous.StoreRuntimeAnalysis("test.concurrent", index)
+			if value, ok := updated.LoadPreviousRuntimeAnalysis("test.inherit"); !ok || value != "before" {
+				t.Errorf("inherited runtime analysis = %#v, present=%t", value, ok)
+			}
+		}()
+	}
+	group.Wait()
+}

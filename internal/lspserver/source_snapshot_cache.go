@@ -450,7 +450,7 @@ func (s *Server) rememberSourceTextLocked(uri, text string) {
 	cached := s.documentStore.CachedDocumentForURI(uri)
 	if cached == nil {
 		cached = &workspacepkg.CachedDocument{URI: uri}
-		s.documentStore.Cache[uri] = cached
+		s.documentStore.Put(uri, cached)
 	}
 	if cached.Text != text {
 		cached.Text = text
