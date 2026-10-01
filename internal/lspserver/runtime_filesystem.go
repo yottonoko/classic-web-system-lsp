@@ -7,7 +7,9 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"sort"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -355,14 +357,41 @@ func (s *Server) trustedFilesystemRootEntriesContext(ctx context.Context, extra 
 	if ctx.Err() != nil {
 		return nil, false
 	}
+	return s.trustedFilesystemRootEntriesForPathsContext(ctx, s.trustedFilesystemRootPaths(extra))
+}
+
+// trustedFilesystemLongestRootContext returns the longest valid root that
+// contains path. It validates only the roots containing path, longest first,
+// which matches choosing the longest root among all validated roots.
+func (s *Server) trustedFilesystemLongestRootContext(ctx context.Context, path string) (trustedFilesystemRoot, bool, bool) {
+	candidates := []string{}
+	for _, absolute := range normalizedTrustedRootPaths(s.trustedFilesystemRootPaths(nil)) {
+		if pathWithinRoot(absolute, path) {
+			candidates = append(candidates, absolute)
+		}
+	}
+	sort.SliceStable(candidates, func(left, right int) bool { return len(candidates[left]) > len(candidates[right]) })
+	for _, candidate := range candidates {
+		roots, complete := s.trustedFilesystemRootEntriesForPathsContext(ctx, []string{candidate})
+		if !complete {
+			return trustedFilesystemRoot{}, false, false
+		}
+		if len(roots) > 0 {
+			return roots[0], true, true
+		}
+	}
+	return trustedFilesystemRoot{}, false, ctx.Err() == nil
+}
+
+func (s *Server) trustedFilesystemRootPaths(extra []string) []string {
 	s.mu.Lock()
-	defer s.mu.Unlock()
 	workspaceRoots := append([]workspaceRoot(nil), s.workspaceRoots...)
 	rootPath := s.rootPath
 	includePaths := append([]string(nil), s.settings.IncludePaths...)
 	virtualRoots := append([]string(nil), s.settings.VirtualRoots...)
 	virtualRoot := s.settings.VirtualRoot
 	openDocumentRoots := s.openDocumentBoundaryRootsLocked()
+	s.mu.Unlock()
 
 	paths := make([]string, 0, len(workspaceRoots)+len(includePaths)+len(virtualRoots)+2)
 	hasWorkspaceRoot := false
@@ -388,27 +417,13 @@ func (s *Server) trustedFilesystemRootEntriesContext(ctx context.Context, extra 
 	if !hasWorkspaceRoot {
 		paths = append(paths, os.TempDir())
 	}
-	paths = append(paths, extra...)
-	if s.trustedFilesystemRootCache == nil {
-		s.trustedFilesystemRootCache = make(map[string]trustedFilesystemRoot)
-	}
-	return s.trustedFilesystemRootEntriesLockedContext(ctx, paths)
+	return append(paths, extra...)
 }
 
-func (s *Server) resetTrustedFilesystemRootCacheLocked() {
-	s.trustedFilesystemRootCache = nil
-}
-
-func (s *Server) trustedFilesystemRootEntriesLockedContext(ctx context.Context, paths []string) ([]trustedFilesystemRoot, bool) {
-	if ctx == nil {
-		ctx = context.Background()
-	}
-	roots := make([]trustedFilesystemRoot, 0, len(paths))
+func normalizedTrustedRootPaths(paths []string) []string {
+	absolutes := make([]string, 0, len(paths))
 	seen := make(map[string]struct{}, len(paths))
 	for _, raw := range paths {
-		if ctx.Err() != nil {
-			return nil, false
-		}
 		trimmed := strings.TrimSpace(raw)
 		if trimmed == "" || pathHasParentTraversal(trimmed) {
 			continue
@@ -422,6 +437,49 @@ func (s *Server) trustedFilesystemRootEntriesLockedContext(ctx context.Context, 
 			continue
 		}
 		seen[absolute] = struct{}{}
+		absolutes = append(absolutes, absolute)
+	}
+	return absolutes
+}
+
+func (s *Server) resetTrustedFilesystemRootCacheLocked() {
+	s.trustedFilesystemRootCache = nil
+	s.trustedFilesystemRootCacheGeneration++
+}
+
+// trustedFilesystemRootEntriesForPathsContext validates each configured root
+// against the identity first authorized for it. The symlink and stat calls run
+// without s.mu because every filesystem access re-validates the roots; only
+// the authorization cache is read and updated under the lock.
+func (s *Server) trustedFilesystemRootEntriesForPathsContext(ctx context.Context, paths []string) ([]trustedFilesystemRoot, bool) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	absolutes := normalizedTrustedRootPaths(paths)
+	s.mu.Lock()
+	generation := s.trustedFilesystemRootCacheGeneration
+	authorized := make(map[string]trustedFilesystemRoot, len(absolutes))
+	for _, absolute := range absolutes {
+		if cached, ok := s.trustedFilesystemRootCache[absolute]; ok {
+			authorized[absolute] = cached
+		}
+	}
+	s.mu.Unlock()
+
+	roots := make([]trustedFilesystemRoot, 0, len(absolutes))
+	var added []trustedFilesystemRoot
+	for _, absolute := range absolutes {
+		if ctx.Err() != nil {
+			return nil, false
+		}
+		if cached, ok := authorized[absolute]; ok && cached.info != nil {
+			// A root that still is the directory first authorized for it needs
+			// no symlink walk; any other outcome takes the full check below.
+			if info, err := s.trustedRootStats.stat(absolute); err == nil && info.IsDir() && os.SameFile(cached.info, info) {
+				roots = append(roots, cached)
+				continue
+			}
+		}
 		canonical, err := evalTrustedRootPath(absolute)
 		if ctx.Err() != nil {
 			return nil, false
@@ -442,30 +500,109 @@ func (s *Server) trustedFilesystemRootEntriesLockedContext(ctx context.Context, 
 		if !os.SameFile(info, info) {
 			continue
 		}
-		cached, ok := s.trustedFilesystemRootCache[absolute]
-		if ok {
-			if cached.canonical != canonical || cached.info == nil || !os.SameFile(cached.info, info) {
-				if ctx.Err() != nil {
-					return nil, false
-				}
-				// The configured root changed identity after authorization. Do
-				// not silently authorize the replacement target.
-				continue
+		if cached, ok := authorized[absolute]; ok {
+			// The configured root changed identity after authorization. Do not
+			// silently authorize the replacement target.
+			if trustedFilesystemRootIdentityMatches(cached, canonical, info) {
+				roots = append(roots, cached)
 			}
-			if ctx.Err() != nil {
-				return nil, false
-			}
-			roots = append(roots, cached)
 			continue
 		}
 		entry := trustedFilesystemRoot{path: absolute, canonical: canonical, info: info}
-		s.trustedFilesystemRootCache[absolute] = entry
+		added = append(added, entry)
 		roots = append(roots, entry)
 	}
 	if ctx.Err() != nil {
 		return nil, false
 	}
+	if len(added) == 0 {
+		return roots, true
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.trustedFilesystemRootCacheGeneration != generation {
+		return roots, true
+	}
+	if s.trustedFilesystemRootCache == nil {
+		s.trustedFilesystemRootCache = make(map[string]trustedFilesystemRoot)
+	}
+	for _, entry := range added {
+		cached, ok := s.trustedFilesystemRootCache[entry.path]
+		if !ok {
+			s.trustedFilesystemRootCache[entry.path] = entry
+			continue
+		}
+		// A concurrent caller authorized this root first; keep its identity.
+		for index := range roots {
+			if roots[index].path != entry.path || roots[index].info != entry.info {
+				continue
+			}
+			if trustedFilesystemRootIdentityMatches(cached, entry.canonical, entry.info) {
+				roots[index] = cached
+			} else {
+				roots = append(roots[:index], roots[index+1:]...)
+			}
+			break
+		}
+	}
 	return roots, true
+}
+
+// trustedRootStatCoalescer shares root stat results between concurrent
+// callers without serving stale data: a caller only uses a stat that started
+// after the caller arrived. Every filesystem access re-validates its root, so
+// parallel workers would otherwise contend on the same directory in the kernel.
+type trustedRootStatCoalescer struct {
+	tickets atomic.Uint64
+	roots   sync.Map
+}
+
+type trustedRootStatState struct {
+	mu       sync.Mutex
+	inflight *trustedRootStatCall
+	last     *trustedRootStatCall
+}
+
+type trustedRootStatCall struct {
+	ticket uint64
+	done   chan struct{}
+	info   os.FileInfo
+	err    error
+}
+
+func (c *trustedRootStatCoalescer) stat(path string) (os.FileInfo, error) {
+	arrived := c.tickets.Load()
+	value, _ := c.roots.LoadOrStore(path, &trustedRootStatState{})
+	state := value.(*trustedRootStatState)
+	for {
+		state.mu.Lock()
+		if last := state.last; last != nil && last.ticket > arrived {
+			state.mu.Unlock()
+			return last.info, last.err
+		}
+		if call := state.inflight; call != nil {
+			state.mu.Unlock()
+			<-call.done
+			if call.ticket > arrived {
+				return call.info, call.err
+			}
+			continue
+		}
+		call := &trustedRootStatCall{ticket: c.tickets.Add(1), done: make(chan struct{})}
+		state.inflight = call
+		state.mu.Unlock()
+		call.info, call.err = os.Stat(path)
+		state.mu.Lock()
+		state.inflight = nil
+		state.last = call
+		state.mu.Unlock()
+		close(call.done)
+		return call.info, call.err
+	}
+}
+
+func trustedFilesystemRootIdentityMatches(cached trustedFilesystemRoot, canonical string, info os.FileInfo) bool {
+	return cached.canonical == canonical && cached.info != nil && os.SameFile(cached.info, info)
 }
 
 func (s *Server) trustedFilesystemRootForPath(path string) (string, string, bool) {
@@ -487,12 +624,8 @@ func (s *Server) trustedFilesystemRootForPathContext(ctx context.Context, path s
 		return "", "", false
 	}
 	cleaned = filepath.Clean(cleaned)
-	roots, complete := s.trustedFilesystemRootEntriesContext(ctx, nil)
-	if !complete || ctx.Err() != nil {
-		return "", "", false
-	}
-	root, ok := longestTrustedPathRootContext(ctx, cleaned, roots)
-	if !ok {
+	root, ok, complete := s.trustedFilesystemLongestRootContext(ctx, cleaned)
+	if !complete || !ok || ctx.Err() != nil {
 		return "", "", false
 	}
 	if pathContainsSymlinkWithinRoot(cleaned, root.path) {
@@ -530,12 +663,8 @@ func (s *Server) trustedFilesystemPathContext(ctx context.Context, path string) 
 		return "", false
 	}
 	cleaned = filepath.Clean(cleaned)
-	roots, complete := s.trustedFilesystemRootEntriesContext(ctx, nil)
-	if !complete || ctx.Err() != nil {
-		return "", false
-	}
-	root, ok := longestTrustedPathRootContext(ctx, cleaned, roots)
-	if !ok {
+	root, ok, complete := s.trustedFilesystemLongestRootContext(ctx, cleaned)
+	if !complete || !ok || ctx.Err() != nil {
 		return "", false
 	}
 	if pathContainsSymlinkWithinRoot(cleaned, root.path) {

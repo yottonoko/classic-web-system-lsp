@@ -49,6 +49,8 @@ type Server struct {
 	rootURI                                          string
 	workspaceRoots                                   []workspaceRoot
 	trustedFilesystemRootCache                       map[string]trustedFilesystemRoot
+	trustedFilesystemRootCacheGeneration             uint64
+	trustedRootStats                                 trustedRootStatCoalescer
 	workspace                                        map[string]*core.TextDocument
 	html                                             embedded.HTML
 	css                                              embedded.CSS
