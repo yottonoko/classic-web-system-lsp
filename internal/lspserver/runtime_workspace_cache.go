@@ -908,6 +908,9 @@ func (s *Server) restoreWorkspaceIncludeGraphDiskCandidate(ctx context.Context, 
 	if guardWorkspaceGeneration && !s.workspaceIndexGenerationCurrent(ctx, workspaceGeneration) {
 		return false
 	}
+	// Pages share include targets; check each target and resolution once.
+	ctx = withIncludeResolutionMemo(ctx)
+	existingTargets := map[string]struct{}{}
 	for _, value := range candidate.entry.Entries {
 		if ctx.Err() != nil {
 			return false
@@ -926,9 +929,13 @@ func (s *Server) restoreWorkspaceIncludeGraphDiskCandidate(ctx context.Context, 
 			if target == "" {
 				continue
 			}
-			if _, exists := s.fsStat(target); !exists {
+			if _, checked := existingTargets[target]; checked {
+				continue
+			}
+			if _, exists := s.fsStatContext(ctx, target); !exists {
 				return false
 			}
+			existingTargets[target] = struct{}{}
 		}
 		if len(value.References) == 0 && value.RefsFingerprint != workspacepkg.DiskContentHash("null") && value.RefsFingerprint != workspacepkg.DiskContentHash("[]") {
 			return false
@@ -938,7 +945,7 @@ func (s *Server) restoreWorkspaceIncludeGraphDiskCandidate(ctx context.Context, 
 			if ctx.Err() != nil {
 				return false
 			}
-			details, resolved := s.includeTargetDetailsForMode(filePathURI(value.FileName), reference.Path, reference.Mode)
+			details, resolved := s.includeTargetDetailsForModeContext(ctx, filePathURI(value.FileName), reference.Path, reference.Mode)
 			if resolved && details.Exists && details.Path != "" {
 				resolvedTargets = append(resolvedTargets, filepath.Clean(details.Path))
 			}

@@ -197,3 +197,84 @@ func TestRuntimeFilesystemAllowsSiblingIncludesForExternalOpenDocuments(t *testi
 		t.Fatalf("external sibling include = %#v, %v; want %q", details, ok, includePath)
 	}
 }
+
+func newNetworkProfileTrustTestServer(t *testing.T, root string) *Server {
+	t.Helper()
+	server := New(strings.NewReader(""), io.Discard, io.Discard)
+	server.rootPath = root
+	server.rootURI = filePathURI(root)
+	server.workspaceRoots = []workspaceRoot{{URI: server.rootURI, Path: root}}
+	server.settings.NetworkProfile = "network"
+	server.configureFsGateway()
+	if !server.trustedPaths.enabled() {
+		t.Fatal("network profile did not enable the trusted path cache")
+	}
+	return server
+}
+
+func TestRuntimeNetworkProfileTrustChecksStillRejectSymlinks(t *testing.T) {
+	root := t.TempDir()
+	outside := t.TempDir()
+	if err := os.WriteFile(filepath.Join(outside, "secret.inc"), []byte("secret"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(root, "pages"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	page := filepath.Join(root, "pages", "default.asp")
+	if err := os.WriteFile(page, []byte("<% %>"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(filepath.Join(outside, "secret.inc"), filepath.Join(root, "pages", "file-link.inc")); err != nil {
+		t.Skipf("symlinks unavailable: %v", err)
+	}
+	if err := os.Symlink(outside, filepath.Join(root, "pages", "dir-link")); err != nil {
+		t.Skipf("symlinks unavailable: %v", err)
+	}
+	server := newNetworkProfileTrustTestServer(t, root)
+	// The second round is served from the cache and must give the same answers.
+	for round := 0; round < 2; round++ {
+		if stats, ok := server.fsStat(page); !ok || stats == nil || !stats.File {
+			t.Fatalf("round %d: regular page was rejected: %#v, %v", round, stats, ok)
+		}
+		for _, linked := range []string{filepath.Join(root, "pages", "file-link.inc"), filepath.Join(root, "pages", "dir-link", "secret.inc")} {
+			if _, ok := server.trustedFilesystemPath(linked); ok {
+				t.Fatalf("round %d: symlinked path %s was trusted", round, linked)
+			}
+		}
+	}
+}
+
+func TestRuntimeNetworkProfileWatchedChangesDropCachedTrustChecks(t *testing.T) {
+	root := t.TempDir()
+	outside := t.TempDir()
+	directory := filepath.Join(root, "pages")
+	if err := os.WriteFile(filepath.Join(outside, "default.asp"), []byte("<% %>"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(directory, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	page := filepath.Join(directory, "default.asp")
+	if err := os.WriteFile(page, []byte("<% %>"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	server := newNetworkProfileTrustTestServer(t, root)
+	if _, ok := server.trustedFilesystemPath(page); !ok {
+		t.Fatal("regular page was rejected")
+	}
+	if err := os.Rename(directory, directory+"-old"); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(outside, directory); err != nil {
+		t.Skipf("symlinks unavailable: %v", err)
+	}
+	// Watchers report the file event; the replaced parent directory must not stay cached.
+	params := mustRaw(map[string]any{"changes": []map[string]any{{"uri": filePathURI(page), "type": fileChangeChanged}}})
+	if err := server.handleNotification(t.Context(), "workspace/didChangeWatchedFiles", params); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := server.trustedFilesystemPath(page); ok {
+		t.Fatal("page under a directory replaced by a symlink stayed trusted after the watched change")
+	}
+}

@@ -68,10 +68,10 @@ func (s *Server) readSourceFileBytes(ctx context.Context, path string, limiter c
 		}
 	}
 	if preparedRoots {
-		if !sourcePathWithinPreparedRoots(cleanPath, trustedRoots) {
+		if !sourcePathWithinPreparedRoots(&s.trustedPaths, cleanPath, trustedRoots) {
 			return nil, &os.PathError{Op: "read", Path: cleanPath, Err: errWorkspacePathOutsideBoundary}
 		}
-	} else if !s.workspaceSourcePathAllowed(cleanPath) && !workspacePathWithinAnyBoundary(cleanPath, nil, nil, sourceReadBoundaries(ctx)) {
+	} else if !s.workspaceSourcePathAllowed(cleanPath) && !workspacePathWithinAnyBoundary(&s.trustedPaths, cleanPath, nil, nil, sourceReadBoundaries(ctx)) {
 		return nil, &os.PathError{Op: "read", Path: cleanPath, Err: errWorkspacePathOutsideBoundary}
 	}
 	key := sourceSnapshotKey(cleanPath)
@@ -194,7 +194,7 @@ func sourceReadRoots(ctx context.Context) ([]trustedFilesystemRoot, bool) {
 	return roots, ok
 }
 
-func sourcePathWithinPreparedRoots(path string, roots []trustedFilesystemRoot) bool {
+func sourcePathWithinPreparedRoots(cache *trustedPathCache, path string, roots []trustedFilesystemRoot) bool {
 	if pathHasParentTraversal(path) {
 		return false
 	}
@@ -206,7 +206,7 @@ func sourcePathWithinPreparedRoots(path string, roots []trustedFilesystemRoot) b
 	if !ok {
 		return false
 	}
-	return trustedFilesystemRootPathCurrent(root) && !pathContainsSymlinkWithinRoot(filepath.Clean(cleaned), root.path)
+	return cache.rootPathCurrent(root) && !cache.pathContainsSymlinkWithinRoot(filepath.Clean(cleaned), root.path)
 }
 
 func readStableSourceFile(path string, roots []trustedFilesystemRoot) ([]byte, sourceFileMetadata, bool, error) {
@@ -323,27 +323,7 @@ func (s *Server) sourceSnapshotMetadataCurrent(path string) (known bool, current
 }
 
 func pathContainsSymlinkWithinRoot(path, root string) bool {
-	cleanPath := filepath.Clean(path)
-	cleanRoot := filepath.Clean(root)
-	relative, err := filepath.Rel(cleanRoot, cleanPath)
-	if err != nil || relative == ".." || filepath.IsAbs(relative) ||
-		len(relative) >= 3 && relative[:3] == ".."+string(filepath.Separator) {
-		return true
-	}
-	for current := cleanPath; ; current = filepath.Dir(current) {
-		if workspacepkg.FileIdentityKeyFromFileName(current) == workspacepkg.FileIdentityKeyFromFileName(cleanRoot) {
-			// A configured workspace root may itself be a symlink. The root is
-			// the trust boundary; only symlinks below it can escape that boundary.
-			return false
-		}
-		if info, err := os.Lstat(current); err == nil && info.Mode()&os.ModeSymlink != 0 {
-			return true
-		}
-		parent := filepath.Dir(current)
-		if parent == current {
-			return true
-		}
-	}
+	return (*trustedPathCache)(nil).pathContainsSymlinkWithinRoot(path, root)
 }
 
 func (s *Server) invalidateChangedSourceSnapshots() {

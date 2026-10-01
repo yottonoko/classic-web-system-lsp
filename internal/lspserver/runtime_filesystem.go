@@ -98,6 +98,7 @@ func (s *Server) configureFsGateway() {
 	}
 	s.includeReadLimiter = make(chan struct{}, max(1, profile.IncludeReadConcurrency))
 	s.mu.Unlock()
+	s.trustedPaths.setTTL(profile.StatTTL)
 }
 
 func (s *Server) resolveNetworkProfile() resolvedNetworkProfile {
@@ -189,7 +190,7 @@ func looksLikeNetworkPath(fileName string) bool {
 	normalized := strings.ReplaceAll(fileName, "\\", "/")
 	return strings.HasPrefix(fileName, `\\`) || strings.HasPrefix(normalized, "//") ||
 		strings.HasPrefix(normalized, "/Volumes/") || strings.HasPrefix(normalized, "/mnt/") ||
-		strings.HasPrefix(normalized, "/net/")
+		strings.HasPrefix(normalized, "/net/") || isRemoteDrivePath(fileName)
 }
 
 func (s *Server) fsStat(path string) (*workspacepkg.FsGatewayStats, bool) {
@@ -242,6 +243,7 @@ func (s *Server) fsReadDirContext(ctx context.Context, path string) (*workspacep
 }
 
 func (s *Server) invalidateFsPath(path string) {
+	s.trustedPaths.forget(path)
 	trustedPath, ok := s.trustedFilesystemPath(path)
 	if !ok {
 		return
@@ -475,7 +477,7 @@ func (s *Server) trustedFilesystemRootEntriesForPathsContext(ctx context.Context
 		if cached, ok := authorized[absolute]; ok && cached.info != nil {
 			// A root that still is the directory first authorized for it needs
 			// no symlink walk; any other outcome takes the full check below.
-			if info, err := s.trustedRootStats.stat(absolute); err == nil && info.IsDir() && os.SameFile(cached.info, info) {
+			if info, err := s.trustedRootStat(absolute); err == nil && info.IsDir() && os.SameFile(cached.info, info) {
 				roots = append(roots, cached)
 				continue
 			}
@@ -601,6 +603,15 @@ func (c *trustedRootStatCoalescer) stat(path string) (os.FileInfo, error) {
 	}
 }
 
+// trustedRootStat re-validates a root. Network profiles reuse a recent stat;
+// otherwise every caller sees a stat that started after it arrived.
+func (s *Server) trustedRootStat(path string) (os.FileInfo, error) {
+	if s.trustedPaths.enabled() {
+		return s.trustedPaths.statDirectory(path)
+	}
+	return s.trustedRootStats.stat(path)
+}
+
 func trustedFilesystemRootIdentityMatches(cached trustedFilesystemRoot, canonical string, info os.FileInfo) bool {
 	return cached.canonical == canonical && cached.info != nil && os.SameFile(cached.info, info)
 }
@@ -628,13 +639,13 @@ func (s *Server) trustedFilesystemRootForPathContext(ctx context.Context, path s
 	if !complete || !ok || ctx.Err() != nil {
 		return "", "", false
 	}
-	if pathContainsSymlinkWithinRoot(cleaned, root.path) {
+	if s.trustedPaths.pathContainsSymlinkWithinRoot(cleaned, root.path) {
 		return "", "", false
 	}
 	if ctx.Err() != nil {
 		return "", "", false
 	}
-	resolved, ok := resolvePathForTrustContext(ctx, cleaned)
+	resolved, ok := s.trustedPaths.resolvePathForTrust(ctx, cleaned)
 	if !ok || !pathWithinRoot(root.canonical, resolved) {
 		return "", "", false
 	}
@@ -667,13 +678,13 @@ func (s *Server) trustedFilesystemPathContext(ctx context.Context, path string) 
 	if !complete || !ok || ctx.Err() != nil {
 		return "", false
 	}
-	if pathContainsSymlinkWithinRoot(cleaned, root.path) {
+	if s.trustedPaths.pathContainsSymlinkWithinRoot(cleaned, root.path) {
 		return "", false
 	}
 	if ctx.Err() != nil {
 		return "", false
 	}
-	resolved, ok := resolvePathForTrustContext(ctx, cleaned)
+	resolved, ok := s.trustedPaths.resolvePathForTrust(ctx, cleaned)
 	if !ok || !pathWithinRoot(root.canonical, resolved) {
 		return "", false
 	}

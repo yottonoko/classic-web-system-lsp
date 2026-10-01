@@ -395,7 +395,7 @@ func (s *Server) workspaceFileEligibleForAutomaticIndexWithOpenOverride(path str
 	open := s.openDocumentByURILocked(uri) != nil
 	directlyReferenced := s.workspaceIncludeGraph != nil && len(s.workspaceIncludeGraph.DependentFileNamesForTargets([]string{cleanPath}, false)) > 0
 	s.mu.Unlock()
-	if !workspacePathWithinAnyBoundary(cleanPath, roots, includePaths, virtualRoots) {
+	if !workspacePathWithinAnyBoundary(&s.trustedPaths, cleanPath, roots, includePaths, virtualRoots) {
 		return false
 	}
 	if workspacePathIsCacheDirectoryDescendant(cleanPath, roots, cacheDirectory) {
@@ -1085,7 +1085,7 @@ func (s *Server) workspaceEventPathInfo(path string, includeAuxiliaryBoundaries 
 	}
 	s.mu.Unlock()
 	root = workspaceRootPathForPath(cleanPath, roots)
-	if root == "" || !workspacePathWithinBoundary(cleanPath, root) {
+	if root == "" || !workspacePathWithinBoundary(&s.trustedPaths, cleanPath, root) {
 		return "", "", false
 	}
 	relativePath, err := filepath.Rel(root, cleanPath)
@@ -1193,29 +1193,29 @@ func (s *Server) workspaceSourcePathAllowed(path string) bool {
 	if len(roots) == 0 && len(includePaths) == 0 && len(virtualRoots) == 0 {
 		return false
 	}
-	return workspacePathWithinAnyBoundary(path, roots, includePaths, virtualRoots)
+	return workspacePathWithinAnyBoundary(&s.trustedPaths, path, roots, includePaths, virtualRoots)
 }
 
-func workspacePathWithinAnyBoundary(path string, roots []workspaceRoot, includePaths, virtualRoots []string) bool {
+func workspacePathWithinAnyBoundary(cache *trustedPathCache, path string, roots []workspaceRoot, includePaths, virtualRoots []string) bool {
 	cleanPath := filepath.Clean(path)
 	for _, root := range roots {
-		if workspacePathWithinBoundary(cleanPath, root.Path) {
+		if workspacePathWithinBoundary(cache, cleanPath, root.Path) {
 			return true
 		}
 	}
 	for _, root := range append(append([]string(nil), includePaths...), virtualRoots...) {
-		if workspacePathWithinBoundary(cleanPath, root) {
+		if workspacePathWithinBoundary(cache, cleanPath, root) {
 			return true
 		}
 	}
 	return false
 }
 
-func workspacePathWithinBoundary(path, root string) bool {
+func workspacePathWithinBoundary(cache *trustedPathCache, path, root string) bool {
 	if root == "" || !pathWithinRoot(root, path) {
 		return false
 	}
-	return !pathContainsSymlinkWithinRoot(path, root)
+	return !cache.pathContainsSymlinkWithinRoot(path, root)
 }
 
 func (s *Server) openDocumentBoundaryRootsLocked() []string {

@@ -829,24 +829,7 @@ func (s *Server) inMemoryDocumentAtPath(path string) bool {
 		}
 	}
 	s.mu.Unlock()
-	if !found || !workspacePathWithinAnyBoundary(cleanPath, roots, includePaths, virtualRoots) {
-		return false
-	}
-	boundaryRoots := make([]string, 0, len(roots)+len(includePaths)+len(virtualRoots))
-	for _, root := range roots {
-		boundaryRoots = append(boundaryRoots, root.Path)
-	}
-	boundaryRoots = append(boundaryRoots, includePaths...)
-	boundaryRoots = append(boundaryRoots, virtualRoots...)
-	for _, root := range boundaryRoots {
-		if root == "" || !workspacePathWithinBoundary(cleanPath, root) {
-			continue
-		}
-		if _, err := os.Lstat(root); err == nil && pathContainsSymlinkWithinRoot(cleanPath, root) {
-			return false
-		}
-	}
-	return true
+	return found && workspacePathWithinAnyBoundary(&s.trustedPaths, cleanPath, roots, includePaths, virtualRoots)
 }
 
 func (s *Server) missingIncludeTargetDetailsContext(ctx context.Context, targetPath, includePath string) includeTargetDetails {

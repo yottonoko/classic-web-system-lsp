@@ -53,6 +53,7 @@ type Server struct {
 	trustedFilesystemRootCache                       map[string]trustedFilesystemRoot
 	trustedFilesystemRootCacheGeneration             uint64
 	trustedRootStats                                 trustedRootStatCoalescer
+	trustedPaths                                     trustedPathCache
 	workspace                                        map[string]*core.TextDocument
 	html                                             embedded.HTML
 	css                                              embedded.CSS
