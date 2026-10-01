@@ -89,9 +89,10 @@ func (s *Server) checkMemoryPressure(reason string) workspacepkg.MemoryPressureR
 
 // scheduleMemoryPressureCheckLocked coalesces allocation-triggered checks so
 // graph, reference, and semantic hot paths only pay for resetting one timer.
-// The delay grows with the cost of the previous check so accounting, which
-// walks every cached document under s.mu, stays a small share of server time.
-// The caller must hold s.mu.
+// Checks never overlap: a request made while one runs is deferred until it
+// finishes. The delay grows with the cost of the previous check so accounting,
+// which walks every cached document under s.mu, stays a small share of server
+// time. The caller must hold s.mu.
 func (s *Server) scheduleMemoryPressureCheckLocked(reason string) {
 	if s.shutdown {
 		return
@@ -99,27 +100,50 @@ func (s *Server) scheduleMemoryPressureCheckLocked(reason string) {
 	if reason != "" {
 		s.memoryPressureReason = reason
 	}
-	if s.memoryPressureTimer != nil {
+	s.memoryPressurePending = true
+	if s.memoryPressureTimer != nil || s.memoryPressureCheckRunning {
 		return
 	}
-	s.memoryPressureTimer = time.AfterFunc(memoryPressureCheckDelay(s.memoryPressureCheckCost), func() {
-		s.mu.Lock()
-		reason := s.memoryPressureReason
-		s.memoryPressureReason = ""
-		s.memoryPressureTimer = nil
-		shutdown := s.shutdown
-		manager := s.memoryBudget
-		maxBytes := s.settings.MemoryMaxCacheBytes
+	s.memoryPressureTimer = time.AfterFunc(memoryPressureCheckDelay(s.memoryPressureCheckCost), s.runScheduledMemoryPressureCheck)
+}
+
+func (s *Server) runScheduledMemoryPressureCheck() {
+	s.mu.Lock()
+	reason := s.memoryPressureReason
+	s.memoryPressureReason = ""
+	s.memoryPressurePending = false
+	s.memoryPressureTimer = nil
+	if s.shutdown {
 		s.mu.Unlock()
-		if shutdown || manager != nil && manager.HeapBelowBudget(maxBytes) {
-			return
-		}
+		return
+	}
+	s.memoryPressureCheckRunning = true
+	manager := s.memoryBudget
+	maxBytes := s.settings.MemoryMaxCacheBytes
+	s.mu.Unlock()
+	checked := false
+	var cost time.Duration
+	if manager == nil || !manager.HeapBelowBudget(maxBytes) {
 		started := time.Now()
 		s.checkMemoryPressure(reason)
-		s.mu.Lock()
-		s.memoryPressureCheckCost = time.Since(started)
-		s.mu.Unlock()
-	})
+		cost = time.Since(started)
+		checked = true
+	}
+	s.mu.Lock()
+	s.finishMemoryPressureCheckLocked(checked, cost)
+	s.mu.Unlock()
+}
+
+// finishMemoryPressureCheckLocked records a finished check and schedules the
+// requests deferred while it ran. The caller must hold s.mu.
+func (s *Server) finishMemoryPressureCheckLocked(checked bool, cost time.Duration) {
+	s.memoryPressureCheckRunning = false
+	if checked {
+		s.memoryPressureCheckCost = cost
+	}
+	if s.memoryPressurePending {
+		s.scheduleMemoryPressureCheckLocked("")
+	}
 }
 
 const (
@@ -237,6 +261,7 @@ func (s *Server) shutdownRuntimeCaches() {
 		s.memoryPressureTimer = nil
 		s.memoryPressureReason = ""
 	}
+	s.memoryPressurePending = false
 	s.codeLensRefreshSequence++
 	if s.codeLensRefreshTimer != nil {
 		s.codeLensRefreshTimer.Stop()

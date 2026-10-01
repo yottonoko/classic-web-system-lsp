@@ -109,3 +109,35 @@ func TestMemoryPressureCheckDelayScalesWithPreviousCost(t *testing.T) {
 		}
 	}
 }
+
+func TestMemoryPressureCheckRequestsDuringARunningCheckAreDeferred(t *testing.T) {
+	server := New(nil, io.Discard, io.Discard)
+	t.Cleanup(server.shutdownRuntimeCaches)
+	server.mu.Lock()
+	defer server.mu.Unlock()
+	server.memoryPressureCheckRunning = true
+	server.scheduleMemoryPressureCheckLocked("diagnostics.completed")
+	if server.memoryPressureTimer != nil {
+		t.Fatal("a request during a running check started an overlapping timer")
+	}
+	if !server.memoryPressurePending || server.memoryPressureReason != "diagnostics.completed" {
+		t.Fatalf("deferred request pending=%t reason=%q", server.memoryPressurePending, server.memoryPressureReason)
+	}
+
+	server.finishMemoryPressureCheckLocked(true, time.Second)
+	if server.memoryPressureCheckRunning || server.memoryPressureCheckCost != time.Second {
+		t.Fatalf("finished check running=%t cost=%v", server.memoryPressureCheckRunning, server.memoryPressureCheckCost)
+	}
+	if server.memoryPressureTimer == nil {
+		t.Fatal("deferred request was not rescheduled after the running check finished")
+	}
+	server.memoryPressureTimer.Stop()
+	server.memoryPressureTimer = nil
+
+	server.memoryPressurePending = false
+	server.memoryPressureCheckRunning = true
+	server.finishMemoryPressureCheckLocked(false, 0)
+	if server.memoryPressureTimer != nil || server.memoryPressureCheckCost != time.Second {
+		t.Fatalf("skipped check rescheduled=%t or overwrote cost %v", server.memoryPressureTimer != nil, server.memoryPressureCheckCost)
+	}
+}

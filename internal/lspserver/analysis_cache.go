@@ -442,29 +442,33 @@ func (c *analysisCache) evictWithExternalParsed(target int64, external map[*core
 }
 
 func runtimeAnalysisOwnerSet(parsedDocuments map[*core.ParsedDocument]struct{}) map[any]struct{} {
-	owners := map[any]struct{}{}
-	for parsed := range parsedDocuments {
-		if parsed == nil {
-			continue
-		}
-		for _, owner := range parsed.RuntimeAnalysisMemoryOwners() {
-			owners[owner.Identity] = struct{}{}
-		}
-	}
-	return owners
+	return analysisOwnerSet(parsedDocuments, (*core.ParsedDocument).RuntimeAnalysisMemoryOwners)
 }
 
 func structuralAnalysisOwnerSet(parsedDocuments map[*core.ParsedDocument]struct{}) map[any]struct{} {
-	owners := map[any]struct{}{}
+	return analysisOwnerSet(parsedDocuments, (*core.ParsedDocument).StructuralMemoryOwners)
+}
+
+// analysisOwnerSet sizes the set before filling it; these sets cover every
+// cached document and rehashing dominated their cost under memory pressure.
+func analysisOwnerSet(parsedDocuments map[*core.ParsedDocument]struct{}, ownersOf func(*core.ParsedDocument) []core.RuntimeAnalysisMemoryOwner) map[any]struct{} {
+	lists := make([][]core.RuntimeAnalysisMemoryOwner, 0, len(parsedDocuments))
+	total := 0
 	for parsed := range parsedDocuments {
 		if parsed == nil {
 			continue
 		}
-		for _, owner := range parsed.StructuralMemoryOwners() {
-			owners[owner.Identity] = struct{}{}
+		owners := ownersOf(parsed)
+		lists = append(lists, owners)
+		total += len(owners)
+	}
+	set := make(map[any]struct{}, total)
+	for _, owners := range lists {
+		for _, owner := range owners {
+			set[owner.Identity] = struct{}{}
 		}
 	}
-	return owners
+	return set
 }
 
 func estimateAnalysisDeclarationsBytes(parsed *core.ParsedDocument, declarations []vbUsageDeclaration) int64 {

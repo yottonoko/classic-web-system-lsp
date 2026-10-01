@@ -45,6 +45,8 @@ type Server struct {
 	memoryPressureTimer                              *time.Timer
 	memoryPressureReason                             string
 	memoryPressureCheckCost                          time.Duration
+	memoryPressureCheckRunning                       bool
+	memoryPressurePending                            bool
 	rootPath                                         string
 	rootURI                                          string
 	workspaceRoots                                   []workspaceRoot

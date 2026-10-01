@@ -665,11 +665,19 @@ type parsedDocumentSourceOwner struct {
 }
 
 func parsedDocumentCacheOwnershipForEntries(entries map[string]parsedDocumentCacheEntry) parsedDocumentCacheOwnership {
+	// Size the owner maps up front; rehashing them dominated estimates of a
+	// large parsed cache.
+	runtimeOwners := 0
+	for _, entry := range entries {
+		if entry.Parsed != nil {
+			runtimeOwners += len(entry.Parsed.RuntimeAnalysisMemoryOwners())
+		}
+	}
 	ownership := parsedDocumentCacheOwnership{
 		entries: len(entries),
 		parsed:  make(map[*core.ParsedDocument]int64, len(entries)),
-		source:  make(map[parsedDocumentSourceOwner]int64),
-		runtime: make(map[any]int64),
+		source:  make(map[parsedDocumentSourceOwner]int64, len(entries)),
+		runtime: make(map[any]int64, runtimeOwners),
 	}
 	for key, entry := range entries {
 		ownership.entryBytes = addRuntimeCacheBytes(ownership.entryBytes, int64(len(key))*2+128)
