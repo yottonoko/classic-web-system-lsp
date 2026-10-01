@@ -109,21 +109,38 @@ func (s *Server) touchDocumentStore(uri string) {
 	s.mu.Unlock()
 }
 
+// documentStoreIdentityIndexLocked maps file identities to one non-nil
+// DocumentStore URI. The caller must hold s.mu.
+func (s *Server) documentStoreIdentityIndexLocked() map[string]string {
+	index := map[string]string{}
+	if s.documentStore == nil {
+		return index
+	}
+	for uri, cached := range s.documentStore.Cache {
+		if cached == nil {
+			continue
+		}
+		identity := workspacepkg.FileIdentityKeyFromURI(uri)
+		if _, exists := index[identity]; !exists {
+			index[identity] = uri
+		}
+	}
+	return index
+}
+
 // demoteParsedCacheEntryLocked preserves a cheap CST skeleton while dropping
-// analysis-heavy fields.  The caller must hold s.mu.
-func (s *Server) demoteParsedCacheEntryLocked(key string, entry parsedDocumentCacheEntry) bool {
+// analysis-heavy fields. identities comes from documentStoreIdentityIndexLocked
+// and ledger, when present, is kept in sync with the touched store entry. The
+// caller must hold s.mu.
+func (s *Server) demoteParsedCacheEntryLocked(key string, entry parsedDocumentCacheEntry, identities map[string]string, ledger *runtimeCacheOwnerLedger) bool {
 	if s.documentStore == nil {
 		return false
 	}
 	identity := strings.TrimPrefix(strings.TrimPrefix(key, "doc:"), "text:")
-	uri := ""
-	var cached *workspacepkg.CachedDocument
-	for candidateURI, candidate := range s.documentStore.Cache {
-		if candidate == nil || workspacepkg.FileIdentityKeyFromURI(candidateURI) != identity {
-			continue
-		}
-		uri, cached = candidateURI, candidate
-		break
+	uri := identities[identity]
+	cached := s.documentStore.Cache[uri]
+	if cached == nil {
+		uri = ""
 	}
 	if uri == "" && entry.Parsed != nil && workspacepkg.FileIdentityKeyFromURI(entry.Parsed.URI) == identity {
 		uri = entry.Parsed.URI
@@ -135,9 +152,16 @@ func (s *Server) demoteParsedCacheEntryLocked(key string, entry parsedDocumentCa
 			uri = identity
 		}
 	}
+	if ledger != nil {
+		ledger.removeStoreEntry(uri)
+		defer func() { ledger.addStoreEntry(uri, s.documentStore.Cache[uri]) }()
+	}
 	if cached == nil {
 		cached = &workspacepkg.CachedDocument{URI: uri, Text: entry.Text, Version: entry.Version, Parsed: entry.Parsed, ParseDepth: "full"}
 		s.documentStore.Cache[uri] = cached
+		if identities != nil {
+			identities[identity] = uri
+		}
 	}
 	if cached.Text == "" {
 		cached.Text = entry.Text

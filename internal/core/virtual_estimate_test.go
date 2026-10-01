@@ -45,10 +45,11 @@ func TestVirtualDocumentEstimateBytesTracksRuntimeLineIndex(t *testing.T) {
 	var genericBytes int64
 	seen := make(map[any]struct{}, len(components))
 	for _, component := range components {
-		identity, ok := runtimeValueBackingIdentity(reflect.ValueOf(component.value))
+		backing, ok := runtimeValueBackingIdentity(reflect.ValueOf(component.value))
 		if !ok {
 			t.Fatalf("virtual %s has no backing identity", component.name)
 		}
+		identity := exportedMemoryOwnerIdentity(backing)
 		if _, duplicate := seen[identity]; duplicate {
 			continue
 		}

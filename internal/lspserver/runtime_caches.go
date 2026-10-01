@@ -94,6 +94,9 @@ func (c *serverRegisteredCache) Name() string         { return c.name }
 func (c *serverRegisteredCache) Priority() int        { return c.priority }
 func (c *serverRegisteredCache) EstimateBytes() int64 { bytes, _ := c.estimate(); return bytes }
 func (c *serverRegisteredCache) EntryCount() int      { _, entries := c.estimate(); return entries }
+func (c *serverRegisteredCache) MemoryEstimate() (int64, int) {
+	return c.estimate()
+}
 func (c *serverRegisteredCache) Evict(target int64) int64 {
 	return c.evict(target)
 }
@@ -528,9 +531,9 @@ func (s *Server) registeredParsedCache() workspacepkg.RegisteredCache {
 		evict: func(target int64) int64 {
 			s.mu.Lock()
 			keys := sortedMapKeys(s.parsedCache)
-			beforeCache := parsedDocumentCacheOwnershipForEntries(s.parsedCache)
-			beforeStore := documentStoreCacheOwnershipForStore(s.documentStore, beforeCache)
-			beforeTotal := addRuntimeCacheBytes(beforeCache.bytes(), beforeStore.bytes())
+			ledger := s.runtimeCacheOwnerLedgerLocked()
+			identities := s.documentStoreIdentityIndexLocked()
+			beforeTotal := ledger.total()
 			external := s.analysisExternalParsedOwnerSetLocked()
 			removed := false
 			var parsedAndStoreFreed int64
@@ -544,14 +547,12 @@ func (s *Server) registeredParsedCache() workspacepkg.RegisteredCache {
 				entry := s.parsedCache[key]
 				// Keep a skeleton in DocumentStore so the next request can reuse
 				// identity/text metadata without retaining the full analysis graph.
-				s.demoteParsedCacheEntryLocked(key, entry)
+				s.demoteParsedCacheEntryLocked(key, entry, identities, ledger)
 				delete(s.parsedCache, key)
+				ledger.removeParsedEntry(key)
 				s.advanceParsedCacheRevisionLocked(key)
 				removed = true
-				afterCache := parsedDocumentCacheOwnershipForEntries(s.parsedCache)
-				afterStore := documentStoreCacheOwnershipForStore(s.documentStore, afterCache)
-				afterTotal := addRuntimeCacheBytes(afterCache.bytes(), afterStore.bytes())
-				parsedAndStoreFreed = subtractRuntimeCacheBytes(beforeTotal, afterTotal)
+				parsedAndStoreFreed = subtractRuntimeCacheBytes(beforeTotal, ledger.total())
 				if target > 0 && parsedAndStoreFreed >= target {
 					break
 				}
@@ -590,10 +591,12 @@ func (s *Server) registeredDocumentStoreCache() workspacepkg.RegisteredCache {
 			if s.documentStore == nil {
 				return 0
 			}
-			parsed := parsedDocumentCacheOwnershipForEntries(s.parsedCache)
-			before := documentStoreCacheOwnershipForStore(s.documentStore, parsed)
+			// The ledger also holds parsed-cache owners, which stay constant here,
+			// so its delta equals the DocumentStore delta. Analysis bytes depend
+			// on the whole owner set and are settled once after the loop.
+			ledger := s.runtimeCacheOwnerLedgerLocked()
+			beforeLedger := ledger.total()
 			beforeAnalysis := s.analysisCacheBytesLocked()
-			beforeTotal := addRuntimeCacheBytes(before.bytes(), beforeAnalysis)
 			keys := sortedMapKeys(s.documentStoreCache())
 			var freed int64
 			for _, key := range keys {
@@ -604,16 +607,16 @@ func (s *Server) registeredDocumentStoreCache() workspacepkg.RegisteredCache {
 				if target > 0 && freed >= target {
 					break
 				}
+				ledger.removeStoreEntry(key)
 				if cached != nil && s.documentStoreEntryIsOpenLocked(cached) {
 					s.demoteDocumentStoreEntryLocked(cached)
+					ledger.addStoreEntry(key, cached)
 				} else {
 					delete(s.documentStore.Cache, key)
 				}
-				after := documentStoreCacheOwnershipForStore(s.documentStore, parsed)
-				afterTotal := addRuntimeCacheBytes(after.bytes(), s.analysisCacheBytesLocked())
-				freed = subtractRuntimeCacheBytes(beforeTotal, afterTotal)
+				freed = subtractRuntimeCacheBytes(beforeLedger, ledger.total())
 			}
-			return freed
+			return subtractRuntimeCacheBytes(addRuntimeCacheBytes(beforeLedger, beforeAnalysis), addRuntimeCacheBytes(ledger.total(), s.analysisCacheBytesLocked()))
 		},
 	}
 }

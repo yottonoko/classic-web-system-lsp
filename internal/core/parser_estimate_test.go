@@ -548,7 +548,7 @@ func backingIdentityForTest[T any](t *testing.T, value T) any {
 	if !ok {
 		t.Fatalf("value %#v has no runtime backing identity", value)
 	}
-	return identity
+	return exportedMemoryOwnerIdentity(identity)
 }
 
 func TestParsedDocumentCloneStructuralOwnsExportedStateAndOmitsRuntimeState(t *testing.T) {

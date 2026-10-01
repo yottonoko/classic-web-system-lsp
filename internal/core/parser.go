@@ -7,6 +7,7 @@ import (
 	"reflect"
 	"strings"
 	"sync"
+	"unique"
 
 	"github.com/yottonoko/classic-web-system-lsp/internal/lsp"
 )
@@ -498,7 +499,7 @@ func (p *ParsedDocument) RuntimeAnalysisMemoryOwners() []RuntimeAnalysisMemoryOw
 		providerGenerations := collectRuntimeAnalysisMemoryOwners(owners, entries)
 		result := make([]RuntimeAnalysisMemoryOwner, 0, len(owners))
 		for identity, bytes := range owners {
-			result = append(result, RuntimeAnalysisMemoryOwner{Identity: identity, Bytes: bytes})
+			result = append(result, RuntimeAnalysisMemoryOwner{Identity: exportedMemoryOwnerIdentity(identity), Bytes: bytes})
 		}
 
 		parsedAnalysisMu.Lock()
@@ -546,7 +547,7 @@ func (p *ParsedDocument) StructuralMemoryOwners() []RuntimeAnalysisMemoryOwner {
 	owners := p.structuralMemoryOwnersLocked()
 	result := make([]RuntimeAnalysisMemoryOwner, 0, len(owners))
 	for identity, bytes := range owners {
-		result = append(result, RuntimeAnalysisMemoryOwner{Identity: identity, Bytes: bytes})
+		result = append(result, RuntimeAnalysisMemoryOwner{Identity: exportedMemoryOwnerIdentity(identity), Bytes: bytes})
 	}
 	return result
 }
@@ -920,6 +921,17 @@ func runtimeValueExclusiveEstimator(value reflect.Value) (int64, bool) {
 		return 0, false
 	}
 	return estimator.EstimateExclusiveRuntimeBytes(), true
+}
+
+// exportedMemoryOwnerIdentity canonicalizes reflected backing identities into
+// pointer-sized handles. Equal backings still compare equal, while callers that
+// collect owners from many documents hash them far more cheaply than the
+// reflected struct, which carries a reflect.Type interface.
+func exportedMemoryOwnerIdentity(identity any) any {
+	if backing, ok := identity.(runtimeAnalysisBackingIdentity); ok {
+		return unique.Make(backing)
+	}
+	return identity
 }
 
 func runtimeValueBackingIdentity(value reflect.Value) (runtimeAnalysisBackingIdentity, bool) {

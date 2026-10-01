@@ -16,6 +16,12 @@ type RegisteredCache interface {
 	EntryCount() int
 }
 
+// MemoryEstimator is an optional RegisteredCache extension that reports bytes
+// and entries from one pass, for caches whose estimate walks every entry.
+type MemoryEstimator interface {
+	MemoryEstimate() (bytes int64, entries int)
+}
+
 type MemoryCacheSnapshot struct {
 	Name           string `json:"name"`
 	Priority       int    `json:"priority"`
@@ -122,13 +128,13 @@ func (m *MemoryBudgetManager) Snapshot(maxCacheBytes int64) MemorySnapshot {
 	caches := make([]MemoryCacheSnapshot, 0, len(m.caches))
 	var total int64
 	for _, cache := range m.sortedCaches() {
-		estimated := m.cacheEstimatedBytes(cache)
+		estimated, entries := m.cacheEstimate(cache)
 		total += estimated
 		caches = append(caches, MemoryCacheSnapshot{
 			Name:           cache.Name(),
 			Priority:       cache.Priority(),
 			EstimatedBytes: estimated,
-			Entries:        cache.EntryCount(),
+			Entries:        entries,
 		})
 	}
 	heapLimit := maxInt64(0, heap.HeapSizeLimit)
@@ -150,22 +156,35 @@ func (m *MemoryBudgetManager) CheckPressure(reason string, maxCacheBytes int64) 
 	remaining := requested
 	var evicted int64
 	var evictions []MemoryEvictionRecord
+	if remaining <= 0 {
+		return MemoryPressureResult{Reason: reason, Pressure: pressure, TargetBytes: targetBytes, Before: before, After: before}
+	}
+	beforeCaches := make(map[string]MemoryCacheSnapshot, len(before.Caches))
+	for _, cache := range before.Caches {
+		beforeCaches[cache.Name] = cache
+	}
+	// Evicting one cache can move owners into another, so the before snapshot
+	// is reused only until the first Evict call.
+	evictCalled := false
 	if remaining > 0 {
 		for _, cache := range m.sortedCaches() {
 			if remaining <= 0 {
 				break
 			}
-			beforeBytes := m.cacheEstimatedBytes(cache)
-			beforeEntries := cache.EntryCount()
+			snapshot, ok := beforeCaches[cache.Name()]
+			beforeBytes, beforeEntries := snapshot.EstimatedBytes, snapshot.Entries
+			if !ok || evictCalled {
+				beforeBytes, beforeEntries = m.cacheEstimate(cache)
+			}
 			if beforeBytes <= 0 && beforeEntries == 0 {
 				continue
 			}
+			evictCalled = true
 			freed := maxInt64(0, cache.Evict(remaining))
 			if freed <= 0 {
 				continue
 			}
-			afterBytes := m.cacheEstimatedBytes(cache)
-			afterEntries := cache.EntryCount()
+			afterBytes, afterEntries := m.cacheEstimate(cache)
 			evictions = append(evictions, MemoryEvictionRecord{Name: cache.Name(), Priority: cache.Priority(), RequestedBytes: remaining, EvictedBytes: freed, BeforeBytes: beforeBytes, AfterBytes: afterBytes, BeforeEntries: beforeEntries, AfterEntries: afterEntries})
 			remaining = maxInt64(0, remaining-freed)
 			evicted += freed
@@ -177,6 +196,20 @@ func (m *MemoryBudgetManager) CheckPressure(reason string, maxCacheBytes int64) 
 		m.lastEviction = &result
 	}
 	return result
+}
+
+// HeapBelowBudget reports that the live heap is smaller than the cache budget
+// and below the heap-pressure ratio, so no cache can be over budget. It is a
+// cheap guard for scheduled checks; an unknown heap size returns false.
+func (m *MemoryBudgetManager) HeapBelowBudget(maxCacheBytes int64) bool {
+	heap := m.heapStats()
+	if heap.HeapUsed <= 0 {
+		return false
+	}
+	if heap.HeapSizeLimit > 0 && float64(heap.HeapUsed)/float64(heap.HeapSizeLimit) >= m.heapHighRatio {
+		return false
+	}
+	return heap.HeapUsed < positiveInt64(maxCacheBytes, m.defaultMaxCacheBytes)
 }
 
 func (m *MemoryBudgetManager) LastEvictionResult() *MemoryPressureResult {
@@ -210,8 +243,12 @@ func (m *MemoryBudgetManager) sortedCaches() []RegisteredCache {
 	return caches
 }
 
-func (m *MemoryBudgetManager) cacheEstimatedBytes(cache RegisteredCache) int64 {
-	return maxInt64(0, cache.EstimateBytes()+m.adjustments[cache.Name()])
+func (m *MemoryBudgetManager) cacheEstimate(cache RegisteredCache) (int64, int) {
+	if estimator, ok := cache.(MemoryEstimator); ok {
+		bytes, entries := estimator.MemoryEstimate()
+		return maxInt64(0, bytes+m.adjustments[cache.Name()]), entries
+	}
+	return maxInt64(0, cache.EstimateBytes()+m.adjustments[cache.Name()]), cache.EntryCount()
 }
 
 type SizedLruCache[K comparable, V any] struct {

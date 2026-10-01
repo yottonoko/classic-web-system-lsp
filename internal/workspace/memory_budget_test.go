@@ -137,3 +137,63 @@ func (c *fakeCache) Evict(_ int64) int64 {
 	*c.evicted = append(*c.evicted, c.name)
 	return freed
 }
+
+type countingEstimatorCache struct {
+	fakeCache
+	estimates int
+}
+
+func (c *countingEstimatorCache) MemoryEstimate() (int64, int) {
+	c.estimates++
+	return c.bytes, c.EntryCount()
+}
+
+func TestMemoryBudgetManagerEstimatesEachCacheOncePerQuietCheck(t *testing.T) {
+	evicted := []string{}
+	cache := &countingEstimatorCache{fakeCache: fakeCache{name: "walked", pri: 10, bytes: 40, evicted: &evicted}}
+	manager := NewMemoryBudgetManager(MemoryBudgetManagerOptions{
+		HeapStatsProvider:    func() HeapStats { return HeapStats{HeapUsed: 10, HeapSizeLimit: 100} },
+		DefaultMaxCacheBytes: 100,
+	})
+	manager.Register(cache)
+
+	quiet := manager.CheckPressure("quiet", 100)
+	if cache.estimates != 1 || quiet.Pressure != "none" || quiet.After.TotalEstimatedBytes != 40 {
+		t.Fatalf("quiet check estimated %d times with result %#v; want one estimate and an unchanged after snapshot", cache.estimates, quiet)
+	}
+
+	cache.estimates = 0
+	busy := manager.CheckPressure("budget", 20)
+	if busy.EvictedBytes != 40 || len(busy.Evictions) != 1 || busy.Evictions[0].BeforeBytes != 40 || busy.Evictions[0].AfterBytes != 0 {
+		t.Fatalf("budget check = %#v, want one 40-byte eviction", busy)
+	}
+	if cache.estimates != 3 {
+		t.Fatalf("budget check estimated %d times, want before, after-evict, and after snapshots only", cache.estimates)
+	}
+}
+
+func TestMemoryBudgetManagerHeapBelowBudget(t *testing.T) {
+	heap := HeapStats{}
+	manager := NewMemoryBudgetManager(MemoryBudgetManagerOptions{
+		HeapStatsProvider:    func() HeapStats { return heap },
+		DefaultMaxCacheBytes: 100,
+	})
+	cases := []struct {
+		name  string
+		heap  HeapStats
+		max   int64
+		below bool
+	}{
+		{name: "unknown heap", heap: HeapStats{}, max: 100, below: false},
+		{name: "small heap", heap: HeapStats{HeapUsed: 50}, max: 100, below: true},
+		{name: "default budget", heap: HeapStats{HeapUsed: 50}, max: 0, below: true},
+		{name: "heap over budget", heap: HeapStats{HeapUsed: 150}, max: 100, below: false},
+		{name: "heap limit pressure", heap: HeapStats{HeapUsed: 50, HeapSizeLimit: 60}, max: 100, below: false},
+	}
+	for _, tc := range cases {
+		heap = tc.heap
+		if got := manager.HeapBelowBudget(tc.max); got != tc.below {
+			t.Fatalf("%s: HeapBelowBudget = %t, want %t", tc.name, got, tc.below)
+		}
+	}
+}

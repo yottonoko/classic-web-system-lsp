@@ -44,6 +44,7 @@ type Server struct {
 	memoryBudget                                     *workspacepkg.MemoryBudgetManager
 	memoryPressureTimer                              *time.Timer
 	memoryPressureReason                             string
+	memoryPressureCheckCost                          time.Duration
 	rootPath                                         string
 	rootURI                                          string
 	workspaceRoots                                   []workspaceRoot

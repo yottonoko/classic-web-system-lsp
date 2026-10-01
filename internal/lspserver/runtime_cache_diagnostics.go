@@ -89,6 +89,8 @@ func (s *Server) checkMemoryPressure(reason string) workspacepkg.MemoryPressureR
 
 // scheduleMemoryPressureCheckLocked coalesces allocation-triggered checks so
 // graph, reference, and semantic hot paths only pay for resetting one timer.
+// The delay grows with the cost of the previous check so accounting, which
+// walks every cached document under s.mu, stays a small share of server time.
 // The caller must hold s.mu.
 func (s *Server) scheduleMemoryPressureCheckLocked(reason string) {
 	if s.shutdown {
@@ -100,17 +102,34 @@ func (s *Server) scheduleMemoryPressureCheckLocked(reason string) {
 	if s.memoryPressureTimer != nil {
 		return
 	}
-	s.memoryPressureTimer = time.AfterFunc(runtimeMemoryPressureDebounce, func() {
+	s.memoryPressureTimer = time.AfterFunc(memoryPressureCheckDelay(s.memoryPressureCheckCost), func() {
 		s.mu.Lock()
 		reason := s.memoryPressureReason
 		s.memoryPressureReason = ""
 		s.memoryPressureTimer = nil
 		shutdown := s.shutdown
+		manager := s.memoryBudget
+		maxBytes := s.settings.MemoryMaxCacheBytes
 		s.mu.Unlock()
-		if !shutdown {
-			s.checkMemoryPressure(reason)
+		if shutdown || manager != nil && manager.HeapBelowBudget(maxBytes) {
+			return
 		}
+		started := time.Now()
+		s.checkMemoryPressure(reason)
+		s.mu.Lock()
+		s.memoryPressureCheckCost = time.Since(started)
+		s.mu.Unlock()
 	})
+}
+
+const (
+	memoryPressureCheckCostFactor = 10
+	memoryPressureCheckMaxDelay   = 30 * time.Second
+)
+
+func memoryPressureCheckDelay(previousCost time.Duration) time.Duration {
+	delay := previousCost * memoryPressureCheckCostFactor
+	return min(max(delay, runtimeMemoryPressureDebounce), memoryPressureCheckMaxDelay)
 }
 
 func (s *Server) scheduleMemoryPressureCheck(reason string) {
