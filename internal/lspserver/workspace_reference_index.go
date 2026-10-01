@@ -4,6 +4,8 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"io"
+	"runtime"
 	"sort"
 	"strings"
 	"sync"
@@ -197,44 +199,71 @@ func (index *workspaceReferenceIndex) semanticFingerprintsForNamesContext(ctx co
 	for _, rawName := range names {
 		requested[strings.ToLower(rawName)] = struct{}{}
 	}
-	type fingerprintPart struct {
-		documentKey string
-		fingerprint string
+	type acceptedDocument struct {
+		id  uint64
+		key string
 	}
-	parts := make(map[string][]fingerprintPart, len(requested))
 	index.mu.RLock()
-	acceptedDocuments := make(map[uint64]struct{}, len(candidates))
+	accepted := make([]acceptedDocument, 0, len(candidates))
+	seen := make(map[uint64]struct{}, len(candidates))
 	for _, candidate := range candidates {
 		if candidate == nil {
 			continue
 		}
 		if key := index.parsedDocuments[candidate]; key != "" {
 			if entry, ok := index.documents[key]; ok {
-				acceptedDocuments[entry.documentID] = struct{}{}
-			}
-		}
-	}
-	for name := range requested {
-		for _, segment := range index.names[name] {
-			if segment != nil {
-				if _, accepted := acceptedDocuments[segment.documentID]; accepted {
-					parts[name] = append(parts[name], fingerprintPart{documentKey: segment.documentKey, fingerprint: segment.countFingerprint})
+				if _, duplicate := seen[entry.documentID]; !duplicate {
+					seen[entry.documentID] = struct{}{}
+					accepted = append(accepted, acceptedDocument{id: entry.documentID, key: key})
 				}
 			}
 		}
 	}
-	index.mu.RUnlock()
+	// A segment's documentKey is its index key, so walking documents in key
+	// order hashes each name's parts in the persisted order without sorting.
+	sort.Slice(accepted, func(i, j int) bool { return accepted[i].key < accepted[j].key })
+	requestedNames := make([]string, 0, len(requested))
 	for name := range requested {
-		nameParts := parts[name]
-		sort.Slice(nameParts, func(i, j int) bool { return nameParts[i].documentKey < nameParts[j].documentKey })
-		hash := sha256.New()
-		for _, part := range nameParts {
-			_, _ = hash.Write([]byte(part.documentKey))
-			_, _ = hash.Write([]byte{0})
-			_, _ = hash.Write([]byte(part.fingerprint))
-			_, _ = hash.Write([]byte{0})
-		}
-		result[name] = hex.EncodeToString(hash.Sum(nil))
+		requestedNames = append(requestedNames, name)
+	}
+	fingerprints := make([]string, len(requestedNames))
+	workers := min(len(requestedNames), max(1, runtime.GOMAXPROCS(0)))
+	var next atomic.Int64
+	var wg sync.WaitGroup
+	for range workers {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			hash := sha256.New()
+			sum := make([]byte, 0, sha256.Size)
+			for {
+				nameIndex := int(next.Add(1)) - 1
+				if nameIndex >= len(requestedNames) || ctx.Err() != nil {
+					return
+				}
+				matching := index.names[requestedNames[nameIndex]]
+				hash.Reset()
+				for _, document := range accepted {
+					segment := matching[document.id]
+					if segment == nil {
+						continue
+					}
+					_, _ = io.WriteString(hash, segment.documentKey)
+					_, _ = hash.Write([]byte{0})
+					_, _ = io.WriteString(hash, segment.countFingerprint)
+					_, _ = hash.Write([]byte{0})
+				}
+				fingerprints[nameIndex] = hex.EncodeToString(hash.Sum(sum[:0]))
+			}
+		}()
+	}
+	wg.Wait()
+	index.mu.RUnlock()
+	if ctx.Err() != nil {
+		return nil
+	}
+	for nameIndex, name := range requestedNames {
+		result[name] = fingerprints[nameIndex]
 	}
 	return result
 }

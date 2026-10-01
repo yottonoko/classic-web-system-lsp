@@ -346,9 +346,9 @@ func (s *Server) warmWorkspaceReferenceBatch(key workspaceReferenceBatchKey, sta
 		if progress.Segments {
 			label = "references.countSegments"
 		}
-		if done := s.updateProgressTaskImmediate(state.progressTaskID, "references", label, progressDetailForURI(progress.URI), progress.Completed, progress.Total, []string{progress.URI}, "running"); done != nil {
-			<-done
-		}
+		// Per-chunk updates are throttled and never wait for the client; a
+		// phase change still publishes immediately.
+		s.updateProgressTask(state.progressTaskID, "references", label, progressDetailForURI(progress.URI), progress.Completed, progress.Total, []string{progress.URI}, "running")
 		s.mu.Lock()
 		if progress.Total > state.examinedSegments {
 			state.examinedSegments = progress.Total
