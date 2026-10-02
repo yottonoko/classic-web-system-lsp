@@ -116,7 +116,7 @@ func vbReferenceDeclarationFactsWithShard(parsed *core.ParsedDocument, shard *vb
 	}
 	// Parameters and compatibility-only class declarations are not yet represented
 	// as declaration postings, so retain them as a narrow overlay.
-	for _, declaration := range collectVBNamingDeclarations(parsed) {
+	for _, declaration := range vbNamingDeclarationsShared(parsed) {
 		appendUniqueVBReferenceRange(ranges, declaration.Name, declaration.Range)
 	}
 	if includeServerObjects {

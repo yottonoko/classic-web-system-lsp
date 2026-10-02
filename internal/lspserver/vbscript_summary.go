@@ -222,7 +222,7 @@ func collectVBScriptExternalRefs(parsed *core.ParsedDocument) []vbExternalRef {
 	doc := core.SourceDocument(parsed)
 	declared := map[string]struct{}{}
 	declarationRanges := map[offsetRange]struct{}{}
-	for _, declaration := range collectVBNamingDeclarations(parsed) {
+	for _, declaration := range vbNamingDeclarationsShared(parsed) {
 		declared[strings.ToLower(declaration.Name)] = struct{}{}
 		declarationRanges[offsetRangeKey(declaration.Start, declaration.End)] = struct{}{}
 	}

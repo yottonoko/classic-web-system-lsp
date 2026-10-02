@@ -4,6 +4,7 @@ import (
 	"context"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -1275,7 +1276,28 @@ func normalizedVBUsageDeclarations(parsed *core.ParsedDocument) []vbUsageDeclara
 	return declarations
 }
 
+const vbParameterDeclarationsRuntimeKey = "lspserver.vb-parameter-declarations.runtime.v1"
+
+// vbParameterDeclarationsFromTokens returns parsed's procedure parameters.
+// Type inference asks whether a name is bound once per assignment and member
+// chain, so the list is kept with the parsed revision. Callers share it and
+// must not modify elements; it is clipped so that appending copies.
 func vbParameterDeclarationsFromTokens(parsed *core.ParsedDocument) []vbUsageDeclaration {
+	if value, ok := parsed.LoadRuntimeAnalysis(vbParameterDeclarationsRuntimeKey); ok {
+		if declarations, ok := value.([]vbUsageDeclaration); ok {
+			return declarations
+		}
+	}
+	declarations := slices.Clip(buildVBParameterDeclarations(parsed))
+	if actual, _ := parsed.LoadOrStoreRuntimeAnalysis(vbParameterDeclarationsRuntimeKey, declarations); actual != nil {
+		if shared, ok := actual.([]vbUsageDeclaration); ok {
+			return shared
+		}
+	}
+	return declarations
+}
+
+func buildVBParameterDeclarations(parsed *core.ParsedDocument) []vbUsageDeclaration {
 	doc := core.SourceDocument(parsed)
 	scopes := vbProcedureScopes(parsed)
 	scopeIndex := newVBProcedureScopeIndex(scopes)

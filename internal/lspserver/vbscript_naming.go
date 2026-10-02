@@ -113,16 +113,23 @@ func storeVBNamingDeclarations(parsed *core.ParsedDocument, declarations []vbUsa
 }
 
 func collectVBNamingDeclarations(parsed *core.ParsedDocument) []vbUsageDeclaration {
+	// Callers may append or modify declarations; keep the cached slice private.
+	return slices.Clone(vbNamingDeclarationsShared(parsed))
+}
+
+// vbNamingDeclarationsShared returns the cached naming declarations without
+// copying them. Callers must not modify the result.
+func vbNamingDeclarationsShared(parsed *core.ParsedDocument) []vbUsageDeclaration {
 	const analysisKey = "lspserver.vb-naming-declarations.v1"
 	if value, ok := parsed.LoadRuntimeAnalysis(analysisKey); ok {
 		if cached, ok := value.(*vbNamingDeclarationsCache); ok {
-			return slices.Clone(cached.declarations)
+			return slices.Clip(cached.declarations)
 		}
 	}
 	var cached []vbUsageDeclaration
 	if parsed.LoadAnalysis(analysisKey, &cached) {
 		storeVBNamingDeclarations(parsed, cached)
-		return slices.Clone(cached)
+		return slices.Clip(cached)
 	}
 	declarations := append([]vbUsageDeclaration(nil), collectVBUsageDeclarations(parsed).Declarations...)
 	doc := core.SourceDocument(parsed)
@@ -160,9 +167,8 @@ func collectVBNamingDeclarations(parsed *core.ParsedDocument) []vbUsageDeclarati
 		}
 	}
 	declarations = dedupeAndSortVBDeclarations(declarations)
-	// Callers may append or modify declarations; keep the cached slice private.
 	storeVBNamingDeclarations(parsed, declarations)
-	return slices.Clone(declarations)
+	return slices.Clip(declarations)
 }
 
 func vbClassMemberDeclaration(doc *core.TextDocument, line string, lineOffset int, memberOf string) (vbUsageDeclaration, bool) {
@@ -473,7 +479,7 @@ func vbIdentifierRenameEditsInOffsets(parsed *core.ParsedDocument, name string, 
 }
 
 func declarationStartForName(parsed *core.ParsedDocument, name string, offset int) int {
-	for _, declaration := range collectVBNamingDeclarations(parsed) {
+	for _, declaration := range vbNamingDeclarationsShared(parsed) {
 		if declaration.Start == offset && strings.EqualFold(declaration.Name, name) {
 			return declaration.Start
 		}

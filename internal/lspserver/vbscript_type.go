@@ -637,7 +637,7 @@ func (s *Server) vbscriptTypeMembersForDocumentsContext(ctx context.Context, doc
 		limit, rootLimited := activeEnds[key]
 		visibleMembers := map[string]map[string]struct{}{}
 		if rootLimited && document == root {
-			for _, declaration := range collectVBNamingDeclarations(document) {
+			for _, declaration := range vbNamingDeclarationsShared(document) {
 				if declaration.MemberOf == "" || declaration.Start > limit {
 					continue
 				}
@@ -986,7 +986,7 @@ func vbscriptDeclarationIsClassMember(parsed *core.ParsedDocument, declaration v
 		declarations, _ = value.(map[[2]int]struct{})
 	} else {
 		declarations = map[[2]int]struct{}{}
-		for _, candidate := range collectVBNamingDeclarations(parsed) {
+		for _, candidate := range vbNamingDeclarationsShared(parsed) {
 			if candidate.MemberOf == "" {
 				continue
 			}
@@ -1417,7 +1417,7 @@ func vbClassMemberShadowNames(parsed *core.ParsedDocument) map[string]map[string
 		}
 	}
 	shadowNames := map[string]map[string]bool{}
-	for _, declaration := range collectVBNamingDeclarations(parsed) {
+	for _, declaration := range vbNamingDeclarationsShared(parsed) {
 		if declaration.Scope != "" || declaration.MemberOf == "" {
 			continue
 		}
@@ -1449,7 +1449,9 @@ func vbscriptClassScopeForProcedure(parsed *core.ParsedDocument, scope string) s
 	}
 	procedureName := vbProcedureScopeName(scope)
 	owners := vbClassMemberLineOwners(parsed)
-	for _, procedure := range vbProcedureScopes(parsed) {
+	procedures := vbProcedureScopes(parsed)
+	for index := range vbFoldNameIndexFor(parsed, vbProcedureScopeNamesRuntimeKey, procedures, vbProcedureScopeNameOf).candidates(procedureName) {
+		procedure := procedures[index]
 		if !strings.EqualFold(procedure.Name, procedureName) {
 			continue
 		}
@@ -1510,7 +1512,9 @@ func vbscriptNameBoundInScopeAtOffset(parsed *core.ParsedDocument, name, scope s
 func vbscriptNameBoundInScopeAtOffsetUncached(parsed *core.ParsedDocument, name, scope string, offset int) bool {
 	scopeName := vbProcedureScopeName(scope)
 	classScope := vbscriptClassScopeForProcedure(parsed, scope)
-	for _, declaration := range variableInlayDeclarations(parsed, true, nil) {
+	inlayDeclarations := variableInlayDeclarations(parsed, true, nil)
+	for index := range vbFoldNameIndexFor(parsed, vbInlayDeclarationNamesRuntimeKey, inlayDeclarations, vbUsageDeclarationName).candidates(name) {
+		declaration := inlayDeclarations[index]
 		if declaration.Start > offset {
 			continue
 		}
@@ -1527,7 +1531,9 @@ func vbscriptNameBoundInScopeAtOffsetUncached(parsed *core.ParsedDocument, name,
 			return true
 		}
 	}
-	for _, declaration := range vbParameterDeclarationsFromTokens(parsed) {
+	parameters := vbParameterDeclarationsFromTokens(parsed)
+	for index := range vbFoldNameIndexFor(parsed, vbParameterNamesRuntimeKey, parameters, vbUsageDeclarationName).candidates(name) {
+		declaration := parameters[index]
 		if strings.EqualFold(declaration.Name, name) && (strings.EqualFold(declaration.Scope, scope) ||
 			(scope == "" && strings.EqualFold(vbProcedureScopeName(declaration.Scope), scopeName) &&
 				strings.EqualFold(vbProcedureScopeOwner(declaration.Scope), vbProcedureScopeOwner(scope)))) {
@@ -1535,7 +1541,9 @@ func vbscriptNameBoundInScopeAtOffsetUncached(parsed *core.ParsedDocument, name,
 		}
 	}
 	if classScope != "" {
-		for _, declaration := range collectVBNamingDeclarations(parsed) {
+		namingDeclarations := vbNamingDeclarationsShared(parsed)
+		for index := range vbFoldNameIndexFor(parsed, vbNamingDeclarationNamesKey, namingDeclarations, vbUsageDeclarationName).candidates(name) {
+			declaration := namingDeclarations[index]
 			if declaration.Start > offset {
 				continue
 			}
@@ -1549,11 +1557,13 @@ func vbscriptNameBoundInScopeAtOffsetUncached(parsed *core.ParsedDocument, name,
 		}
 	}
 	doc := vbTextDocument(parsed)
-	for _, assignment := range vbscriptAssignments(parsed) {
-		if doc.OffsetAt(assignment.NameRange.Start) > offset {
+	assignments := vbscriptAssignments(parsed)
+	for index := range vbFoldNameIndexFor(parsed, vbAssignmentNamesRuntimeKey, assignments, vbAssignmentName).candidates(name) {
+		assignment := assignments[index]
+		if !strings.EqualFold(assignment.Name, name) || !strings.EqualFold(assignment.Scope, scope) {
 			continue
 		}
-		if strings.EqualFold(assignment.Name, name) && strings.EqualFold(assignment.Scope, scope) {
+		if doc.OffsetAt(assignment.NameRange.Start) <= offset {
 			return true
 		}
 	}

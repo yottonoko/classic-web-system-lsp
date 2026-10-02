@@ -4,6 +4,7 @@ import (
 	"context"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -354,13 +355,27 @@ func graphDeclarationNodeID(uri, name string, ranges ...lsp.Range) string {
 	return id + ":" + strconv.Itoa(r.Start.Line) + ":" + strconv.Itoa(r.Start.Character)
 }
 
+const (
+	graphVBDeclarationsAnalysisKey = "lspserver.graph-vb-declarations.v2"
+	graphVBDeclarationsRuntimeKey  = "lspserver.graph-vb-declarations.runtime.v1"
+)
+
+// graphVBDeclarations returns parsed's declarations. Graph builds look them up
+// for every member occurrence under every owner, so the decoded list is kept
+// with the parsed revision. Callers share it and must not modify elements; it
+// is clipped so that appending copies.
 func graphVBDeclarations(parsed *core.ParsedDocument) []vbUsageDeclaration {
 	if parsed == nil {
 		return nil
 	}
+	if value, ok := parsed.LoadRuntimeAnalysis(graphVBDeclarationsRuntimeKey); ok {
+		if declarations, ok := value.([]vbUsageDeclaration); ok {
+			return declarations
+		}
+	}
 	var cached []vbUsageDeclaration
-	if parsed.LoadAnalysis("lspserver.graph-vb-declarations.v2", &cached) {
-		return cached
+	if parsed.LoadAnalysis(graphVBDeclarationsAnalysisKey, &cached) {
+		return rememberGraphVBDeclarations(parsed, cached)
 	}
 	seen := map[string]int{}
 	declarations := make([]vbUsageDeclaration, 0)
@@ -381,7 +396,7 @@ func graphVBDeclarations(parsed *core.ParsedDocument) []vbUsageDeclaration {
 		seen[key] = len(declarations)
 		declarations = append(declarations, declaration)
 	}
-	for _, declaration := range collectVBNamingDeclarations(parsed) {
+	for _, declaration := range vbNamingDeclarationsShared(parsed) {
 		add(declaration)
 	}
 	for _, declaration := range variableInlayDeclarations(parsed, true, nil) {
@@ -409,7 +424,17 @@ func graphVBDeclarations(parsed *core.ParsedDocument) []vbUsageDeclaration {
 		}
 		return declarations[i].End < declarations[j].End
 	})
-	parsed.StoreAnalysis("lspserver.graph-vb-declarations.v2", declarations)
+	parsed.StoreAnalysis(graphVBDeclarationsAnalysisKey, declarations)
+	return rememberGraphVBDeclarations(parsed, declarations)
+}
+
+func rememberGraphVBDeclarations(parsed *core.ParsedDocument, declarations []vbUsageDeclaration) []vbUsageDeclaration {
+	declarations = slices.Clip(declarations)
+	if actual, _ := parsed.LoadOrStoreRuntimeAnalysis(graphVBDeclarationsRuntimeKey, declarations); actual != nil {
+		if shared, ok := actual.([]vbUsageDeclaration); ok {
+			return shared
+		}
+	}
 	return declarations
 }
 
@@ -462,7 +487,7 @@ func graphNodeForVBDeclaration(parsed *core.ParsedDocument, declaration vbUsageD
 	if analysisTypes != nil {
 		node.Parameters = graphParametersForDeclaration(parsed, declaration, analysisTypes)
 	}
-	if arrayKind, dimensions := graphVBArrayInfo(parsed.Text, declaration.Name); arrayKind != "" {
+	if arrayKind, dimensions := graphVBArrayInfoForDocument(parsed, declaration.Name); arrayKind != "" {
 		node.TypeName = "Array"
 		node.ArrayKind = arrayKind
 		node.ArrayDimensions = &dimensions

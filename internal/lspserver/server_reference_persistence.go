@@ -873,7 +873,7 @@ func vbReferencesBatchDelay() time.Duration {
 func vbCodeLensCurrentDeclarationPosition(parsed *core.ParsedDocument, name string, symbolKind string, fallback lsp.Position) lsp.Position {
 	var matches []vbUsageDeclaration
 	classLines := vbClassLineSet(parsed)
-	for _, declaration := range collectVBNamingDeclarations(parsed) {
+	for _, declaration := range vbNamingDeclarationsShared(parsed) {
 		declaration.Kind = vbCodeLensSymbolKind(declaration, classLines)
 		if strings.EqualFold(declaration.Name, name) && declaration.Kind == symbolKind {
 			matches = append(matches, declaration)

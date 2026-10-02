@@ -58,7 +58,7 @@ func (s *Server) vbscriptMemberTargetAtContext(ctx context.Context, parsed *core
 		}
 		position := core.SourceDocument(parsed).PositionAt(offset)
 		if name == "" {
-			for _, declaration := range collectVBNamingDeclarations(parsed) {
+			for _, declaration := range vbNamingDeclarationsShared(parsed) {
 				if ctx.Err() != nil {
 					return vbscriptMemberTarget{}, false
 				}
@@ -101,7 +101,7 @@ func (s *Server) vbscriptMemberTargetAtContext(ctx context.Context, parsed *core
 		if ctx.Err() != nil {
 			return vbscriptMemberTarget{}, false
 		}
-		for _, declaration := range collectVBNamingDeclarations(document) {
+		for _, declaration := range vbNamingDeclarationsShared(document) {
 			if ctx.Err() != nil {
 				return vbscriptMemberTarget{}, false
 			}

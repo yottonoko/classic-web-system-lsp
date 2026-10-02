@@ -121,7 +121,7 @@ func vbscriptDocumentationDeclarationAt(parsed *core.ParsedDocument, position ls
 	offset := core.SourceDocument(parsed).OffsetAt(position)
 	var found vbUsageDeclaration
 	foundSize := 0
-	for _, declaration := range collectVBNamingDeclarations(parsed) {
+	for _, declaration := range vbNamingDeclarationsShared(parsed) {
 		if !isDocumentationDeclarationKind(declaration.Kind) {
 			continue
 		}

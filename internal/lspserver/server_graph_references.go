@@ -3,10 +3,13 @@ package lspserver
 import (
 	"context"
 	"regexp"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
 	"sync/atomic"
+	"unicode"
+	"unicode/utf8"
 
 	"github.com/yottonoko/classic-web-system-lsp/internal/core"
 	"github.com/yottonoko/classic-web-system-lsp/internal/graph"
@@ -341,6 +344,7 @@ func (s *Server) graphMemberReferencesWithProgress(ctx context.Context, document
 				receiverName := occurrence.Parts[0]
 				memberName := occurrence.Parts[len(occurrence.Parts)-1]
 				offset := core.SourceDocument(parsed).OffsetAt(occurrence.Range.Start)
+				binding := graphMemberBindingAt(parsed, receiverName, offset)
 				ownerURIs := includeOwners[workspacepkg.FileIdentityKeyFromURI(parsed.URI)]
 				typeNames := make([]string, 0, len(ownerURIs)+1)
 				appendTypeName := func(typeName string) {
@@ -360,19 +364,19 @@ func (s *Server) graphMemberReferencesWithProgress(ctx context.Context, document
 						if owner == nil {
 							continue
 						}
-						typeName, _ := graphMemberTypeAtContext(parsed, offset, receiverName, contextFor(owner, true), configuredTypes, true)
+						typeName, _ := graphMemberTypeAtContext(parsed, receiverName, binding, contextFor(owner, true), configuredTypes, true)
 						appendTypeName(typeName)
 					}
 					// A local declaration belongs to the fragment itself and must
 					// remain visible under every owner.
 					if len(typeNames) == 0 {
-						localType, localBound := graphMemberTypeAtContext(parsed, offset, receiverName, contextFor(parsed, false), configuredTypes, false)
+						localType, localBound := graphMemberTypeAtContext(parsed, receiverName, binding, contextFor(parsed, false), configuredTypes, false)
 						if localBound {
 							appendTypeName(localType)
 						}
 					}
 				} else {
-					typeName, _ := graphMemberTypeAtContext(parsed, offset, receiverName, contextFor(parsed, false), configuredTypes, true)
+					typeName, _ := graphMemberTypeAtContext(parsed, receiverName, binding, contextFor(parsed, false), configuredTypes, true)
 					appendTypeName(typeName)
 				}
 				for _, typeName := range typeNames {
@@ -584,20 +588,28 @@ func graphMemberIncludeOwners(ctx context.Context, s *Server, documents []*core.
 		}
 		visiting[identity] = struct{}{}
 		values := make([]string, 0, len(parents[identity]))
-		for _, parentURI := range parents[identity] {
-			if !containsStringFold(values, parentURI) {
-				values = append(values, parentURI)
+		seen := make(map[string]struct{}, len(parents[identity]))
+		appendValue := func(value string) {
+			key := foldKey(value)
+			if _, ok := seen[key]; !ok {
+				seen[key] = struct{}{}
+				values = append(values, value)
 			}
+		}
+		for _, parentURI := range parents[identity] {
+			appendValue(parentURI)
 			parentKey := workspacepkg.FileIdentityKeyFromURI(parentURI)
 			for _, ancestor := range visit(parentKey, visiting) {
-				if !containsStringFold(values, ancestor) {
-					values = append(values, ancestor)
-				}
+				appendValue(ancestor)
 			}
 		}
 		delete(visiting, identity)
+		lowered := make(map[string]string, len(values))
+		for _, value := range values {
+			lowered[value] = strings.ToLower(value)
+		}
 		sort.SliceStable(values, func(left, right int) bool {
-			return strings.ToLower(values[left]) < strings.ToLower(values[right])
+			return lowered[values[left]] < lowered[values[right]]
 		})
 		ancestors[identity] = values
 		return values
@@ -611,13 +623,30 @@ func graphMemberIncludeOwners(ctx context.Context, s *Server, documents []*core.
 	return owners
 }
 
-func containsStringFold(values []string, value string) bool {
-	for _, candidate := range values {
-		if strings.EqualFold(candidate, value) {
-			return true
+// foldKey returns a key that two strings share exactly when strings.EqualFold
+// reports them equal: each rune maps to the smallest rune of its simple case
+// folding orbit, which is the uppercase letter for ASCII letters.
+func foldKey(value string) string {
+	ascii := true
+	for index := 0; index < len(value); index++ {
+		if value[index] >= utf8.RuneSelf {
+			ascii = false
+			break
 		}
 	}
-	return false
+	if ascii {
+		return strings.ToUpper(value)
+	}
+	var builder strings.Builder
+	builder.Grow(len(value))
+	for _, r := range value {
+		smallest := r
+		for folded := unicode.SimpleFold(r); folded != r; folded = unicode.SimpleFold(folded) {
+			smallest = min(smallest, folded)
+		}
+		builder.WriteRune(smallest)
+	}
+	return builder.String()
 }
 
 func graphMemberDeclarationType(parsed *core.ParsedDocument, declaration vbUsageDeclaration, analysis *vbGraphAnalysisTypes) string {
@@ -641,7 +670,9 @@ func graphMemberDeclarationCandidates(parsed *core.ParsedDocument, name string, 
 	scope := vbscriptScopeAtOffset(parsed, offset)
 	classScope := vbscriptClassScopeForProcedure(parsed, scope)
 	var localCandidates, classCandidates, globalCandidates []vbUsageDeclaration
-	for _, declaration := range graphVBDeclarations(parsed) {
+	declarations := graphVBDeclarations(parsed)
+	for index := range vbFoldNameIndexFor(parsed, graphVBDeclarationNamesRuntimeKey, declarations, vbUsageDeclarationName).candidates(name) {
+		declaration := declarations[index]
 		if !strings.EqualFold(declaration.Name, name) {
 			continue
 		}
@@ -683,14 +714,33 @@ func graphMemberDeclarationCandidates(parsed *core.ParsedDocument, name string, 
 	return local, classMember, global, bound
 }
 
-func graphMemberTypeAtContext(parsed *core.ParsedDocument, offset int, name string, context graphMemberTypeContext, configured map[string]string, allowGlobal bool) (string, bool) {
+// graphMemberBinding is the owner-independent part of resolving a receiver
+// name at an offset, computed once and reused for every include owner.
+type graphMemberBinding struct {
+	local, classMember, global *vbUsageDeclaration
+	bound                      bool
+	scopedKey, globalKey       string
+}
+
+func graphMemberBindingAt(parsed *core.ParsedDocument, name string, offset int) graphMemberBinding {
+	if parsed == nil || name == "" {
+		return graphMemberBinding{}
+	}
+	local, classMember, global, bound := graphMemberDeclarationCandidates(parsed, name, offset)
+	return graphMemberBinding{
+		local: local, classMember: classMember, global: global, bound: bound,
+		scopedKey: vbscriptTypeScopeKey(parsed, vbscriptScopeAtOffset(parsed, offset), name),
+		globalKey: vbscriptTypeScopeKey(parsed, "", name),
+	}
+}
+
+func graphMemberTypeAtContext(parsed *core.ParsedDocument, name string, binding graphMemberBinding, context graphMemberTypeContext, configured map[string]string, allowGlobal bool) (string, bool) {
 	if parsed == nil || name == "" {
 		return "", false
 	}
 	analysis := context.analysis
-	local, classMember, global, bound := graphMemberDeclarationCandidates(parsed, name, offset)
-	scope := vbscriptScopeAtOffset(parsed, offset)
-	if typeName := context.info.scopedVariableTypeNames[vbscriptTypeScopeKey(parsed, scope, name)]; typeName != "" {
+	local, classMember, global, bound := binding.local, binding.classMember, binding.global, binding.bound
+	if typeName := context.info.scopedVariableTypeNames[binding.scopedKey]; typeName != "" {
 		return typeName, true
 	}
 	if local != nil {
@@ -709,7 +759,7 @@ func graphMemberTypeAtContext(parsed *core.ParsedDocument, offset int, name stri
 	if !allowGlobal {
 		return "", false
 	}
-	if typeName := context.info.scopedVariableTypeNames[vbscriptTypeScopeKey(parsed, "", name)]; typeName != "" {
+	if typeName := context.info.scopedVariableTypeNames[binding.globalKey]; typeName != "" {
 		return typeName, true
 	}
 	if global != nil && (context.root == nil || context.root == parsed) {
@@ -754,13 +804,7 @@ func graphMemberDeclarationIDsForOccurrence(parsed *core.ParsedDocument, occurre
 		if document == nil || declaration == nil {
 			return
 		}
-		id := graphDeclarationNodeID(document.URI, declaration.Name, declaration.Range)
-		for _, existing := range declarations {
-			if existing == id {
-				return
-			}
-		}
-		declarations = append(declarations, id)
+		declarations = append(declarations, graphDeclarationNodeID(document.URI, declaration.Name, declaration.Range))
 	}
 	if local != nil {
 		appendDeclaration(parsed, local)
@@ -793,7 +837,7 @@ func graphMemberDeclarationIDsForOccurrence(parsed *core.ParsedDocument, occurre
 		}
 	}
 	sort.Strings(declarations)
-	return declarations
+	return slices.Compact(declarations)
 }
 
 type graphImplicitDeclarationEvent struct {

@@ -569,7 +569,7 @@ func vbscriptClassMemberDeclarationAtOffset(parsed *core.ParsedDocument, name st
 		return vbUsageDeclaration{}, false
 	}
 	var fallback vbUsageDeclaration
-	for _, declaration := range collectVBNamingDeclarations(parsed) {
+	for _, declaration := range vbNamingDeclarationsShared(parsed) {
 		if declaration.Scope != "" || declaration.MemberOf == "" ||
 			!strings.EqualFold(declaration.MemberOf, classScope) || !strings.EqualFold(declaration.Name, name) {
 			continue
