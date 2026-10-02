@@ -476,7 +476,7 @@ func (s *Server) refreshWorkspaceIncludeGraphFileIfCurrent(parsed *core.ParsedDo
 		Size:        int64(len(parsed.Text)),
 		ContentHash: workspacepkg.DiskContentHash(parsed.Text),
 	}
-	if info, ok := s.fsStat(ownerPath); ok && info != nil {
+	if info, ok := s.ownerSourceStats(ownerPath); ok && info != nil {
 		metadata.MtimeMS = info.MtimeMS
 		metadata.Size = info.Size
 	}

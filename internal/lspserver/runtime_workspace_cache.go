@@ -77,7 +77,10 @@ func (s *Server) workspaceIndexDiskEntries(docs map[string]*core.TextDocument, f
 	prepared := make([]workspacepkg.DiskWorkspaceIndexedDocument, len(keys))
 	present := make([]bool, len(keys))
 	// Each stat validates the trusted root and path, so run them in parallel.
-	s.analysisWorkers.parallelForBulk(context.Background(), len(keys), func(_ context.Context, index int) {
+	// Files read by this session already know the metadata of the bytes behind
+	// their text; the rest share one listing per directory.
+	listed := newWorkspaceListedStats(s)
+	s.analysisWorkers.parallelForBulk(context.Background(), len(keys), func(workerCtx context.Context, index int) {
 		uri := keys[index]
 		doc := docs[uri]
 		if doc == nil {
@@ -85,7 +88,11 @@ func (s *Server) workspaceIndexDiskEntries(docs map[string]*core.TextDocument, f
 		}
 		path := fileURIPath(uri)
 		entry := workspacepkg.DiskWorkspaceIndexedDocument{URI: uri, FileName: path, Size: int64(len(doc.Text)), Text: doc.Text}
-		if info, ok := s.fsStat(path); ok {
+		info, ok := s.sourceSnapshotStats(path)
+		if !ok {
+			info, ok = listed.stat(workerCtx, path)
+		}
+		if ok {
 			entry.MtimeMS = info.MtimeMS
 			entry.Size = info.Size
 		}
@@ -185,6 +192,7 @@ func (s *Server) restoreWorkspaceIndexFromDiskSnapshot(ctx context.Context, fres
 	if workers == nil {
 		workers = &analysisWorkerPool{}
 	}
+	listed := newWorkspaceListedStats(s)
 	workers.parallelForBulk(ctx, len(entry.Entries), func(workerCtx context.Context, index int) {
 		indexed := entry.Entries[index]
 		path := indexed.FileName
@@ -201,7 +209,8 @@ func (s *Server) restoreWorkspaceIndexFromDiskSnapshot(ctx context.Context, fres
 		if workerCtx.Err() != nil {
 			return
 		}
-		if !workspaceIndexFileMetadataMatches(indexed, path, s) {
+		info, exists := listed.stat(workerCtx, path)
+		if !workspaceIndexFileMetadataMatches(indexed, path, info, exists) {
 			results[index] = validationResult{path: path, stale: true}
 			return
 		}
@@ -256,11 +265,11 @@ func (s *Server) restoreWorkspaceIndexFromDiskSnapshot(ctx context.Context, fres
 	return docs, true, false
 }
 
-func workspaceIndexFileMetadataMatches(indexed workspacepkg.DiskWorkspaceIndexedDocument, path string, s *Server) bool {
+func workspaceIndexFileMetadataMatches(indexed workspacepkg.DiskWorkspaceIndexedDocument, path string, info *workspacepkg.FsGatewayStats, ok bool) bool {
 	if indexed.FileName != "" && filepath.Clean(indexed.FileName) != filepath.Clean(path) {
 		return false
 	}
-	if info, ok := s.fsStat(path); !ok {
+	if !ok || info == nil {
 		return false
 	} else if indexed.MtimeMS != 0 && indexed.MtimeMS != info.MtimeMS || indexed.Size != 0 && indexed.Size != info.Size {
 		return false
@@ -447,8 +456,9 @@ func (s *Server) syncWorkspaceIncludeGraphCacheGuarded(ctx context.Context, gene
 	if workers == nil {
 		workers = &analysisWorkerPool{}
 	}
+	listed := newWorkspaceListedStats(s)
 	workers.parallelForBulk(withIncludeResolutionMemo(ctx), len(documents), func(workerCtx context.Context, index int) {
-		prepared[index] = s.prepareWorkspaceIncludeGraphDocument(workerCtx, documents[index], documentTestHook)
+		prepared[index] = s.prepareWorkspaceIncludeGraphDocument(workerCtx, documents[index], documentTestHook, listed)
 	})
 	if ctx.Err() != nil {
 		return false
@@ -489,7 +499,7 @@ type workspaceIncludeGraphPreparedDocument struct {
 	refsFingerprint string
 }
 
-func (s *Server) prepareWorkspaceIncludeGraphDocument(ctx context.Context, parsed *core.ParsedDocument, testHook func(context.Context, string)) workspaceIncludeGraphPreparedDocument {
+func (s *Server) prepareWorkspaceIncludeGraphDocument(ctx context.Context, parsed *core.ParsedDocument, testHook func(context.Context, string), listed *workspaceListedStats) workspaceIncludeGraphPreparedDocument {
 	if parsed == nil || ctx.Err() != nil {
 		return workspaceIncludeGraphPreparedDocument{}
 	}
@@ -514,7 +524,11 @@ func (s *Server) prepareWorkspaceIncludeGraphDocument(ctx context.Context, parse
 		}
 	}
 	var mtimeMS, size int64
-	if info, ok := s.fsStat(ownerPath); ok && info != nil {
+	info, ok := s.sourceSnapshotStats(ownerPath)
+	if !ok {
+		info, ok = listed.stat(ctx, ownerPath)
+	}
+	if ok && info != nil {
 		mtimeMS = info.MtimeMS
 		size = info.Size
 	}
@@ -556,7 +570,7 @@ func (s *Server) refreshWorkspaceIncludeGraphFile(parsed *core.ParsedDocument) {
 		Size:        int64(len(parsed.Text)),
 		ContentHash: workspacepkg.DiskContentHash(parsed.Text),
 	}
-	if info, ok := s.fsStat(ownerPath); ok && info != nil {
+	if info, ok := s.ownerSourceStats(ownerPath); ok && info != nil {
 		metadata.MtimeMS = info.MtimeMS
 		metadata.Size = info.Size
 	}
@@ -910,6 +924,7 @@ func (s *Server) restoreWorkspaceIncludeGraphDiskCandidate(ctx context.Context, 
 	}
 	// Pages share include targets; check each target and resolution once.
 	ctx = withIncludeResolutionMemo(ctx)
+	listed := newWorkspaceListedStats(s)
 	existingTargets := map[string]struct{}{}
 	for _, value := range candidate.entry.Entries {
 		if ctx.Err() != nil {
@@ -919,7 +934,7 @@ func (s *Server) restoreWorkspaceIncludeGraphDiskCandidate(ctx context.Context, 
 			workspacepkg.FileIdentityKeyFromFileName(value.Source.FileName) != workspacepkg.FileIdentityKeyFromFileName(value.FileName)) {
 			return false
 		}
-		if !s.workspaceIncludeGraphSourceMatches(ctx, value.FileName, value.Source) {
+		if !s.workspaceIncludeGraphSourceMatches(ctx, value.FileName, value.Source, listed.stat) {
 			return false
 		}
 		for _, target := range value.TargetFileNames {
@@ -975,14 +990,14 @@ func (s *Server) restoreWorkspaceIncludeGraphDiskCandidate(ctx context.Context, 
 	return true
 }
 
-func (s *Server) workspaceIncludeGraphSourceMatches(ctx context.Context, path string, source workspacepkg.SourceMetadata) bool {
+func (s *Server) workspaceIncludeGraphSourceMatches(ctx context.Context, path string, source workspacepkg.SourceMetadata, stat func(context.Context, string) (*workspacepkg.FsGatewayStats, bool)) bool {
 	if ctx == nil {
 		ctx = context.Background()
 	}
 	if ctx.Err() != nil {
 		return false
 	}
-	info, exists := s.fsStat(path)
+	info, exists := stat(ctx, path)
 	if !exists || info == nil || !info.File {
 		return false
 	}
