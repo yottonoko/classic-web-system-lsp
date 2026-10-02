@@ -511,7 +511,9 @@ func graphDeclarationOwnerNodeID(parsed *core.ParsedDocument, declaration vbUsag
 		return ""
 	}
 	if declaration.MemberOf != "" {
-		for _, candidate := range graphVBDeclarations(parsed) {
+		declarations := graphVBDeclarations(parsed)
+		for index := range vbFoldNameIndexFor(parsed, graphVBDeclarationNamesRuntimeKey, declarations, vbUsageDeclarationName).candidates(declaration.MemberOf) {
+			candidate := declarations[index]
 			if candidate.Kind == "class" && strings.EqualFold(candidate.Name, declaration.MemberOf) {
 				return graphDeclarationNodeID(parsed.URI, candidate.Name, candidate.Range)
 			}

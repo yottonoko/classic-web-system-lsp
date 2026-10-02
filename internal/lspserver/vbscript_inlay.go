@@ -268,7 +268,7 @@ func inferVBDeclarationType(parsed *core.ParsedDocument, declaration vbUsageDecl
 			}
 		}
 	}
-	if value, ok := firstAssignmentValueAfter(parsed.Text, declaration.Name, declaration.End); ok {
+	if value, ok := firstAssignmentValueAfterInDocument(parsed, declaration.Name, declaration.End); ok {
 		return inferVBValueTypeForDocument(parsed, value)
 	}
 	return "Variant"
@@ -977,24 +977,105 @@ func firstAssignmentValueAfter(text, name string, offset int) (string, bool) {
 	return "", false
 }
 
+const vbAssignmentLinesRuntimeKey = "lspserver.vb-assignment-lines.runtime.v1"
+
+// vbAssignmentLines indexes the plain assignments of every line of a text
+// split on "\n", as firstAssignmentValueAfter reads them.
+type vbAssignmentLines struct {
+	lineStarts []int
+	byName     map[string][]vbAssignmentLineValue
+}
+
+type vbAssignmentLineValue struct {
+	line  int
+	value string
+}
+
+// firstAssignmentValueAfterInDocument is firstAssignmentValueAfter over
+// parsed.Text, using a per-document index for the lines after offset's line.
+func firstAssignmentValueAfterInDocument(parsed *core.ParsedDocument, name string, offset int) (string, bool) {
+	text := parsed.Text
+	offset = max(0, min(offset, len(text)))
+	lines := vbAssignmentLinesForDocument(parsed)
+	line := sort.SearchInts(lines.lineStarts, offset+1) - 1
+	lineEnd := len(text)
+	if line+1 < len(lines.lineStarts) {
+		lineEnd = lines.lineStarts[line+1] - 1
+	}
+	lowerName := strings.ToLower(name)
+	// The first line starts at offset rather than at the line start, so it
+	// splits into statements differently and is scanned directly.
+	for _, statement := range splitVBStatements(strings.TrimRight(text[offset:lineEnd], "\r")) {
+		if value, ok := assignmentValueFromStatement(statement, lowerName); ok {
+			return value, true
+		}
+	}
+	values := lines.byName[lowerName]
+	index := sort.Search(len(values), func(index int) bool { return values[index].line > line })
+	if index < len(values) {
+		return values[index].value, true
+	}
+	return "", false
+}
+
+func vbAssignmentLinesForDocument(parsed *core.ParsedDocument) *vbAssignmentLines {
+	if value, ok := parsed.LoadRuntimeAnalysis(vbAssignmentLinesRuntimeKey); ok {
+		if lines, ok := value.(*vbAssignmentLines); ok {
+			return lines
+		}
+	}
+	text := parsed.Text
+	lines := &vbAssignmentLines{lineStarts: []int{0}, byName: map[string][]vbAssignmentLineValue{}}
+	for start, line := 0, 0; ; line++ {
+		end := strings.IndexByte(text[start:], '\n')
+		if end < 0 {
+			end = len(text)
+		} else {
+			end += start
+		}
+		for _, statement := range splitVBStatements(strings.TrimRight(text[start:end], "\r")) {
+			if name, value, ok := assignmentFromStatement(statement); ok {
+				lines.byName[name] = append(lines.byName[name], vbAssignmentLineValue{line: line, value: value})
+			}
+		}
+		if end >= len(text) {
+			break
+		}
+		start = end + 1
+		lines.lineStarts = append(lines.lineStarts, start)
+	}
+	parsed.StoreRuntimeAnalysis(vbAssignmentLinesRuntimeKey, lines)
+	return lines
+}
+
 func assignmentValueFromStatement(statement string, lowerName string) (string, bool) {
+	name, value, ok := assignmentFromStatement(statement)
+	if !ok || name != lowerName {
+		return "", false
+	}
+	return value, true
+}
+
+// assignmentFromStatement parses "[Set|Let] name = value" and returns the
+// lowercase name.
+func assignmentFromStatement(statement string) (string, string, bool) {
 	trimmed := strings.TrimSpace(statement)
 	if trimmed == "" || strings.HasPrefix(trimmed, "'") {
-		return "", false
+		return "", "", false
 	}
 	equalIndex := topLevelEqual(trimmed)
 	if equalIndex < 0 {
-		return "", false
+		return "", "", false
 	}
 	target := strings.TrimSpace(trimmed[:equalIndex])
 	value := strings.TrimSpace(trimmed[equalIndex+1:])
 	if value == "" {
-		return "", false
+		return "", "", false
 	}
 	cursor := 0
 	firstEnd := readVBIdentifier(target, cursor)
 	if firstEnd == 0 {
-		return "", false
+		return "", "", false
 	}
 	first := strings.ToLower(target[:firstEnd])
 	if first == "set" || first == "let" {
@@ -1004,17 +1085,18 @@ func assignmentValueFromStatement(statement string, lowerName string) (string, b
 		}
 	}
 	identifierEnd := readVBIdentifier(target, cursor)
-	if identifierEnd == cursor || strings.ToLower(target[cursor:identifierEnd]) != lowerName {
-		return "", false
+	if identifierEnd == cursor {
+		return "", "", false
 	}
+	name := strings.ToLower(target[cursor:identifierEnd])
 	cursor = identifierEnd
 	for cursor < len(target) && isVBWhitespace(target[cursor]) {
 		cursor++
 	}
 	if cursor < len(target) {
-		return "", false
+		return "", "", false
 	}
-	return value, true
+	return name, value, true
 }
 
 func splitVBStatements(text string) []string {

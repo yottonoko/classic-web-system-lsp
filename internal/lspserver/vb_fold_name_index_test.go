@@ -1,6 +1,7 @@
 package lspserver
 
 import (
+	"math/rand/v2"
 	"reflect"
 	"slices"
 	"strings"
@@ -95,6 +96,31 @@ func TestFoldKeyMatchesEqualFold(t *testing.T) {
 		for _, right := range values {
 			if got, want := foldKey(left) == foldKey(right), strings.EqualFold(left, right); got != want {
 				t.Fatalf("foldKey(%q) == foldKey(%q) is %v, EqualFold is %v", left, right, got, want)
+			}
+		}
+	}
+}
+
+func TestFirstAssignmentValueAfterInDocumentMatchesLineScan(t *testing.T) {
+	fragments := []string{
+		"Dim a\n", "a = 1\n", "Set a = Nothing\r\n", "Let b = \"x: y\"\n", "b(1) = 2\n", "a.b = 3\n", "c = 4: a = 5\n",
+		"If a = 1 Then b = 2\n", "' a = 9\n", "x = (a: b)\n", "Dim c: c = Request(\"c\")\n", "A = \"upper\"\n", "\n", "\r\n",
+		"For k = 0 To 3\n", "set = 1\n", "Function F(a, b)\n", "  F = a\n", "ſ = 1\n", "a=\n",
+	}
+	random := rand.New(rand.NewPCG(3, 4))
+	for range 300 {
+		var text strings.Builder
+		for range 1 + random.IntN(12) {
+			text.WriteString(fragments[random.IntN(len(fragments))])
+		}
+		parsed := &core.ParsedDocument{URI: "file:///assign.asp", Text: text.String()}
+		for offset := 0; offset <= len(parsed.Text); offset++ {
+			for _, name := range []string{"a", "A", "b", "c", "k", "F", "set", "ſ", "missing"} {
+				wantValue, wantOK := firstAssignmentValueAfter(parsed.Text, name, offset)
+				gotValue, gotOK := firstAssignmentValueAfterInDocument(parsed, name, offset)
+				if gotValue != wantValue || gotOK != wantOK {
+					t.Fatalf("value of %q after %d in %q = %q, %v; want %q, %v", name, offset, parsed.Text, gotValue, gotOK, wantValue, wantOK)
+				}
 			}
 		}
 	}

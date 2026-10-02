@@ -1452,7 +1452,29 @@ type graphVBProcedureRange struct {
 	endLine     int
 }
 
+const graphVBProcedureRangesRuntimeKey = "lspserver.graph-vb-procedure-ranges.runtime.v1"
+
+// graphVBProcedureRanges returns the document's procedure ranges, shared
+// between callers. Callers must not modify the result.
 func graphVBProcedureRanges(parsed *core.ParsedDocument) []graphVBProcedureRange {
+	if parsed == nil {
+		return nil
+	}
+	if value, ok := parsed.LoadRuntimeAnalysis(graphVBProcedureRangesRuntimeKey); ok {
+		if ranges, ok := value.([]graphVBProcedureRange); ok {
+			return ranges
+		}
+	}
+	ranges := slices.Clip(buildGraphVBProcedureRanges(parsed))
+	if actual, _ := parsed.LoadOrStoreRuntimeAnalysis(graphVBProcedureRangesRuntimeKey, ranges); actual != nil {
+		if shared, ok := actual.([]graphVBProcedureRange); ok {
+			return shared
+		}
+	}
+	return ranges
+}
+
+func buildGraphVBProcedureRanges(parsed *core.ParsedDocument) []graphVBProcedureRange {
 	if ranges := graphVBProcedureRangesFromCST(parsed); len(ranges) > 0 {
 		return ranges
 	}
