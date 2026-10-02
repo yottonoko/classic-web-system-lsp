@@ -571,3 +571,55 @@ func TestFsGatewayReadDirWaitCanBeCancelled(t *testing.T) {
 		t.Fatalf("shared read did not survive follower cancellation: %#v, %v", listing, ok)
 	}
 }
+
+func TestFsGatewayEvictsLeastRecentlyUsedStats(t *testing.T) {
+	backend := newFakeFsBackend()
+	names := []string{filepath.Clean("/site/a.asp"), filepath.Clean("/site/b.asp"), filepath.Clean("/site/c.asp")}
+	for _, name := range names {
+		backend.setStat(name, FsGatewayStats{File: true})
+	}
+	gateway := NewFsGateway(backend, FsGatewayOptions{StatTTL: 30 * time.Second, StatMaxEntries: 2})
+	gateway.Stat(names[0])
+	gateway.Stat(names[1])
+	// Using a.asp again makes b.asp the entry to evict.
+	gateway.Stat(names[0])
+	gateway.Stat(names[2])
+	for _, check := range []struct {
+		index int
+		calls int
+	}{{0, 1}, {2, 1}, {1, 2}} {
+		name := names[check.index]
+		gateway.Stat(name)
+		if got := backend.statCalls[fsCacheKey(name)]; got != check.calls {
+			t.Fatalf("%s stat calls = %d, want %d", name, got, check.calls)
+		}
+	}
+}
+
+func TestFsGatewayRememberStatServesCachedStats(t *testing.T) {
+	backend := newFakeFsBackend()
+	fileName := filepath.Clean("/site/listed.asp")
+	backend.setStat(fileName, FsGatewayStats{File: true, Size: 1})
+	gateway := NewFsGateway(backend, FsGatewayOptions{StatTTL: 30 * time.Second})
+	generation := gateway.Generation()
+	gateway.RememberStat(fileName, FsGatewayStats{File: true, Size: 7}, generation)
+	if stat, ok := gateway.CachedStat(fileName); !ok || stat.Size != 7 {
+		t.Fatalf("cached stat = %#v, %v", stat, ok)
+	}
+	if stat, ok := gateway.Stat(fileName); !ok || stat.Size != 7 || backend.statCalls[fsCacheKey(fileName)] != 0 {
+		t.Fatalf("stat after remember = %#v, %v with %d backend calls", stat, ok, backend.statCalls[fsCacheKey(fileName)])
+	}
+
+	other := filepath.Clean("/site/other.asp")
+	gateway.InvalidatePath(other)
+	gateway.RememberStat(other, FsGatewayStats{File: true}, generation)
+	if _, ok := gateway.CachedStat(other); ok {
+		t.Fatal("stats from before an invalidation were remembered")
+	}
+
+	uncached := NewFsGateway(backend, FsGatewayOptions{})
+	uncached.RememberStat(fileName, FsGatewayStats{File: true}, uncached.Generation())
+	if _, ok := uncached.CachedStat(fileName); ok {
+		t.Fatal("a gateway without a stat TTL remembered stats")
+	}
+}

@@ -56,11 +56,9 @@ type FsGateway struct {
 	mu           sync.Mutex
 	backend      FsGatewayBackend
 	options      FsGatewayOptions
-	statCache    map[string]fsCacheEntry[FsGatewayStats]
-	statOrder    []string
+	statCache    fsLRU[FsGatewayStats]
 	statInFlight map[string]*fsCall[FsGatewayStats]
-	dirCache     map[string]fsCacheEntry[FsGatewayDirectoryListing]
-	dirOrder     []string
+	dirCache     fsLRU[FsGatewayDirectoryListing]
 	dirInFlight  map[string]*fsCall[FsGatewayDirectoryListing]
 	generation   int
 	cacheEpoch   int
@@ -176,6 +174,33 @@ func (g *FsGateway) StatContext(ctx context.Context, fileName string) (*FsGatewa
 	return value, ok
 }
 
+// CachedStat returns the cached stat for fileName without calling the backend.
+func (g *FsGateway) CachedStat(fileName string) (*FsGatewayStats, bool) {
+	key := fsCacheKey(fileName)
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	entry, ok := g.validStatLocked(key)
+	if !ok || !entry.ok {
+		return nil, false
+	}
+	value := entry.value
+	return &value, true
+}
+
+// RememberStat caches stats the caller read for fileName some other way, such
+// as from a directory listing. It does nothing when stats are not cached or
+// when any path was invalidated since generation, because the stats may
+// predate that change.
+func (g *FsGateway) RememberStat(fileName string, stats FsGatewayStats, generation int) {
+	key := fsCacheKey(fileName)
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	if g.options.StatTTL <= 0 || g.generation != generation || g.statInFlight[key] != nil {
+		return
+	}
+	g.setStatLocked(key, fsCacheEntry[FsGatewayStats]{value: stats, ok: true, expiresAt: time.Now().Add(g.options.StatTTL)})
+}
+
 func (g *FsGateway) ReadDir(directory string) (*FsGatewayDirectoryListing, bool) {
 	return g.ReadDirContext(context.Background(), directory)
 }
@@ -259,14 +284,11 @@ func (g *FsGateway) InvalidatePath(fileName string) {
 	parent := fsCacheKey(filepath.Dir(key))
 	g.mu.Lock()
 	defer g.mu.Unlock()
-	delete(g.statCache, key)
-	g.statOrder = removeString(g.statOrder, key)
+	g.statCache.delete(key)
 	delete(g.statInFlight, key)
-	delete(g.dirCache, key)
-	g.dirOrder = removeString(g.dirOrder, key)
+	g.dirCache.delete(key)
 	delete(g.dirInFlight, key)
-	delete(g.dirCache, parent)
-	g.dirOrder = removeString(g.dirOrder, parent)
+	g.dirCache.delete(parent)
 	delete(g.dirInFlight, parent)
 	g.generation++
 }
@@ -319,59 +341,25 @@ func cloneFsGatewayDirectoryListing(listing FsGatewayDirectoryListing) FsGateway
 }
 
 func (g *FsGateway) validStatLocked(key string) (fsCacheEntry[FsGatewayStats], bool) {
-	entry, ok := g.statCache[key]
-	if !ok {
-		return entry, false
-	}
-	if time.Now().After(entry.expiresAt) {
-		delete(g.statCache, key)
-		g.statOrder = removeString(g.statOrder, key)
-		return entry, false
-	}
-	g.statOrder = append(removeString(g.statOrder, key), key)
-	return entry, true
+	return g.statCache.get(key, time.Now())
 }
 
 func (g *FsGateway) validDirLocked(key string) (fsCacheEntry[FsGatewayDirectoryListing], bool) {
-	entry, ok := g.dirCache[key]
-	if !ok {
-		return entry, false
-	}
-	if time.Now().After(entry.expiresAt) {
-		delete(g.dirCache, key)
-		g.dirOrder = removeString(g.dirOrder, key)
-		return entry, false
-	}
-	g.dirOrder = append(removeString(g.dirOrder, key), key)
-	return entry, true
+	return g.dirCache.get(key, time.Now())
 }
 
 func (g *FsGateway) setStatLocked(key string, entry fsCacheEntry[FsGatewayStats]) {
-	g.statCache[key] = entry
-	g.statOrder = append(removeString(g.statOrder, key), key)
-	for len(g.statOrder) > g.options.StatMaxEntries {
-		oldest := g.statOrder[0]
-		g.statOrder = g.statOrder[1:]
-		delete(g.statCache, oldest)
-	}
+	g.statCache.set(key, entry, g.options.StatMaxEntries)
 }
 
 func (g *FsGateway) setDirLocked(key string, entry fsCacheEntry[FsGatewayDirectoryListing]) {
-	g.dirCache[key] = entry
-	g.dirOrder = append(removeString(g.dirOrder, key), key)
-	for len(g.dirOrder) > g.options.ReadDirMaxEntries {
-		oldest := g.dirOrder[0]
-		g.dirOrder = g.dirOrder[1:]
-		delete(g.dirCache, oldest)
-	}
+	g.dirCache.set(key, entry, g.options.ReadDirMaxEntries)
 }
 
 func (g *FsGateway) invalidateAllLocked() {
-	g.statCache = map[string]fsCacheEntry[FsGatewayStats]{}
-	g.statOrder = nil
+	g.statCache.clear()
 	g.statInFlight = map[string]*fsCall[FsGatewayStats]{}
-	g.dirCache = map[string]fsCacheEntry[FsGatewayDirectoryListing]{}
-	g.dirOrder = nil
+	g.dirCache.clear()
 	g.dirInFlight = map[string]*fsCall[FsGatewayDirectoryListing]{}
 	g.generation++
 	g.cacheEpoch++
@@ -383,13 +371,4 @@ func fsCacheKey(fileName string) string {
 		return filepath.Clean(fileName)
 	}
 	return absolute
-}
-
-func removeString(values []string, target string) []string {
-	for i, value := range values {
-		if value == target {
-			return append(values[:i], values[i+1:]...)
-		}
-	}
-	return values
 }
