@@ -958,6 +958,12 @@ func trustedPathForRootsContext(ctx context.Context, path string, roots []string
 }
 
 func trustedPathForPreparedRootsContext(ctx context.Context, path string, roots []trustedFilesystemRoot) (string, bool) {
+	return trustedPathForPreparedRootsCachedContext(ctx, path, roots, nil)
+}
+
+// trustedPathForPreparedRootsCachedContext is trustedPathForPreparedRootsContext
+// with symlink checks served from cache, which may be nil.
+func trustedPathForPreparedRootsCachedContext(ctx context.Context, path string, roots []trustedFilesystemRoot, cache *trustedPathCache) (string, bool) {
 	if ctx == nil {
 		ctx = context.Background()
 	}
@@ -968,21 +974,25 @@ func trustedPathForPreparedRootsContext(ctx context.Context, path string, roots 
 	if err != nil || ctx.Err() != nil {
 		return "", false
 	}
-	return trustedPreparedPathContext(ctx, filepath.Clean(cleaned), roots)
+	return trustedPreparedPathCachedContext(ctx, filepath.Clean(cleaned), roots, cache)
 }
 
 func trustedPreparedPathContext(ctx context.Context, cleaned string, roots []trustedFilesystemRoot) (string, bool) {
+	return trustedPreparedPathCachedContext(ctx, cleaned, roots, nil)
+}
+
+func trustedPreparedPathCachedContext(ctx context.Context, cleaned string, roots []trustedFilesystemRoot, cache *trustedPathCache) (string, bool) {
 	root, ok := longestTrustedPathRootContext(ctx, cleaned, roots)
 	if !ok {
 		return "", false
 	}
-	if pathContainsSymlinkWithinRoot(cleaned, root.path) {
+	if cache.pathContainsSymlinkWithinRoot(cleaned, root.path) {
 		return "", false
 	}
 	if ctx.Err() != nil {
 		return "", false
 	}
-	resolved, ok := resolvePathForTrustContext(ctx, cleaned)
+	resolved, ok := cache.resolvePathForTrust(ctx, cleaned)
 	if !ok || !pathWithinRoot(root.canonical, resolved) {
 		return "", false
 	}

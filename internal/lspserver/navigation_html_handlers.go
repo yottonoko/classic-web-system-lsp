@@ -31,21 +31,20 @@ func (b *navigationGraphBuilder) addHTMLEventHandlerNavigation(parsed *core.Pars
 	if _, ok := b.javascriptCandidates.(typeScriptGoNavigationCandidates); !ok {
 		return
 	}
-	if !navigationTextMayContainHandler(parsed.Text) {
+	html := b.navigationHTMLDocument(parsed)
+	if !html.mayContainHandler {
 		return
 	}
 	ctx := b.cancelContext
 	if ctx == nil {
 		ctx = context.Background()
 	}
-	virtual := core.BuildVirtualDocument(parsed, core.LanguageHTML)
-	text := maskHTMLNavigationExpressions(parsed, maskEmbeddedHTMLComments(virtual.Text))
 	type handlerSource struct {
 		span navigationHTMLSourceSpan
 		code string
 	}
 	var sources []handlerSource
-	for _, tag := range scanNavigationHTMLTags(text) {
+	for _, tag := range html.tags {
 		if tag.Closing {
 			continue
 		}

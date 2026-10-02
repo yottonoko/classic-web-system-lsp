@@ -5,6 +5,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 
 	"github.com/yottonoko/classic-web-system-lsp/internal/core"
 	"github.com/yottonoko/classic-web-system-lsp/internal/lsp"
@@ -186,6 +187,8 @@ type navigationVBState struct {
 	cancelContext        context.Context
 	cancelled            bool
 	expressionBudget     *navigationVBExpressionBudget
+	// prepared, when set, shares statement splits across executions.
+	prepared *navigationVBPreparedCache
 	// withTargets holds the member path of each enclosing With block; an empty
 	// entry marks a With target that is not a plain member path.
 	withTargets []string
@@ -489,8 +492,8 @@ func extractVBScriptNavigationCandidatesWithState(content string, baseOffset int
 	if state.sourceDocument == nil || state.sourceDocument.Text != sourceText {
 		state.sourceDocument = core.NewTextDocument("", "classic-asp", 0, sourceText)
 	}
-	statements := splitNavigationVBStatements(vbscript.Tokenize(content))
-	collectNavigationVBFunctions(statements, state)
+	statements := state.prepared.statements(content)
+	collectNavigationVBPreparedFunctions(statements, state)
 	if navigationVBCancelled(state) {
 		return nil
 	}
@@ -504,18 +507,20 @@ func extractVBScriptNavigationCandidatesWithState(content string, baseOffset int
 		state.candidateSink = previousSink
 	}()
 	inProcedure := false
-	for _, statement := range statements {
+	for index := range statements {
+		prepared := &statements[index]
+		statement := prepared.raw
 		if navigationVBCancelled(state) {
 			return nil
 		}
 		if navigationVBExpressionBudgetExhausted(state) {
 			break
 		}
-		tokens := navigationVBSignificantTokens(statement)
+		tokens := prepared.tokens
 		if len(tokens) == 0 {
 			continue
 		}
-		first, second := navigationVBLower(tokens, 0), navigationVBLower(tokens, 1)
+		first, second := prepared.first, prepared.second
 		if first == "class" {
 			state.classDepth++
 			continue
@@ -529,12 +534,11 @@ func extractVBScriptNavigationCandidatesWithState(content string, baseOffset int
 		if state.classDepth > 0 {
 			continue
 		}
-		procedure, nameIndex, isProcedure := navigationVBProcedureHeader(tokens)
-		if isProcedure {
+		if prepared.function != nil {
 			inProcedure = true
-			if procedure == "function" {
-				state.currentFunction = strings.ToLower(tokens[nameIndex].Text)
-				state.currentParams = navigationVBFunctionParameters(tokens)
+			if prepared.function.IsFunction {
+				state.currentFunction = prepared.function.Name
+				state.currentParams = prepared.function.Parameters
 			} else {
 				state.currentFunction = ""
 				state.currentParams = nil
@@ -713,6 +717,10 @@ func navigationVBStatementEvidenceWithSource(statement []vbscript.Token, baseOff
 }
 
 func navigationVBFunctionDefinitions(parsed *core.ParsedDocument) map[string]navigationVBFunction {
+	return navigationVBFunctionDefinitionsPrepared(parsed, nil)
+}
+
+func navigationVBFunctionDefinitionsPrepared(parsed *core.ParsedDocument, prepared *navigationVBPreparedCache) map[string]navigationVBFunction {
 	functions := map[string]navigationVBFunction{}
 	if parsed == nil {
 		return functions
@@ -722,7 +730,7 @@ func navigationVBFunctionDefinitions(parsed *core.ParsedDocument) map[string]nav
 		if region.Language != core.LanguageVBScript || region.Kind == core.RegionASPExpression || region.ContentStart < 0 || region.ContentEnd < region.ContentStart || region.ContentEnd > len(parsed.Text) {
 			continue
 		}
-		collectNavigationVBFunctions(splitNavigationVBStatements(vbscript.Tokenize(parsed.Text[region.ContentStart:region.ContentEnd])), state)
+		collectNavigationVBPreparedFunctions(prepared.statements(parsed.Text[region.ContentStart:region.ContentEnd]), state)
 	}
 	for name, function := range state.functions {
 		functions[name] = function
@@ -798,7 +806,77 @@ func navigationVBLastSignificantText(tokens []vbscript.Token) string {
 	return ""
 }
 
-func collectNavigationVBFunctions(statements [][]vbscript.Token, state *navigationVBState) {
+// navigationVBPreparedStatement holds the parts of a statement that do not
+// depend on execution state. A shared include runs once in every page's
+// program, and splitting its script again for each page dominated navigation
+// analysis.
+type navigationVBPreparedStatement struct {
+	raw    []vbscript.Token
+	tokens []vbscript.Token
+	first  string
+	second string
+	// function is the procedure a header statement declares, and functionEnd
+	// the index of the statement that ends it, or len(statements).
+	function    *navigationVBFunction
+	functionEnd int
+}
+
+// navigationVBPreparedCache shares prepared statements by script content
+// within one analysis. A nil cache prepares statements on every use.
+type navigationVBPreparedCache struct {
+	mu      sync.Mutex
+	entries map[string][]navigationVBPreparedStatement
+}
+
+func (c *navigationVBPreparedCache) statements(content string) []navigationVBPreparedStatement {
+	if c == nil {
+		return prepareNavigationVBStatements(content)
+	}
+	c.mu.Lock()
+	statements, ok := c.entries[content]
+	c.mu.Unlock()
+	if ok {
+		return statements
+	}
+	statements = prepareNavigationVBStatements(content)
+	c.mu.Lock()
+	if c.entries == nil {
+		c.entries = map[string][]navigationVBPreparedStatement{}
+	}
+	c.entries[content] = statements
+	c.mu.Unlock()
+	return statements
+}
+
+func prepareNavigationVBStatements(content string) []navigationVBPreparedStatement {
+	raw := splitNavigationVBStatements(vbscript.Tokenize(content))
+	statements := make([]navigationVBPreparedStatement, len(raw))
+	for index, statement := range raw {
+		tokens := navigationVBSignificantTokens(statement)
+		statements[index] = navigationVBPreparedStatement{raw: statement, tokens: tokens, first: navigationVBLower(tokens, 0), second: navigationVBLower(tokens, 1)}
+	}
+	for index := range statements {
+		procedure, nameIndex, ok := navigationVBProcedureHeader(statements[index].tokens)
+		if !ok {
+			continue
+		}
+		tokens := statements[index].tokens
+		function := &navigationVBFunction{Name: strings.ToLower(tokens[nameIndex].Text), Parameters: navigationVBFunctionParameters(tokens), IsFunction: procedure == "function"}
+		end := index + 1
+		for ; end < len(statements); end++ {
+			body := statements[end].tokens
+			if len(body) >= 2 && statements[end].first == "end" && statements[end].second == procedure {
+				break
+			}
+			function.Body = append(function.Body, body)
+		}
+		statements[index].function = function
+		statements[index].functionEnd = end
+	}
+	return statements
+}
+
+func collectNavigationVBPreparedFunctions(statements []navigationVBPreparedStatement, state *navigationVBState) {
 	if state == nil {
 		return
 	}
@@ -806,35 +884,22 @@ func collectNavigationVBFunctions(statements [][]vbscript.Token, state *navigati
 		if navigationVBCancelled(state) {
 			return
 		}
-		tokens := navigationVBSignificantTokens(statements[index])
-		first, second := navigationVBLower(tokens, 0), navigationVBLower(tokens, 1)
-		if first == "class" {
+		statement := &statements[index]
+		if statement.first == "class" {
 			state.functionClassDepth++
 			continue
 		}
-		if first == "end" && second == "class" {
+		if statement.first == "end" && statement.second == "class" {
 			if state.functionClassDepth > 0 {
 				state.functionClassDepth--
 			}
 			continue
 		}
-		if state.functionClassDepth > 0 {
+		if state.functionClassDepth > 0 || statement.function == nil {
 			continue
 		}
-		procedure, nameIndex, ok := navigationVBProcedureHeader(tokens)
-		if !ok {
-			continue
-		}
-		name := strings.ToLower(tokens[nameIndex].Text)
-		function := navigationVBFunction{Name: name, Parameters: navigationVBFunctionParameters(tokens), IsFunction: procedure == "function"}
-		for index++; index < len(statements); index++ {
-			body := navigationVBSignificantTokens(statements[index])
-			if len(body) >= 2 && navigationVBLower(body, 0) == "end" && navigationVBLower(body, 1) == procedure {
-				break
-			}
-			function.Body = append(function.Body, body)
-		}
-		state.functions[name] = function
+		state.functions[statement.function.Name] = *statement.function
+		index = statement.functionEnd
 	}
 }
 
@@ -3054,6 +3119,7 @@ func cloneNavigationVBState(state *navigationVBState) *navigationVBState {
 	clone.cancelContext = state.cancelContext
 	clone.cancelled = state.cancelled
 	clone.expressionBudget = state.expressionBudget
+	clone.prepared = state.prepared
 	return clone
 }
 

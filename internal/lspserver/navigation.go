@@ -12,6 +12,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/yottonoko/classic-web-system-lsp/internal/core"
@@ -162,6 +163,9 @@ func (s *Server) buildNavigationGraphContextResult(ctx context.Context, params e
 		builder.navigationError = ctx.Err()
 		return navigationGraphBuildResult{err: navigationGraphIncompleteError(ctx, nil)}
 	}
+	builder.precomputeVBScriptNavigationPrograms(func(count int, fn func(int)) {
+		s.analysisWorkers.parallelForBulk(ctx, count, func(_ context.Context, index int) { fn(index) })
+	})
 	for index, parsed := range documents {
 		if ctx.Err() != nil {
 			return navigationGraphBuildResult{err: ctx.Err()}
@@ -472,6 +476,8 @@ func navigationIncludeOwnersWithProgress(ctx context.Context, s *Server, documen
 }
 
 func navigationIncludeRelationsWithProgress(ctx context.Context, s *Server, documents []*core.ParsedDocument, report graphProgressReporter) (map[string][]string, map[string][]navigationVBIncludeRelation) {
+	// Pages in one directory resolve their includes to the same targets.
+	ctx = withIncludeResolutionMemo(ctx)
 	owners := map[string][]string{}
 	relations := map[string][]navigationVBIncludeRelation{}
 	seen := map[string]map[string]struct{}{}
@@ -480,6 +486,51 @@ func navigationIncludeRelationsWithProgress(ctx context.Context, s *Server, docu
 		ok      bool
 	}
 	resolutionCache := map[string]includeResolution{}
+	resolutionKey := func(document *core.ParsedDocument, include core.Include) string {
+		resolutionOwner := document.URI
+		if !strings.EqualFold(include.Mode, "virtual") {
+			if ownerPath := fileURIPath(document.URI); ownerPath != "" {
+				resolutionOwner = workspacepkg.FileIdentityKeyFromFileName(filepath.Dir(ownerPath))
+			}
+		}
+		return strings.ToLower(include.Mode) + "\x00" + resolutionOwner + "\x00" + include.Path
+	}
+	// Resolving an include stats its target; resolve each distinct include in
+	// parallel before recording relations in document order.
+	type pendingResolution struct {
+		key     string
+		owner   string
+		include core.Include
+	}
+	var pending []pendingResolution
+	queued := map[string]struct{}{}
+	for _, document := range documents {
+		if ctx.Err() != nil {
+			return owners, relations
+		}
+		if document == nil {
+			continue
+		}
+		for _, include := range document.Includes {
+			key := resolutionKey(document, include)
+			if _, exists := queued[key]; !exists {
+				queued[key] = struct{}{}
+				pending = append(pending, pendingResolution{key: key, owner: document.URI, include: include})
+			}
+		}
+	}
+	resolved := make([]includeResolution, len(pending))
+	s.analysisWorkers.parallelForBulk(ctx, len(pending), func(workerCtx context.Context, index int) {
+		if workerCtx.Err() == nil {
+			resolved[index].details, resolved[index].ok = s.includeTargetDetailsForModeContext(workerCtx, pending[index].owner, pending[index].include.Path, pending[index].include.Mode)
+		}
+	})
+	if ctx.Err() != nil {
+		return owners, relations
+	}
+	for index, entry := range pending {
+		resolutionCache[entry.key] = resolved[index]
+	}
 	for index, document := range documents {
 		if ctx.Err() != nil {
 			return owners, relations
@@ -496,13 +547,7 @@ func navigationIncludeRelationsWithProgress(ctx context.Context, s *Server, docu
 			if ctx.Err() != nil {
 				return owners, relations
 			}
-			resolutionOwner := document.URI
-			if !strings.EqualFold(include.Mode, "virtual") {
-				if ownerPath := fileURIPath(document.URI); ownerPath != "" {
-					resolutionOwner = workspacepkg.FileIdentityKeyFromFileName(filepath.Dir(ownerPath))
-				}
-			}
-			resolutionKey := strings.ToLower(include.Mode) + "\x00" + resolutionOwner + "\x00" + include.Path
+			resolutionKey := resolutionKey(document, include)
 			resolution, cached := resolutionCache[resolutionKey]
 			if !cached {
 				resolution.details, resolution.ok = s.includeTargetDetailsForModeContext(ctx, document.URI, include.Path, include.Mode)
@@ -562,13 +607,17 @@ type navigationGraphBuilder struct {
 	// vbFunctions stores definitions for each document. Effective owner scopes
 	// are resolved lazily through vbFunctionOwners/vbFunctionChildren so a
 	// transitive include chain does not copy every function into every owner.
-	vbFunctions                 map[string]map[string]navigationVBFunction
-	vbFunctionOwners            map[string][]string
-	vbFunctionChildren          map[string][]string
-	vbResolvedIncludes          map[string][]navigationVBIncludeRelation
-	vbExecutionPrograms         map[string][]navigationVBExecutionUnit
-	vbExecutionRootKeys         []string
-	vbHTMLProgramsByDocument    map[string][]navigationVBHTMLProgram
+	vbFunctions              map[string]map[string]navigationVBFunction
+	vbFunctionOwners         map[string][]string
+	vbFunctionChildren       map[string][]string
+	vbResolvedIncludes       map[string][]navigationVBIncludeRelation
+	vbExecutionPrograms      map[string][]navigationVBExecutionUnit
+	vbExecutionRootKeys      []string
+	vbHTMLProgramsByDocument map[string][]navigationVBHTMLProgram
+	// vbHTMLProgramsRendered records documents whose shared program selection
+	// has been rendered. An include is added once per owner, and rendering the
+	// same selection again only revisits occurrences that are already rendered.
+	vbHTMLProgramsRendered      map[string]struct{}
 	vbExecutionProcessed        map[string]bool
 	vbExpressionValues          map[string][]navigationValue
 	vbHTMLRendered              map[navigationVBHTMLRenderKey]struct{}
@@ -577,6 +626,12 @@ type navigationGraphBuilder struct {
 	javascriptRegions           map[*core.ParsedDocument][]core.Region
 	javascriptContextualExtra   int
 	vbIncludeExpansionTruncated bool
+	targetFiles                 navigationTargetFiles
+	vbPrepared                  navigationVBPreparedCache
+	vbProgramRuns               map[string]navigationVBProgramRun
+	htmlDocuments               map[*core.ParsedDocument]*navigationHTMLDocument
+	// identityMu guards fileIdentityByURI while programs run in parallel.
+	identityMu sync.Mutex
 }
 
 type navigationVBExecutionUnit struct {
@@ -848,22 +903,23 @@ func (b *navigationGraphBuilder) prepareVBScriptFunctionsWithIncludesContext(ctx
 		if parsed == nil {
 			continue
 		}
-		functions := navigationVBFunctionDefinitions(parsed)
+		functions := navigationVBFunctionDefinitionsPrepared(parsed, &b.vbPrepared)
 		if len(functions) == 0 {
 			continue
 		}
 		functionsByDocument[b.fileIdentityKey(parsed.URI)] = functions
 	}
 	functionOwners := map[string][]string{}
+	// A shared include has an owner per page; a set keeps deduplication linear.
+	ownerSeen := map[[2]string]struct{}{}
 	appendOwner := func(childKey, parentKey string) {
 		if childKey == "" || parentKey == "" {
 			return
 		}
-		for _, existing := range functionOwners[childKey] {
-			if existing == parentKey {
-				return
-			}
+		if _, exists := ownerSeen[[2]string{childKey, parentKey}]; exists {
+			return
 		}
+		ownerSeen[[2]string{childKey, parentKey}] = struct{}{}
 		functionOwners[childKey] = append(functionOwners[childKey], parentKey)
 	}
 	for childURI, parentURIs := range owners {
@@ -1518,6 +1574,8 @@ func (b *navigationGraphBuilder) discardIncompleteIncludeGraph() {
 	b.vbExecutionPrograms = map[string][]navigationVBExecutionUnit{}
 	b.vbExecutionRootKeys = nil
 	b.vbHTMLProgramsByDocument = map[string][]navigationVBHTMLProgram{}
+	b.vbHTMLProgramsRendered = nil
+	b.vbProgramRuns = nil
 	if b.rootURI != "" {
 		b.addURINode(b.rootURI)
 	}
@@ -1546,6 +1604,15 @@ func (b *navigationGraphBuilder) addDocument(parsed *core.ParsedDocument, ownerU
 	if sourceID == "" {
 		return
 	}
+	parsedKey := b.fileIdentityKey(parsed.URI)
+	sharedPrograms := b.scope != "document" && len(b.vbHTMLProgramsByDocument[parsedKey]) > 0
+	if _, rendered := b.vbHTMLProgramsRendered[parsedKey]; sharedPrograms && rendered {
+		b.addHTMLEventHandlerNavigation(parsed, sourceID, ownerURI)
+		if err := b.navigationContextError(); err != nil {
+			b.navigationError = err
+		}
+		return
+	}
 	programs := b.navigationVBHTMLProgramsForDocument(parsed, ownerURI)
 	if len(programs) > 0 {
 		for _, program := range programs {
@@ -1553,7 +1620,7 @@ func (b *navigationGraphBuilder) addDocument(parsed *core.ParsedDocument, ownerU
 				continue
 			}
 			b.vbExecutionProcessed[program.key] = true
-			b.executeVBScriptNavigationProgram(program.program)
+			b.executeVBScriptNavigationProgram(program.key, program.program)
 			if b.navigationError != nil {
 				return
 			}
@@ -1567,6 +1634,12 @@ func (b *navigationGraphBuilder) addDocument(parsed *core.ParsedDocument, ownerU
 			return
 		}
 		b.addJavaScriptNavigationForPrograms(parsed, programs)
+		if sharedPrograms && b.navigationError == nil {
+			if b.vbHTMLProgramsRendered == nil {
+				b.vbHTMLProgramsRendered = map[string]struct{}{}
+			}
+			b.vbHTMLProgramsRendered[parsedKey] = struct{}{}
+		}
 	} else {
 		// Execute VBScript before extracting HTML interpolation targets so every
 		// expression observes the same source-ordered state as redirects. The
@@ -1784,13 +1857,36 @@ func (b *navigationGraphBuilder) addHTMLNavigationEdgesForOccurrence(parsed *cor
 	defer func() {
 		b.current, b.document, b.currentOccurrence = previousCurrent, previousDocument, previousOccurrence
 	}()
-	virtual := core.BuildVirtualDocument(parsed, core.LanguageHTML)
-	text := maskHTMLNavigationExpressions(parsed, maskEmbeddedHTMLComments(virtual.Text))
-	b.addHTMLNavigationEdgesFromTextFiltered(parsed.URI, sourceID, text, nil)
+	html := b.navigationHTMLDocument(parsed)
+	b.addHTMLNavigationEdgesFromTagsFiltered(parsed.URI, sourceID, html.text, html.tags, nil)
 	if b.navigationError != nil {
 		return
 	}
 	b.addHTMLASPNavigationEdges(parsed, sourceID, ownerURI, occurrenceID)
+}
+
+// navigationHTMLDocument is a document's HTML with comments and visible ASP
+// expressions masked, and its scanned tags. Neither depends on the owner, and
+// an include renders once for every page that includes it.
+type navigationHTMLDocument struct {
+	text string
+	tags []navigationHTMLTag
+	// mayContainHandler reports navigationTextMayContainHandler(parsed.Text).
+	mayContainHandler bool
+}
+
+func (b *navigationGraphBuilder) navigationHTMLDocument(parsed *core.ParsedDocument) *navigationHTMLDocument {
+	if document := b.htmlDocuments[parsed]; document != nil {
+		return document
+	}
+	virtual := core.BuildVirtualDocument(parsed, core.LanguageHTML)
+	text := maskHTMLNavigationExpressions(parsed, maskEmbeddedHTMLComments(virtual.Text))
+	document := &navigationHTMLDocument{text: text, tags: scanNavigationHTMLTags(text), mayContainHandler: navigationTextMayContainHandler(parsed.Text)}
+	if b.htmlDocuments == nil {
+		b.htmlDocuments = map[*core.ParsedDocument]*navigationHTMLDocument{}
+	}
+	b.htmlDocuments[parsed] = document
+	return document
 }
 
 func maskHTMLNavigationExpressions(parsed *core.ParsedDocument, text string) string {
@@ -1824,7 +1920,10 @@ func (b *navigationGraphBuilder) addHTMLNavigationEdgesFromText(ownerURI string,
 }
 
 func (b *navigationGraphBuilder) addHTMLNavigationEdgesFromTextFiltered(ownerURI, sourceID, text string, include func(attrs, body string) bool) {
-	tags := scanNavigationHTMLTags(text)
+	b.addHTMLNavigationEdgesFromTagsFiltered(ownerURI, sourceID, text, scanNavigationHTMLTags(text), include)
+}
+
+func (b *navigationGraphBuilder) addHTMLNavigationEdgesFromTagsFiltered(ownerURI, sourceID, text string, tags []navigationHTMLTag, include func(attrs, body string) bool) {
 	byID := make(map[string]navigationHTMLTag)
 	for index, tag := range tags {
 		if index%64 == 0 {
@@ -3768,7 +3867,7 @@ func (b *navigationGraphBuilder) addVBScriptNavigationEdges(parsed *core.ParsedD
 			return
 		}
 		b.vbExecutionProcessed[programKey] = true
-		b.executeVBScriptNavigationProgram(program)
+		b.executeVBScriptNavigationProgram(programKey, program)
 		return
 	}
 	state := newNavigationVBState()
@@ -3791,33 +3890,126 @@ func (b *navigationGraphBuilder) navigationVBExecutionProgramContains(program []
 	return false
 }
 
-func (b *navigationGraphBuilder) executeVBScriptNavigationProgram(program []navigationVBExecutionUnit) {
+func (b *navigationGraphBuilder) executeVBScriptNavigationProgram(key string, program []navigationVBExecutionUnit) {
 	if len(program) == 0 {
 		return
 	}
+	run, ok := b.takeVBScriptProgramRun(key, program)
+	if !ok {
+		run = b.runVBScriptNavigationProgram(program)
+	}
+	b.emitVBScriptNavigationProgram(run)
+}
+
+// navigationVBProgramRun records what executing one VBScript program produced.
+// Execution depends only on the program and the prepared function index, so
+// programs run in parallel; emitting their edges stays sequential and in the
+// original order.
+type navigationVBProgramRun struct {
+	units []navigationVBUnitRun
+	err   error
+}
+
+type navigationVBUnitRun struct {
+	unit    navigationVBExecutionUnit
+	regions []navigationVBRegionRun
+}
+
+type navigationVBRegionRun struct {
+	region           core.Region
+	candidates       []navigationVBCandidate
+	expressionValues []navigationVBValue
+}
+
+// precomputeVBScriptNavigationPrograms executes every prepared program with
+// parallel, which runs fn for each index in [0, count).
+func (b *navigationGraphBuilder) precomputeVBScriptNavigationPrograms(parallel func(count int, fn func(index int))) {
+	if b == nil || parallel == nil || len(b.vbExecutionPrograms) < 2 || b.vbIncludeExpansionTruncated {
+		return
+	}
+	keys := make([]string, 0, len(b.vbExecutionPrograms))
+	for key := range b.vbExecutionPrograms {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	runs := make([]navigationVBProgramRun, len(keys))
+	parallel(len(keys), func(index int) {
+		if b.navigationContextError() == nil {
+			runs[index] = b.runVBScriptNavigationProgram(b.vbExecutionPrograms[keys[index]])
+		}
+	})
+	if b.navigationContextError() != nil {
+		return
+	}
+	b.vbProgramRuns = make(map[string]navigationVBProgramRun, len(keys))
+	for index, key := range keys {
+		b.vbProgramRuns[key] = runs[index]
+	}
+}
+
+// takeVBScriptProgramRun returns and forgets the precomputed run of program.
+func (b *navigationGraphBuilder) takeVBScriptProgramRun(key string, program []navigationVBExecutionUnit) (navigationVBProgramRun, bool) {
+	if len(b.vbProgramRuns) == 0 {
+		return navigationVBProgramRun{}, false
+	}
+	run, ok := b.vbProgramRuns[key]
+	if !ok || len(b.vbExecutionPrograms[key]) == 0 || &b.vbExecutionPrograms[key][0] != &program[0] {
+		return navigationVBProgramRun{}, false
+	}
+	delete(b.vbProgramRuns, key)
+	return run, true
+}
+
+func (b *navigationGraphBuilder) runVBScriptNavigationProgram(program []navigationVBExecutionUnit) navigationVBProgramRun {
+	var run navigationVBProgramRun
+	if len(program) == 0 {
+		return run
+	}
 	state := newNavigationVBState()
+	state.prepared = &b.vbPrepared
 	// Seed the execution state once with the root owner's effective function
 	// scope. Each subsequent unit contributes only its own definitions; this
 	// preserves source-order shadowing without rebuilding the transitive scope
 	// for every include unit.
 	if err := b.navigationVBAddOwnerFunctions(state, program[0].ownerURI); err != nil {
-		b.navigationError = err
-		return
+		run.err = err
+		return run
 	}
 	for _, unit := range program {
 		if unit.truncated {
-			b.vbIncludeExpansionTruncated = true
-			b.discardIncompleteIncludeGraph()
-			return
+			run.units = append(run.units, navigationVBUnitRun{unit: unit})
+			return run
 		}
 		if unit.parsed == nil {
 			continue
 		}
 		if err := b.navigationContextError(); err != nil {
-			b.navigationError = err
-			return
+			run.err = err
+			return run
 		}
 		if err := b.navigationVBAddDocumentFunctions(state, unit.parsed.URI); err != nil {
+			run.err = err
+			return run
+		}
+		regions, err := b.runVBScriptNavigationRegions(unit.parsed, state, unit.start, unit.end)
+		run.units = append(run.units, navigationVBUnitRun{unit: unit, regions: regions})
+		if err != nil {
+			run.err = err
+			return run
+		}
+	}
+	return run
+}
+
+func (b *navigationGraphBuilder) emitVBScriptNavigationProgram(run navigationVBProgramRun) {
+	for _, unitRun := range run.units {
+		unit := unitRun.unit
+		if unit.truncated {
+			b.vbIncludeExpansionTruncated = true
+			b.discardIncompleteIncludeGraph()
+			return
+		}
+		if err := b.navigationContextError(); err != nil {
 			b.navigationError = err
 			return
 		}
@@ -3825,13 +4017,16 @@ func (b *navigationGraphBuilder) executeVBScriptNavigationProgram(program []navi
 		previousCurrent, previousDocument := b.current, b.document
 		previousOccurrence := b.currentOccurrence
 		b.current = unit.parsed
-		b.document = core.NewTextDocument(unit.parsed.URI, "classic-asp", 0, unit.parsed.Text)
+		b.document = core.SourceDocument(unit.parsed)
 		b.currentOccurrence = unit.occurrenceID
-		b.addVBScriptNavigationRegions(unit.parsed, sourceID, unit.ownerURI, state, unit.start, unit.end, unit.occurrenceID)
+		b.emitVBScriptNavigationRegions(unit.parsed, sourceID, unit.ownerURI, unitRun.regions, unit.occurrenceID)
 		b.current, b.document, b.currentOccurrence = previousCurrent, previousDocument, previousOccurrence
 		if b.navigationError != nil {
 			return
 		}
+	}
+	if run.err != nil && b.navigationError == nil {
+		b.navigationError = run.err
 	}
 }
 
@@ -3894,47 +4089,85 @@ func (b *navigationGraphBuilder) addVBScriptNavigationRegions(parsed *core.Parse
 	if parsed == nil || state == nil {
 		return
 	}
+	occurrenceID := ""
+	if len(occurrenceIDs) > 0 {
+		occurrenceID = occurrenceIDs[0]
+	}
+	regions, err := b.runVBScriptNavigationRegions(parsed, state, start, end)
+	b.emitVBScriptNavigationRegions(parsed, sourceID, ownerURI, regions, occurrenceID)
+	if err != nil && b.navigationError == nil {
+		b.navigationError = err
+	}
+}
+
+// runVBScriptNavigationRegions executes parsed's VBScript regions that start
+// in [start, end) with state. It reads the builder without changing it.
+func (b *navigationGraphBuilder) runVBScriptNavigationRegions(parsed *core.ParsedDocument, state *navigationVBState, start, end int) ([]navigationVBRegionRun, error) {
+	if parsed == nil || state == nil {
+		return nil, nil
+	}
 	state.cancelContext = b.cancelContext
+	if state.prepared == nil {
+		state.prepared = &b.vbPrepared
+	}
 	if start < 0 {
 		start = 0
 	}
 	if end > len(parsed.Text) {
 		end = len(parsed.Text)
 	}
-	occurrenceID := ""
-	if len(occurrenceIDs) > 0 {
-		occurrenceID = occurrenceIDs[0]
+	if state.sourceDocument == nil || state.sourceDocument.Text != parsed.Text {
+		// Reuse the parsed revision's line index; programs alternate between
+		// pages and their includes.
+		state.sourceDocument = core.SourceDocument(parsed)
 	}
+	cancelled := func() error {
+		err := b.navigationContextError()
+		if err == nil && state.cancelContext != nil {
+			err = state.cancelContext.Err()
+		}
+		if err == nil {
+			err = context.Canceled
+		}
+		return err
+	}
+	var runs []navigationVBRegionRun
 	for _, region := range parsed.Regions {
 		if err := b.navigationContextError(); err != nil || navigationVBCancelled(state) {
-			if err == nil && state.cancelContext != nil {
-				err = state.cancelContext.Err()
-			}
-			if err == nil {
-				err = context.Canceled
-			}
-			b.navigationError = err
-			return
+			return runs, cancelled()
 		}
 		if region.Language != core.LanguageVBScript || region.Start < start || region.Start >= end {
 			continue
 		}
 		content := parsed.Text[region.ContentStart:region.ContentEnd]
-		var candidates []navigationVBCandidate
-		var expressionValues []navigationVBValue
+		run := navigationVBRegionRun{region: region}
 		if region.Kind == core.RegionASPExpression {
-			candidates, expressionValues = extractVBScriptNavigationExpressionWithState(content, region.ContentStart, parsed.Text, state)
-			if len(expressionValues) > 0 {
-				values := make([]navigationValue, 0, len(expressionValues))
-				for _, value := range expressionValues {
-					values = append(values, value.finiteCandidates()...)
-				}
-				b.vbExpressionValues[b.navigationVBExpressionKey(ownerURI, parsed.URI, region.Start, occurrenceID)] = values
-			}
+			run.candidates, run.expressionValues = extractVBScriptNavigationExpressionWithState(content, region.ContentStart, parsed.Text, state)
 		} else {
-			candidates = extractVBScriptNavigationCandidatesWithState(content, region.ContentStart, parsed.Text, state)
+			run.candidates = extractVBScriptNavigationCandidatesWithState(content, region.ContentStart, parsed.Text, state)
 		}
-		for _, candidate := range candidates {
+		runs = append(runs, run)
+		if navigationVBCancelled(state) {
+			return runs, cancelled()
+		}
+	}
+	return runs, nil
+}
+
+func (b *navigationGraphBuilder) emitVBScriptNavigationRegions(parsed *core.ParsedDocument, sourceID, ownerURI string, runs []navigationVBRegionRun, occurrenceID string) {
+	for _, run := range runs {
+		if err := b.navigationContextError(); err != nil {
+			b.navigationError = err
+			return
+		}
+		if len(run.expressionValues) > 0 {
+			values := make([]navigationValue, 0, len(run.expressionValues))
+			for _, value := range run.expressionValues {
+				values = append(values, value.finiteCandidates()...)
+			}
+			b.vbExpressionValues[b.navigationVBExpressionKey(ownerURI, parsed.URI, run.region.Start, occurrenceID)] = values
+		}
+		for _, candidate := range run.candidates {
 			values := cloneNavigationValues(candidate.Values)
 			if len(values) == 0 {
 				values = candidate.Value.finiteCandidates()
@@ -3964,13 +4197,6 @@ func (b *navigationGraphBuilder) addVBScriptNavigationRegions(parsed *core.Parse
 				}
 				b.context = nil
 			}
-		}
-		if navigationVBCancelled(state) {
-			b.navigationError = b.navigationContextError()
-			if b.navigationError == nil {
-				b.navigationError = context.Canceled
-			}
-			return
 		}
 		if b.navigationError != nil {
 			return
@@ -4161,7 +4387,7 @@ func (b *navigationGraphBuilder) navigationTarget(ctx context.Context, ownerURI,
 		b.trustedWorkspaceRoots = roots
 		b.trustedWorkspaceRootsReady = true
 	}
-	return navigationTargetWithPreparedRoots(ctx, ownerURI, rawTarget, edgeKind, b.workspaceRoots, b.trustedWorkspaceRoots, true, dynamic, pathKnown)
+	return navigationTargetWithPreparedRoots(ctx, ownerURI, rawTarget, edgeKind, b.workspaceRoots, b.trustedWorkspaceRoots, true, &b.targetFiles, dynamic, pathKnown)
 }
 
 func lowerNavigationConfidenceString(left, right string) string {
@@ -4271,14 +4497,19 @@ func (b *navigationGraphBuilder) fileIdentityKey(uri string) string {
 	if b == nil {
 		return workspacepkg.FileIdentityKeyFromURI(uri)
 	}
-	if key, ok := b.fileIdentityByURI[uri]; ok {
+	b.identityMu.Lock()
+	key, ok := b.fileIdentityByURI[uri]
+	b.identityMu.Unlock()
+	if ok {
 		return key
 	}
-	key := workspacepkg.FileIdentityKeyFromURI(uri)
+	key = workspacepkg.FileIdentityKeyFromURI(uri)
+	b.identityMu.Lock()
 	if b.fileIdentityByURI == nil {
 		b.fileIdentityByURI = map[string]string{}
 	}
 	b.fileIdentityByURI[uri] = key
+	b.identityMu.Unlock()
 	return key
 }
 
@@ -4545,7 +4776,7 @@ func navigationDocumentTargetMatchesRoot(ownerURI, rawTarget, edgeKind string, w
 }
 
 func navigationTarget(ctx context.Context, ownerURI, rawTarget, edgeKind string, workspaceRoots []workspaceRoot, dynamic bool, pathKnown ...bool) (map[string]any, bool) {
-	return navigationTargetWithPreparedRoots(ctx, ownerURI, rawTarget, edgeKind, workspaceRoots, nil, false, dynamic, pathKnown...)
+	return navigationTargetWithPreparedRoots(ctx, ownerURI, rawTarget, edgeKind, workspaceRoots, nil, false, nil, dynamic, pathKnown...)
 }
 
 func navigationTargetIsExternal(pathPart string) bool {
@@ -4556,7 +4787,7 @@ func navigationTargetIsExternal(pathPart string) bool {
 	return err == nil && (parsed.IsAbs() || strings.HasPrefix(pathPart, "//"))
 }
 
-func navigationTargetWithPreparedRoots(ctx context.Context, ownerURI, rawTarget, edgeKind string, workspaceRoots []workspaceRoot, trustedRoots []trustedFilesystemRoot, trustedRootsPrepared, dynamic bool, pathKnown ...bool) (map[string]any, bool) {
+func navigationTargetWithPreparedRoots(ctx context.Context, ownerURI, rawTarget, edgeKind string, workspaceRoots []workspaceRoot, trustedRoots []trustedFilesystemRoot, trustedRootsPrepared bool, files *navigationTargetFiles, dynamic bool, pathKnown ...bool) (map[string]any, bool) {
 	if ctx == nil {
 		ctx = context.Background()
 	}
@@ -4640,47 +4871,105 @@ func navigationTargetWithPreparedRoots(ctx context.Context, ownerURI, rawTarget,
 		resolved = filepath.Join(filepath.Dir(ownerPath), filepath.FromSlash(pathPart))
 	}
 	resolved = filepath.Clean(resolved)
-	if len(workspaceRoots) > 0 {
-		hasRootPath := false
-		var rootPaths []string
-		if !trustedRootsPrepared {
-			rootPaths = make([]string, 0, len(workspaceRoots))
+	checkTrust := false
+	var rootPaths []string
+	for _, root := range workspaceRoots {
+		if ctx.Err() != nil {
+			return nil, false
 		}
-		for _, root := range workspaceRoots {
-			if ctx.Err() != nil {
-				return nil, false
-			}
-			if root.Path != "" {
-				hasRootPath = true
-				if !trustedRootsPrepared {
-					rootPaths = append(rootPaths, root.Path)
-				}
-			}
-		}
-		if hasRootPath {
-			var ok bool
-			if trustedRootsPrepared {
-				_, ok = trustedPathForPreparedRootsContext(ctx, resolved, trustedRoots)
-			} else {
-				_, ok = trustedPathForRootsContext(ctx, resolved, rootPaths)
-			}
-			if !ok {
-				return nil, false
+		if root.Path != "" {
+			checkTrust = true
+			if !trustedRootsPrepared {
+				rootPaths = append(rootPaths, root.Path)
 			}
 		}
 	}
-	if ctx.Err() != nil {
+	file, cached := files.lookup(resolved, checkTrust)
+	if !cached {
+		file.trusted = true
+		if checkTrust {
+			if trustedRootsPrepared {
+				_, file.trusted = trustedPathForPreparedRootsCachedContext(ctx, resolved, trustedRoots, files.trustCache())
+			} else {
+				_, file.trusted = trustedPathForRootsContext(ctx, resolved, rootPaths)
+			}
+		}
+		if file.trusted && ctx.Err() == nil {
+			_, err := os.Stat(resolved)
+			file.exists = err == nil
+		}
+		if ctx.Err() != nil {
+			return nil, false
+		}
+		files.store(resolved, checkTrust, file)
+	}
+	if !file.trusted {
 		return nil, false
 	}
 	uri := filePathURI(resolved)
-	_, err := os.Stat(resolved)
-	if ctx.Err() != nil {
-		return nil, false
-	}
 	return map[string]any{
 		"id": "page:" + workspacepkg.FileIdentityKeyFromURI(uri), "label": label, "kind": navigationFileKind(resolved),
-		"uri": uri, "fileName": label, "exists": err == nil,
+		"uri": uri, "fileName": label, "exists": file.exists,
 	}, true
+}
+
+// navigationTargetFiles remembers, for one graph build, whether resolved
+// target paths passed the workspace trust check and whether they exist. Pages
+// link to the same targets many times, and each check lstats every ancestor,
+// which sibling targets share.
+type navigationTargetFiles struct {
+	mu    sync.Mutex
+	files map[navigationTargetFileKey]navigationTargetFile
+	trust *trustedPathCache
+}
+
+// navigationTargetTrustTTL bounds how long one graph build reuses ancestor
+// symlink checks.
+const navigationTargetTrustTTL = time.Minute
+
+func (f *navigationTargetFiles) trustCache() *trustedPathCache {
+	if f == nil {
+		return nil
+	}
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.trust == nil {
+		f.trust = &trustedPathCache{}
+		f.trust.setTTL(navigationTargetTrustTTL)
+	}
+	return f.trust
+}
+
+type navigationTargetFileKey struct {
+	path       string
+	checkTrust bool
+}
+
+type navigationTargetFile struct {
+	trusted bool
+	exists  bool
+}
+
+func (f *navigationTargetFiles) lookup(path string, checkTrust bool) (navigationTargetFile, bool) {
+	if f == nil {
+		return navigationTargetFile{}, false
+	}
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	file, ok := f.files[navigationTargetFileKey{path: path, checkTrust: checkTrust}]
+	return file, ok
+}
+
+func (f *navigationTargetFiles) store(path string, checkTrust bool, file navigationTargetFile) {
+	if f == nil {
+		return
+	}
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.files == nil {
+		f.files = map[navigationTargetFileKey]navigationTargetFile{}
+	}
+	f.files[navigationTargetFileKey{path: path, checkTrust: checkTrust}] = file
 }
 
 func navigationTargetQuery(rawTarget string) string {
