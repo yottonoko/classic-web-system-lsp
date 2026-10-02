@@ -1,4 +1,4 @@
-import ELK, { type ElkExtendedEdge, type ElkNode } from "elkjs/lib/elk.bundled.js";
+import ELK, { type ElkExtendedEdge, type ElkNode, type ElkPort } from "elkjs/lib/elk.bundled.js";
 import { navigationComponents } from "./navigation-graph-components";
 import type {
   AspNavigationEdge,
@@ -104,11 +104,19 @@ export interface NavigationFlowLayout {
 }
 
 const elk = new ELK();
+// Matches String.prototype.localeCompare without arguments.
+const compareText = new Intl.Collator().compare;
 const nodeWidth = 238;
 const nodeHeight = 88;
 const sourceHandleId = "source";
 const targetHandleId = "target";
 export const navigationGraphLayoutTimeoutMs = 2500;
+/**
+ * ELK runs on the webview thread, so the timeout cannot interrupt a running
+ * layout. Its cost grows steeply with pages and transitions (about 3.6 s for
+ * 50 pages and 197 transitions), so larger groups use the layered fallback.
+ */
+export const navigationGraphElkSizeLimit = 120;
 const fallbackHorizontalGap = 180;
 const fallbackVerticalGap = 48;
 
@@ -119,7 +127,7 @@ export function navigationGraphToElkGraph(payload: AspNavigationGraphPayload): E
   const nodeIds = new Set(sortedNodes.map((node) => node.id));
   const validEdges = [...payload.edges]
     .filter((edge) => nodeIds.has(edge.source) && nodeIds.has(edge.target))
-    .sort((left, right) => left.id.localeCompare(right.id));
+    .sort((left, right) => compareText(left.id, right.id));
   const incoming = new Map<string, string[]>();
   const outgoing = new Map<string, string[]>();
   for (const edge of validEdges) {
@@ -185,7 +193,9 @@ export async function layoutNavigationGraphWithElk(
     const graph = navigationGraphToElkGraph(part);
     try {
       layouts.push(
-        component.isolated || Date.now() >= deadline
+        component.isolated ||
+          component.nodes.length + component.edges.length > navigationGraphElkSizeLimit ||
+          Date.now() >= deadline
           ? fallbackNavigationGraphLayout(part, graph)
           : await elkLayoutWithTimeout(graph, Math.max(1, deadline - Date.now())),
       );
@@ -324,7 +334,7 @@ export function navigationFlowElementsFromElk(
   );
   const edges = [...payload.edges]
     .filter((edge) => layoutNodeById.has(edge.source) && layoutNodeById.has(edge.target))
-    .sort((left, right) => left.id.localeCompare(right.id))
+    .sort((left, right) => compareText(left.id, right.id))
     .map((edge, index): NavigationFlowEdge => {
       const elkEdge = layoutEdgeById.get(edge.id);
       const loop =
@@ -557,7 +567,7 @@ function sortedNavigationNodes(nodes: AspNavigationNode[]): AspNavigationNode[] 
     if (kindOrder !== 0) {
       return kindOrder;
     }
-    return left.label.localeCompare(right.label);
+    return compareText(left.label, right.label);
   });
 }
 
@@ -613,20 +623,21 @@ function navigationLayers(
   }
 
   const componentLayers = new Map<number, number>();
+  const compareComponents = (left: number, right: number) =>
+    compareText(componentSortKey(components[left]), componentSortKey(components[right]));
   const queue = [...componentIncoming.entries()]
     .filter(([, incoming]) => incoming === 0)
     .map(([component]) => component)
-    .sort((left, right) =>
-      componentSortKey(components[left]).localeCompare(componentSortKey(components[right])),
-    );
+    .sort(compareComponents);
   for (const component of queue) {
     componentLayers.set(component, 0);
   }
-  while (queue.length > 0) {
-    const component = queue.shift()!;
-    const nextComponents = [...(componentEdges.get(component) ?? [])].sort((left, right) =>
-      componentSortKey(components[left]).localeCompare(componentSortKey(components[right])),
-    );
+  // The pending part of the queue stays sorted; a released component goes
+  // after the pending components that sort equal to it, as a stable sort of
+  // the appended queue would place it.
+  for (let head = 0; head < queue.length; head += 1) {
+    const component = queue[head];
+    const nextComponents = [...(componentEdges.get(component) ?? [])].sort(compareComponents);
     for (const target of nextComponents) {
       componentLayers.set(
         target,
@@ -635,10 +646,17 @@ function navigationLayers(
       const incoming = (componentIncoming.get(target) ?? 0) - 1;
       componentIncoming.set(target, incoming);
       if (incoming === 0) {
-        queue.push(target);
-        queue.sort((left, right) =>
-          componentSortKey(components[left]).localeCompare(componentSortKey(components[right])),
-        );
+        let low = head + 1;
+        let high = queue.length;
+        while (low < high) {
+          const middle = (low + high) >>> 1;
+          if (compareComponents(queue[middle], target) <= 0) {
+            low = middle + 1;
+          } else {
+            high = middle;
+          }
+        }
+        queue.splice(low, 0, target);
       }
     }
   }
@@ -715,6 +733,24 @@ function elkPortId(nodeId: string, handleId: string): string {
   return `${nodeId}:${handleId}`;
 }
 
+// A page can have a port for each of thousands of transitions, so ports are
+// looked up through a per-node index instead of a scan per transition.
+const elkPortIndexes = new WeakMap<ElkNode, Map<string, ElkPort>>();
+
+function elkNodePort(node: ElkNode, portId: string): ElkPort | undefined {
+  let ports = elkPortIndexes.get(node);
+  if (!ports) {
+    ports = new Map();
+    for (const port of node.ports ?? []) {
+      if (!ports.has(port.id)) {
+        ports.set(port.id, port);
+      }
+    }
+    elkPortIndexes.set(node, ports);
+  }
+  return ports.get(portId);
+}
+
 function elkEdgePath(edge: ElkExtendedEdge): string | undefined {
   const section = edge.sections?.[0];
   if (!section) {
@@ -788,8 +824,8 @@ function fallbackConnection(
   source: ElkNode,
   target: ElkNode,
 ): { path: string; label: { x: number; y: number }; points: { x: number; y: number }[] } {
-  const from = source.ports?.find((port) => port.id === elkPortId(source.id, `source:${edge.id}`));
-  const to = target.ports?.find((port) => port.id === elkPortId(target.id, `target:${edge.id}`));
+  const from = elkNodePort(source, elkPortId(source.id, `source:${edge.id}`));
+  const to = elkNodePort(target, elkPortId(target.id, `target:${edge.id}`));
   const sx = (source.x ?? 0) + (from?.x ?? nodeWidth),
     sy = (source.y ?? 0) + (from?.y ?? nodeHeight / 2);
   const tx = (target.x ?? 0) + (to?.x ?? 0),
@@ -828,8 +864,7 @@ function fallbackLoop(
   points: { x: number; y: number }[];
 } {
   const portY = (type: string) =>
-    node.ports?.find((port) => port.id === elkPortId(node.id, `${type}:${edge.id}`))?.y ??
-    nodeHeight / 2;
+    elkNodePort(node, elkPortId(node.id, `${type}:${edge.id}`))?.y ?? nodeHeight / 2;
   const x = node.x ?? 0;
   const y = node.y ?? 0;
   const right = x + (node.width ?? nodeWidth);

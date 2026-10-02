@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import type { AspNavigationGraphPayload } from "../src/protocol-types";
 import {
   layoutNavigationGraphWithElk,
+  navigationGraphElkSizeLimit,
   navigationGraphLayoutTimeoutMs,
 } from "../src/webview/navigation-graph-layout";
 
@@ -108,5 +109,27 @@ describe("navigation layout fallback", () => {
     expect(result.nodes).toHaveLength(3);
     expect(result.edges).toHaveLength(3);
     expect(vi.getTimerCount()).toBe(0);
+  });
+});
+
+describe("navigation layout size limit", () => {
+  it("lays out groups above the ELK size limit without calling ELK", async () => {
+    const pages = Array.from({ length: navigationGraphElkSizeLimit }, (_, index) => `P${index}`);
+    const large: AspNavigationGraphPayload = {
+      ...payload,
+      nodes: pages.map((id) => ({ id, label: id, kind: "page" })),
+      edges: pages.slice(1).map((target, index) => ({
+        ...payload.edges[0],
+        id: `chain:${index}`,
+        source: pages[index],
+        target,
+      })),
+    };
+    const result = await layoutNavigationGraphWithElk(large);
+    expect(layout).not.toHaveBeenCalled();
+    expect(result.nodes).toHaveLength(pages.length);
+    expect(result.edges).toHaveLength(pages.length - 1);
+    const x = new Map(result.nodes.map((node) => [node.id, node.position.x]));
+    expect(x.get("P0")!).toBeLessThan(x.get("P1")!);
   });
 });
