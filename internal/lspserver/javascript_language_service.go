@@ -200,6 +200,9 @@ func (s *Server) javaScriptLanguageServiceRequestWithLockContext(lockContext, se
 		}
 		return true
 	}
+	if completions, ok := target.(*lsp.CompletionList); ok && method == "textDocument/completion" {
+		return remapJavaScriptCompletionResponse(raw, completions, request.active, request.files) && serviceContext.Err() == nil
+	}
 	var value any
 	if err := json.Unmarshal(raw, &value); err != nil || serviceContext.Err() != nil {
 		return false

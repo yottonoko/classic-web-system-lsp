@@ -1,6 +1,7 @@
 package lspserver
 
 import (
+	"bytes"
 	"encoding/json"
 	pathpkg "path"
 	"path/filepath"
@@ -99,6 +100,133 @@ func remapJavaScriptDiagnosticResponse(raw []byte, target any, mapping *javaScri
 	}
 	remapped, err := json.Marshal(report)
 	return err == nil && json.Unmarshal(remapped, target) == nil
+}
+
+// javaScriptCompletionResponse decodes a completion list with its edit ranges
+// typed. A completion list is the largest service response, and remapping it
+// through a generic value costs more than the completion itself. Edit ranges
+// stay nil when the service sent none, so only reported ranges are remapped,
+// and item data, which the client only echoes back, stays raw unless it has a
+// field that remapping rewrites.
+type javaScriptCompletionResponse struct {
+	IsIncomplete bool                               `json:"isIncomplete"`
+	Items        []javaScriptCompletionItemResponse `json:"items"`
+}
+
+type javaScriptCompletionItemResponse struct {
+	lsp.CompletionItem
+	TextEdit            *javaScriptServiceTextEdit  `json:"textEdit,omitempty"`
+	AdditionalTextEdits []javaScriptServiceTextEdit `json:"additionalTextEdits,omitempty"`
+	Data                json.RawMessage             `json:"data,omitempty"`
+}
+
+type javaScriptServiceTextEdit struct {
+	Range   *lsp.Range `json:"range"`
+	NewText string     `json:"newText"`
+}
+
+// remapJavaScriptCompletionResponse decodes raw into target with the result of
+// remapJavaScriptServiceValue, without a generic JSON round trip.
+func remapJavaScriptCompletionResponse(raw []byte, target *lsp.CompletionList, active *javaScriptVirtualFile, files map[string]*javaScriptVirtualFile) bool {
+	var response *javaScriptCompletionResponse
+	if json.Unmarshal(raw, &response) != nil {
+		return false
+	}
+	if response == nil {
+		return true
+	}
+	target.IsIncomplete = response.IsIncomplete
+	if response.Items == nil {
+		target.Items = nil
+		return true
+	}
+	items := make([]lsp.CompletionItem, len(response.Items))
+	for index := range response.Items {
+		serviceItem := &response.Items[index]
+		item := serviceItem.CompletionItem
+		item.Documentation = remapJavaScriptServiceValueForFile(item.Documentation, active, files)
+		if data, ok := javaScriptCompletionItemData(serviceItem.Data, active, files); ok {
+			item.Data = data
+		} else {
+			return false
+		}
+		if serviceItem.TextEdit != nil {
+			edit := remapJavaScriptServiceTextEdit(*serviceItem.TextEdit, active)
+			item.TextEdit = &edit
+		}
+		if serviceItem.AdditionalTextEdits != nil {
+			item.AdditionalTextEdits = make([]lsp.TextEdit, len(serviceItem.AdditionalTextEdits))
+			for editIndex, edit := range serviceItem.AdditionalTextEdits {
+				item.AdditionalTextEdits[editIndex] = remapJavaScriptServiceTextEdit(edit, active)
+			}
+		}
+		items[index] = item
+	}
+	target.Items = items
+	return true
+}
+
+func javaScriptCompletionItemData(raw json.RawMessage, active *javaScriptVirtualFile, files map[string]*javaScriptVirtualFile) (any, bool) {
+	trimmed := bytes.TrimSpace(raw)
+	if len(trimmed) == 0 || bytes.Equal(trimmed, []byte("null")) {
+		return nil, true
+	}
+	if !javaScriptServiceValueMayRemap(trimmed) {
+		return raw, true
+	}
+	var value any
+	if json.Unmarshal(raw, &value) != nil {
+		return nil, false
+	}
+	return remapJavaScriptServiceValueForFile(value, active, files), true
+}
+
+// javaScriptServiceRemappedKeys are the field names that
+// remapJavaScriptServiceValueForFile rewrites, other than position.
+var javaScriptServiceRemappedKeys = [][]byte{
+	[]byte(`"uri"`), []byte(`"textDocument"`), []byte(`"fromRanges"`), []byte(`"changes"`), []byte(`"startLine"`),
+	[]byte(`"range"`), []byte(`"selectionRange"`), []byte(`"targetRange"`), []byte(`"targetSelectionRange"`), []byte(`"originSelectionRange"`),
+}
+
+// javaScriptServiceValueMayRemap reports whether remapping could change the
+// JSON value raw. Completion data holds a virtual file name and a numeric
+// offset, which remapping leaves alone.
+func javaScriptServiceValueMayRemap(raw []byte) bool {
+	for _, key := range javaScriptServiceRemappedKeys {
+		if bytes.Contains(raw, key) {
+			return true
+		}
+	}
+	key := []byte(`"position"`)
+	for rest := raw; ; {
+		index := bytes.Index(rest, key)
+		if index < 0 {
+			return false
+		}
+		rest = bytes.TrimLeft(rest[index+len(key):], " \t\r\n")
+		if len(rest) > 0 && rest[0] == ':' {
+			if value := bytes.TrimLeft(rest[1:], " \t\r\n"); len(value) > 0 && value[0] == '{' {
+				return true
+			}
+		}
+	}
+}
+
+func remapJavaScriptServiceTextEdit(edit javaScriptServiceTextEdit, mapping *javaScriptVirtualFile) lsp.TextEdit {
+	result := lsp.TextEdit{NewText: edit.NewText}
+	if edit.Range == nil {
+		return result
+	}
+	result.Range = *edit.Range
+	if mapping == nil {
+		return result
+	}
+	start, startOK := sourcePositionForVirtualBoundary(mapping, edit.Range.Start, false)
+	end, endOK := sourcePositionForVirtualBoundary(mapping, edit.Range.End, true)
+	if startOK && endOK {
+		result.Range = lsp.Range{Start: start, End: end}
+	}
+	return result
 }
 
 func remapJavaScriptServiceValueForFile(value any, current *javaScriptVirtualFile, files map[string]*javaScriptVirtualFile) any {

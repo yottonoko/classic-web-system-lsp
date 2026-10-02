@@ -6,6 +6,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -578,4 +579,87 @@ func javaScriptInlayHintLabelText(label any) string {
 		}
 	}
 	return result.String()
+}
+
+func TestJavaScriptCompletionResponseRemapMatchesGenericRemap(t *testing.T) {
+	uri := "file:///tmp/completion-remap.asp"
+	source := `<div>before</div>
+<script>
+const first = 1;
+<% If enabled Then %>
+fir
+</script>`
+	mapping := newJavaScriptRemapTestMapping(t, uri, source, core.LanguageJavaScript)
+	files := map[string]*javaScriptVirtualFile{mapping.uri: mapping}
+	word := javaScriptRemapTestVirtualRange(t, mapping, sourceRangeForSubstring(t, mapping.source, "fir\n"))
+	word.End = word.Start
+	word.End.Character += len("fir")
+	raw, err := json.Marshal(map[string]any{
+		"isIncomplete": true,
+		"itemDefaults": map[string]any{"editRange": javaScriptRemapTestRangeValue(word)},
+		"items": []any{
+			map[string]any{
+				"label": "first", "kind": 6, "sortText": "11",
+				"textEdit":            map[string]any{"range": javaScriptRemapTestRangeValue(word), "newText": "first"},
+				"additionalTextEdits": []any{map[string]any{"range": javaScriptRemapTestRangeValue(lsp.Range{}), "newText": "import x;\n"}},
+				"data":                map[string]any{"fileName": mapping.path, "position": 42, "autoImport": map[string]any{"moduleSpecifier": "./x"}},
+				"documentation":       map[string]any{"kind": "markdown", "value": "docs"},
+			},
+			map[string]any{
+				"label":               "replace",
+				"textEdit":            map[string]any{"insert": javaScriptRemapTestRangeValue(word), "replace": javaScriptRemapTestRangeValue(word), "newText": "replace"},
+				"additionalTextEdits": []any{},
+			},
+			map[string]any{"label": "plain", "documentation": "text", "data": nil},
+			map[string]any{"label": "ranged", "data": map[string]any{"range": javaScriptRemapTestRangeValue(word), "position": javaScriptRemapTestPositionValue(word.Start)}},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, response := range [][]byte{raw, []byte(`null`), []byte(`{"isIncomplete":false,"items":null}`), []byte(`{"items":[]}`)} {
+		var generic any
+		if err := json.Unmarshal(response, &generic); err != nil {
+			t.Fatal(err)
+		}
+		var want lsp.CompletionList
+		if err := remarshal(remapJavaScriptServiceValue(generic, mapping, files), &want); err != nil {
+			t.Fatal(err)
+		}
+		var got lsp.CompletionList
+		if !remapJavaScriptCompletionResponse(response, &got, mapping, files) {
+			t.Fatalf("typed completion remap failed for %s", response)
+		}
+		wantJSON, _ := json.Marshal(want)
+		gotJSON, _ := json.Marshal(got)
+		var wantValue, gotValue any
+		_ = json.Unmarshal(wantJSON, &wantValue)
+		_ = json.Unmarshal(gotJSON, &gotValue)
+		if !reflect.DeepEqual(gotValue, wantValue) || (got.Items == nil) != (want.Items == nil) {
+			t.Fatalf("typed completion remap = %s, want %s", gotJSON, wantJSON)
+		}
+	}
+	var list lsp.CompletionList
+	if !remapJavaScriptCompletionResponse(raw, &list, mapping, files) {
+		t.Fatal("typed completion remap failed")
+	}
+	if want := sourceRangeForSubstring(t, mapping.source, "fir\n"); list.Items[0].TextEdit.Range.Start != want.Start {
+		t.Fatalf("completion edit range = %#v, want start %#v", list.Items[0].TextEdit.Range, want.Start)
+	}
+	if _, raw := list.Items[0].Data.(json.RawMessage); !raw {
+		t.Fatalf("completion data without remapped fields was decoded: %T", list.Items[0].Data)
+	}
+	for _, data := range []string{`{"position":1}`, `{"usagePosition":{"line":1,"character":2}}`} {
+		if javaScriptServiceValueMayRemap([]byte(data)) {
+			t.Fatalf("%s was treated as remappable", data)
+		}
+	}
+	for _, data := range []string{`{"position" : {"line":1,"character":2}}`, `{"a":{"uri":"file:///x"}}`, `{"targetSelectionRange":{}}`} {
+		if !javaScriptServiceValueMayRemap([]byte(data)) {
+			t.Fatalf("%s was not treated as remappable", data)
+		}
+	}
+	if remapJavaScriptCompletionResponse([]byte(`[{"label":"array"}]`), &list, mapping, files) {
+		t.Fatal("a completion item array decoded as a completion list")
+	}
 }
