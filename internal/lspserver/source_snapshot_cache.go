@@ -6,7 +6,9 @@ import (
 	"errors"
 	"io"
 	"os"
+	pathpkg "path"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/yottonoko/classic-web-system-lsp/internal/core"
@@ -68,6 +70,8 @@ func (s *Server) readSourceFileBytes(ctx context.Context, path string, limiter c
 		}
 	}
 	if preparedRoots {
+		// The read itself refuses a symlinked file, so only a snapshot hit
+		// below checks the file; this checks the directories above it.
 		if !sourcePathWithinPreparedRoots(&s.trustedPaths, cleanPath, trustedRoots) {
 			return nil, &os.PathError{Op: "read", Path: cleanPath, Err: errWorkspacePathOutsideBoundary}
 		}
@@ -81,6 +85,11 @@ func (s *Server) readSourceFileBytes(ctx context.Context, path string, limiter c
 		raw := snapshot.raw
 		generation := snapshot.generation
 		s.mu.Unlock()
+		if preparedRoots {
+			if _, symlink := s.trustedPaths.lstatKind(cleanPath); symlink {
+				return nil, &os.PathError{Op: "read", Path: cleanPath, Err: errWorkspacePathOutsideBoundary}
+			}
+		}
 		fields := map[string]any{"bytes": len(raw), "generation": generation, "path": cleanPath}
 		s.logDebugVerboseEvent("sourceSnapshot", "[asp-lsp] sourceSnapshot.hit"+formatLogFields(fields), fields)
 		return bytes.Clone(raw), nil
@@ -125,11 +134,12 @@ func (s *Server) readSourceFileBytes(ctx context.Context, path string, limiter c
 	var stable bool
 	var err error
 	if preparedRoots {
-		raw, after, stable, err = readStableSourceFileWithPreparedRoots(cleanPath, trustedRoots)
+		raw, after, stable, err = readStableSourceFileWithPreparedRoots(&s.trustedPaths, cleanPath, trustedRoots)
 	} else {
-		raw, after, stable, err = readStableSourceFile(cleanPath, trustedRoots)
+		raw, after, stable, err = readStableSourceFile(&s.trustedPaths, cleanPath, trustedRoots)
 	}
 	if err == nil {
+		s.trustedPaths.rememberRegularFile(cleanPath)
 		fields := map[string]any{
 			"bytes": len(raw), "cached": stable, "durationMs": float64(time.Since(started).Microseconds()) / 1000, "path": cleanPath,
 		}
@@ -194,6 +204,9 @@ func sourceReadRoots(ctx context.Context) ([]trustedFilesystemRoot, bool) {
 	return roots, ok
 }
 
+// sourcePathWithinPreparedRoots reports whether path is under a prepared
+// root with no symlinked directory between the root and path. Whether path
+// itself is a symlink is left to the caller.
 func sourcePathWithinPreparedRoots(cache *trustedPathCache, path string, roots []trustedFilesystemRoot) bool {
 	if pathHasParentTraversal(path) {
 		return false
@@ -206,28 +219,49 @@ func sourcePathWithinPreparedRoots(cache *trustedPathCache, path string, roots [
 	if !ok {
 		return false
 	}
-	return cache.rootPathCurrent(root) && !cache.pathContainsSymlinkWithinRoot(filepath.Clean(cleaned), root.path)
+	cleaned = filepath.Clean(cleaned)
+	checked := cleaned
+	if workspacepkg.FileIdentityKeyFromFileName(cleaned) != workspacepkg.FileIdentityKeyFromFileName(filepath.Clean(root.path)) {
+		checked = filepath.Dir(cleaned)
+	}
+	return cache.rootPathCurrent(root) && !cache.pathContainsSymlinkWithinRoot(checked, root.path)
 }
 
-func readStableSourceFile(path string, roots []trustedFilesystemRoot) ([]byte, sourceFileMetadata, bool, error) {
-	root, relative, ok := openTrustedFilesystemPathWithRoots(path, roots)
+func readStableSourceFile(cache *trustedPathCache, path string, roots []trustedFilesystemRoot) ([]byte, sourceFileMetadata, bool, error) {
+	root, relative, release, ok := cache.openPathWithRoots(path, roots)
 	if !ok {
 		return nil, sourceFileMetadata{}, false, &os.PathError{Op: "read", Path: path, Err: errWorkspacePathOutsideBoundary}
 	}
-	defer root.Close()
+	defer release()
 	return readStableSourceFileFromRoot(path, root, relative)
 }
 
-func readStableSourceFileWithPreparedRoots(path string, roots []trustedFilesystemRoot) ([]byte, sourceFileMetadata, bool, error) {
+// readStableSourceFileWithPreparedRoots checks the root before and after the
+// read through cache, which keeps root stats for the network stat TTL.
+func readStableSourceFileWithPreparedRoots(cache *trustedPathCache, path string, roots []trustedFilesystemRoot) ([]byte, sourceFileMetadata, bool, error) {
 	rootEntry, relative, ok := trustedFilesystemRelativePath(path, roots)
-	if !ok || rootEntry.opened == nil || !trustedFilesystemRootPathCurrent(rootEntry) {
+	if !ok || rootEntry.opened == nil || !cache.rootPathCurrent(rootEntry) {
 		return nil, sourceFileMetadata{}, false, &os.PathError{Op: "read", Path: path, Err: errWorkspacePathOutsideBoundary}
 	}
-	raw, metadata, stable, err := readStableSourceFileFromRoot(path, rootEntry.opened, relative)
+	root, name := rootEntry.opened, relative
+	if rootEntry.directories != nil {
+		if directory, base := pathpkg.Split(relative); directory != "" {
+			if directoryRoot, release, ok := rootEntry.directories.acquire(rootEntry.opened, strings.TrimSuffix(directory, "/")); ok {
+				defer release()
+				root, name = directoryRoot, base
+			}
+		}
+	}
+	raw, metadata, stable, err := readStableSourceFileFromRoot(path, root, name)
+	if errors.Is(err, errSourceFileSymlink) {
+		// The caller checked only the directories above path, so a symlinked
+		// file is reported like the boundary check would have reported it.
+		return nil, sourceFileMetadata{}, false, &os.PathError{Op: "read", Path: path, Err: errWorkspacePathOutsideBoundary}
+	}
 	if err != nil {
 		return raw, metadata, stable, err
 	}
-	if !trustedFilesystemRootPathCurrent(rootEntry) {
+	if !cache.rootPathCurrent(rootEntry) {
 		return nil, sourceFileMetadata{}, false, &os.PathError{Op: "read", Path: path, Err: errWorkspacePathOutsideBoundary}
 	}
 	return raw, metadata, stable, nil

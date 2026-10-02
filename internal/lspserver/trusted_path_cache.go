@@ -26,6 +26,23 @@ type trustedPathCache struct {
 	symlinks   sync.Map // path -> trustedPathFlag
 	canonicals sync.Map // directory -> trustedPathCanonical
 	stats      sync.Map // directory -> trustedPathStat
+
+	rootsMu sync.Mutex
+	roots   map[string]*trustedRootHandle // canonical root -> shared handle
+}
+
+// trustedRootHandleLifetime bounds how long an opened root is shared while the
+// cache is enabled. Opening a root costs an open and a stat of the root
+// directory, a round trip each on a network share, and a workspace index stats
+// thousands of files under the same root in one burst.
+const trustedRootHandleLifetime = 2 * time.Second
+
+type trustedRootHandle struct {
+	key     string
+	root    *os.Root
+	info    os.FileInfo
+	refs    int
+	retired bool
 }
 
 type trustedPathFlag struct {
@@ -59,6 +76,91 @@ func (c *trustedPathCache) clear() {
 	c.symlinks.Clear()
 	c.canonicals.Clear()
 	c.stats.Clear()
+	c.closeRoots()
+}
+
+// openRoot opens root like openTrustedFilesystemRoot. While the cache is
+// enabled, callers share one handle per root for trustedRootHandleLifetime;
+// each use still checks that the handle is the directory root.info names.
+// The returned release must be called once the handle is no longer used.
+func (c *trustedPathCache) openRoot(root trustedFilesystemRoot) (*os.Root, func(), bool) {
+	if !c.enabled() {
+		handle, ok := openTrustedFilesystemRoot(root)
+		if !ok {
+			return nil, nil, false
+		}
+		return handle, func() { _ = handle.Close() }, true
+	}
+	if root.info == nil {
+		return nil, nil, false
+	}
+	c.rootsMu.Lock()
+	entry := c.roots[root.canonical]
+	if entry != nil {
+		entry.refs++
+	}
+	c.rootsMu.Unlock()
+	if entry != nil {
+		if os.SameFile(entry.info, root.info) {
+			return entry.root, func() { c.releaseRoot(entry) }, true
+		}
+		c.releaseRoot(entry)
+	}
+	handle, ok := openTrustedFilesystemRoot(root)
+	if !ok {
+		return nil, nil, false
+	}
+	entry = &trustedRootHandle{key: root.canonical, root: handle, info: root.info, refs: 1}
+	c.rootsMu.Lock()
+	if previous := c.roots[entry.key]; previous != nil {
+		c.retireRootLocked(previous)
+	}
+	if c.roots == nil {
+		c.roots = map[string]*trustedRootHandle{}
+	}
+	c.roots[entry.key] = entry
+	c.rootsMu.Unlock()
+	time.AfterFunc(trustedRootHandleLifetime, func() {
+		c.rootsMu.Lock()
+		defer c.rootsMu.Unlock()
+		c.retireRootLocked(entry)
+	})
+	return handle, func() { c.releaseRoot(entry) }, true
+}
+
+func (c *trustedPathCache) releaseRoot(entry *trustedRootHandle) {
+	c.rootsMu.Lock()
+	defer c.rootsMu.Unlock()
+	entry.refs--
+	if entry.retired && entry.refs == 0 {
+		_ = entry.root.Close()
+	}
+}
+
+// retireRootLocked stops sharing entry and closes it once no caller uses it.
+func (c *trustedPathCache) retireRootLocked(entry *trustedRootHandle) {
+	if entry.retired {
+		return
+	}
+	entry.retired = true
+	if c.roots[entry.key] == entry {
+		delete(c.roots, entry.key)
+	}
+	if entry.refs == 0 {
+		_ = entry.root.Close()
+	}
+}
+
+// closeRoots retires every shared root handle.
+func (c *trustedPathCache) closeRoots() {
+	if c == nil {
+		return
+	}
+	c.rootsMu.Lock()
+	defer c.rootsMu.Unlock()
+	for _, entry := range c.roots {
+		c.retireRootLocked(entry)
+	}
 }
 
 // forget drops what the cache knows about path, so a watched change is seen
@@ -120,6 +222,15 @@ func (c *trustedPathCache) lstatKind(path string) (exists bool, symlink bool) {
 	return true, symlink
 }
 
+// rememberRegularFile records that path was just read as a regular file
+// through its root, which refuses symlinked files, so trust checks of the same
+// file need no lstat until the TTL expires.
+func (c *trustedPathCache) rememberRegularFile(path string) {
+	if expires, ok := c.expiry(); ok {
+		c.symlinks.Store(filepath.Clean(path), trustedPathFlag{expires: expires, value: false})
+	}
+}
+
 // canonicalDirectory returns the symlink-resolved form of an existing
 // directory.
 func (c *trustedPathCache) canonicalDirectory(directory string) (string, bool) {
@@ -127,6 +238,20 @@ func (c *trustedPathCache) canonicalDirectory(directory string) (string, bool) {
 		if value, ok := c.canonicals.Load(directory); ok {
 			if entry := value.(trustedPathCanonical); time.Now().UnixNano() < entry.expires {
 				return entry.path, true
+			}
+		}
+		// Build on the parent's cached form when this directory is not a
+		// symlink. EvalSymlinks would lstat every ancestor again for each
+		// directory, and sibling directories share those ancestors.
+		if parent := filepath.Dir(directory); parent != directory {
+			if exists, symlink := c.lstatKind(directory); exists && !symlink {
+				if canonicalParent, ok := c.canonicalDirectory(parent); ok {
+					resolved := filepath.Join(canonicalParent, filepath.Base(directory))
+					if expires, ok := c.expiry(); ok {
+						c.canonicals.Store(directory, trustedPathCanonical{expires: expires, path: resolved})
+					}
+					return resolved, true
+				}
 			}
 		}
 	}
@@ -163,8 +288,8 @@ func (c *trustedPathCache) statDirectory(directory string) (os.FileInfo, error) 
 	return info, nil
 }
 
-// rootPathCurrent reports whether root still is the directory it was
-// authorized as, like trustedFilesystemRootPathCurrent.
+// rootPathCurrent reports whether root.path still is the directory root was
+// authorized as.
 func (c *trustedPathCache) rootPathCurrent(root trustedFilesystemRoot) bool {
 	if root.info == nil || root.path == "" {
 		return false

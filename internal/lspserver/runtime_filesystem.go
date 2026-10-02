@@ -338,10 +338,11 @@ func (s *Server) effectiveCacheFreshnessLocked() string {
 }
 
 type trustedFilesystemRoot struct {
-	path      string
-	canonical string
-	info      os.FileInfo
-	opened    *os.Root
+	path        string
+	canonical   string
+	info        os.FileInfo
+	opened      *os.Root
+	directories *preparedDirectoryRoots
 }
 
 type trustedFilesystemOpenRootTestHook struct {
@@ -697,8 +698,22 @@ func (s *Server) trustedFilesystemPathContext(ctx context.Context, path string) 
 	return cleaned, true
 }
 
-func (s *Server) openTrustedFilesystemPath(path string) (*os.Root, string, bool) {
-	return openTrustedFilesystemPathWithRoots(path, s.trustedFilesystemRootEntries(nil))
+// openTrustedFilesystemPath opens the trusted root that contains path. The
+// returned release must be called once the root is no longer used.
+func (s *Server) openTrustedFilesystemPath(path string) (*os.Root, string, func(), bool) {
+	return s.trustedPaths.openPathWithRoots(path, s.trustedFilesystemRootEntries(nil))
+}
+
+func (c *trustedPathCache) openPathWithRoots(path string, roots []trustedFilesystemRoot) (*os.Root, string, func(), bool) {
+	root, relative, ok := trustedFilesystemRelativePath(path, roots)
+	if !ok {
+		return nil, "", nil, false
+	}
+	rootHandle, release, ok := c.openRoot(root)
+	if !ok {
+		return nil, "", nil, false
+	}
+	return rootHandle, relative, release, true
 }
 
 func openTrustedFilesystemPathWithRoots(path string, roots []trustedFilesystemRoot) (*os.Root, string, bool) {
@@ -711,14 +726,6 @@ func openTrustedFilesystemPathWithRoots(path string, roots []trustedFilesystemRo
 		return nil, "", false
 	}
 	return rootHandle, relative, true
-}
-
-func trustedFilesystemRootPathCurrent(root trustedFilesystemRoot) bool {
-	if root.info == nil || root.path == "" {
-		return false
-	}
-	info, err := os.Stat(root.path)
-	return err == nil && info.IsDir() && os.SameFile(root.info, info)
 }
 
 func trustedFilesystemRelativePath(path string, roots []trustedFilesystemRoot) (trustedFilesystemRoot, string, bool) {
@@ -779,6 +786,7 @@ func prepareTrustedFilesystemRoots(ctx context.Context, roots []trustedFilesyste
 		root, ok := openTrustedFilesystemRoot(prepared[index])
 		if ok {
 			prepared[index].opened = root
+			prepared[index].directories = &preparedDirectoryRoots{}
 		}
 	}
 	if ctx.Err() != nil {
@@ -819,34 +827,37 @@ func closeTrustedFilesystemRoots(roots []trustedFilesystemRoot) {
 			continue
 		}
 		seen[root.opened] = struct{}{}
+		if root.directories != nil {
+			root.directories.close()
+		}
 		_ = root.opened.Close()
 	}
 }
 
 func (s *Server) trustedFilesystemStat(path string) (os.FileInfo, error) {
-	root, relative, ok := s.openTrustedFilesystemPath(path)
+	root, relative, release, ok := s.openTrustedFilesystemPath(path)
 	if !ok {
 		return nil, &os.PathError{Op: "stat", Path: path, Err: os.ErrPermission}
 	}
-	defer root.Close()
+	defer release()
 	return root.Stat(relative)
 }
 
 func (s *Server) trustedFilesystemLstat(path string) (os.FileInfo, error) {
-	root, relative, ok := s.openTrustedFilesystemPath(path)
+	root, relative, release, ok := s.openTrustedFilesystemPath(path)
 	if !ok {
 		return nil, &os.PathError{Op: "lstat", Path: path, Err: os.ErrPermission}
 	}
-	defer root.Close()
+	defer release()
 	return root.Lstat(relative)
 }
 
 func (s *Server) trustedFilesystemReadDir(path string) ([]os.DirEntry, error) {
-	root, relative, ok := s.openTrustedFilesystemPath(path)
+	root, relative, release, ok := s.openTrustedFilesystemPath(path)
 	if !ok {
 		return nil, &os.PathError{Op: "readdir", Path: path, Err: os.ErrPermission}
 	}
-	defer root.Close()
+	defer release()
 	return fs.ReadDir(root.FS(), relative)
 }
 

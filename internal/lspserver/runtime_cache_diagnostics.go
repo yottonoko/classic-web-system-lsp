@@ -272,6 +272,7 @@ func (s *Server) shutdownRuntimeCaches() {
 	s.stopDocumentOpenAnalysisWorkers()
 	s.backgroundAnalysisWorkers.Wait()
 	s.waitForAsyncDiskCacheWrites()
+	s.trustedPaths.closeRoots()
 	s.closeDiskAnalysisCache()
 }
 

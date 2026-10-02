@@ -164,16 +164,13 @@ func (s *Server) diskSourceMetadata(doc *core.TextDocument) workspacepkg.DiskAna
 	if fileName == "" {
 		fileName = doc.URI
 	}
-	metadata := workspacepkg.DiskAnalysisSourceMetadata{
+	// Entries match on the content hash alone when both sides carry one, so a
+	// stat here would only cost a filesystem round trip per lookup and write.
+	return workspacepkg.DiskAnalysisSourceMetadata{
 		FileName:    fileName,
 		Size:        int64(len(doc.Text)),
 		ContentHash: workspacepkg.DiskContentHash(doc.Text),
 	}
-	if info, ok := s.fsStat(fileName); ok {
-		metadata.MtimeMS = info.MtimeMS
-		metadata.Size = info.Size
-	}
-	return metadata
 }
 
 func (s *Server) parsedDiskLookup(doc *core.TextDocument, defaultLanguage string) workspacepkg.DiskAnalysisCacheLookup {
