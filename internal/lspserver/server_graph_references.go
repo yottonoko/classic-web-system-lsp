@@ -935,6 +935,31 @@ type graphReferenceTarget struct {
 	declaration vbUsageDeclaration
 	id          string
 	documents   map[string]int
+	// visibility limits procedure-local and class-member declarations to
+	// postings in their own procedure or class.
+	visibility  graphReferenceVisibility
+	uri         string
+	procedureID string
+}
+
+type graphReferenceVisibility uint8
+
+const (
+	graphReferenceVisibleWherever graphReferenceVisibility = iota
+	graphReferenceVisibleInProcedure
+	graphReferenceVisibleInClass
+)
+
+func graphReferenceTargetVisibility(declaration vbUsageDeclaration) graphReferenceVisibility {
+	switch {
+	case declaration.Implicit:
+		return graphReferenceVisibleWherever
+	case declaration.Local && declaration.Scope != "":
+		return graphReferenceVisibleInProcedure
+	case !declaration.Local && declaration.Scope == "" && declaration.MemberOf != "":
+		return graphReferenceVisibleInClass
+	}
+	return graphReferenceVisibleWherever
 }
 
 type graphReferenceTraversalStats struct {
@@ -1032,11 +1057,22 @@ func (s *Server) addGraphReferenceLinksWithProgressAndStats(ctx context.Context,
 			}
 			documentRanks := referenceDocumentRanksFor(parsed, declaration)
 			name := strings.ToLower(declaration.Name)
-			targetsByName[name] = append(targetsByName[name], graphReferenceTarget{
+			target := graphReferenceTarget{
 				declaration: declaration,
 				id:          targetID,
 				documents:   documentRanks,
-			})
+				visibility:  graphReferenceTargetVisibility(declaration),
+				uri:         parsed.URI,
+			}
+			if analysis, ok := analyses[parsed.URI]; !ok || analysis.referenceShard == nil {
+				target.visibility = graphReferenceVisibleWherever
+			} else if target.visibility == graphReferenceVisibleInProcedure {
+				target.procedureID = graphReferenceSourceIDFromRanges(parsed.URI, analysis.procedureRanges, declaration.Range)
+				if target.procedureID == parsed.URI {
+					target.visibility = graphReferenceVisibleWherever
+				}
+			}
+			targetsByName[name] = append(targetsByName[name], target)
 		}
 	}
 	if !referenceDocumentsComplete || ctx.Err() != nil {
@@ -1073,9 +1109,39 @@ func (s *Server) addGraphReferenceLinksWithProgressAndStats(ctx context.Context,
 						continue
 					}
 					sourceID := graphReferenceSourceIDFromRanges(document.URI, analysis.procedureRanges, posting.Range)
+					classScope, classScopeKnown := "", false
+					visible := func(target *graphReferenceTarget) bool {
+						if _, accepted := target.documents[document.URI]; !accepted {
+							return false
+						}
+						switch target.visibility {
+						case graphReferenceVisibleInProcedure:
+							return target.uri == document.URI && target.procedureID == sourceID
+						case graphReferenceVisibleInClass:
+							if target.uri != document.URI || sourceID == document.URI {
+								return false
+							}
+							if !classScopeKnown {
+								scope := vbscriptScopeAtOffset(document, analysis.sourceDocument.OffsetAt(posting.Range.Start))
+								classScope, classScopeKnown = vbscriptClassScopeForProcedure(document, scope), true
+							}
+							return classScope != "" && strings.EqualFold(classScope, target.declaration.MemberOf)
+						}
+						return true
+					}
+					// A procedure-local or class-member declaration shadows
+					// same-named declarations elsewhere.
+					shadowed := false
 					for targetIndex := range targets {
 						target := &targets[targetIndex]
-						if _, accepted := target.documents[document.URI]; !accepted {
+						if target.visibility != graphReferenceVisibleWherever && visible(target) {
+							shadowed = true
+							break
+						}
+					}
+					for targetIndex := range targets {
+						target := &targets[targetIndex]
+						if shadowed && target.visibility == graphReferenceVisibleWherever || !visible(target) {
 							continue
 						}
 						localStats[index].TargetResolutions++

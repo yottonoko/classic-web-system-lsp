@@ -4,6 +4,7 @@ import (
 	"context"
 	"io"
 	"reflect"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -194,5 +195,63 @@ func addLegacyGraphReferenceLinksForTest(server *Server, payload *graph.Payload,
 			Ranges: link.ranges,
 		})
 		payload.Stats[link.kind] += link.count
+	}
+}
+
+func TestGraphReferenceLinksRespectProcedureAndClassScope(t *testing.T) {
+	server := New(nil, io.Discard, nil)
+	document := server.parseText("file:///workspace/scoped.asp", `<%
+Dim rs, items
+Function First()
+  Dim rs
+  Set rs = Nothing
+  First = rs
+End Function
+Function Second()
+  Dim rs
+  Second = rs
+End Function
+Function Third()
+  Third = rs
+End Function
+Class Cart
+  Private items
+  Public Function Count()
+    Count = items
+  End Function
+End Class
+Set rs = Nothing
+items = 1
+%>`, "VBScript")
+	payload := graph.Payload{Stats: map[string]int{}}
+	server.addGraphReferenceLinksWithProgress(context.Background(), &payload, []*core.ParsedDocument{document}, nil, "graph.document")
+
+	declarationID := func(name string, line, character int) string {
+		return graphDeclarationNodeID(document.URI, name, lsp.Range{Start: lsp.Position{Line: line, Character: character}, End: lsp.Position{Line: line, Character: character + len(name)}})
+	}
+	procedureID := func(name string, line int) string {
+		return declarationID(name, line, len("Function "))
+	}
+	got := map[string][]string{}
+	for _, link := range payload.Links {
+		got[link.Target] = append(got[link.Target], link.Source)
+	}
+	for target := range got {
+		sort.Strings(got[target])
+		got[target] = slices.Compact(got[target])
+	}
+	want := map[string][]string{
+		declarationID("rs", 1, 4):    {document.URI, procedureID("Third", 11)},
+		declarationID("items", 1, 8): {document.URI},
+		declarationID("rs", 3, 6):    {procedureID("First", 2)},
+		declarationID("rs", 8, 6):    {procedureID("Second", 7)},
+		declarationID("items", 15, 10): {
+			declarationID("Count", 16, len("  Public Function ")),
+		},
+	}
+	for target, sources := range want {
+		if !reflect.DeepEqual(got[target], sources) {
+			t.Errorf("links to %s come from %v, want %v", target, got[target], sources)
+		}
 	}
 }
