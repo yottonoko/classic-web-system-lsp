@@ -66,6 +66,7 @@ type javascriptProjectIdentityRecord struct {
 type javascriptProjectIdentityMemoryEntry struct {
 	fsGeneration int
 	fingerprint  string
+	settingsKey  string
 	recordHash   string
 	record       javascriptProjectIdentityRecord
 }

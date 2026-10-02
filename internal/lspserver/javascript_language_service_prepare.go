@@ -195,34 +195,51 @@ func (s *Server) prepareJavaScriptRequestContext(ctx context.Context, sourceURI 
 	var active *javaScriptVirtualFile
 	if workspaceFiles == nil && root != "" {
 		workspacePaths := make([]string, 0, 256)
-		walkErr := filepath.WalkDir(root, func(path string, entry os.DirEntry, walkErr error) error {
+		s.mu.Lock()
+		walkHook := s.javascriptWorkspaceWalkTestHook
+		s.mu.Unlock()
+		sourcePath := fileURIPath(sourceURI)
+		// Each directory is listed once, and nested project configs are found
+		// in that listing; stating both config names in every directory would
+		// cost two more round trips per directory on network drives.
+		var walk func(directory string)
+		walk = func(directory string) {
 			if ctx.Err() != nil {
-				return ctx.Err()
+				return
 			}
-			s.mu.Lock()
-			walkHook := s.javascriptWorkspaceWalkTestHook
-			s.mu.Unlock()
-			if walkHook != nil {
-				walkHook(path)
+			entries, err := os.ReadDir(directory)
+			if err != nil {
+				return
 			}
-			if walkErr != nil {
-				return nil
+			if directory != root && !pathContainsFile(directory, sourcePath) && javaScriptProjectConfigListed(directory, entries) {
+				return
 			}
-			if entry.IsDir() {
-				if fileFilter.skipsDirectory(path, entry.Name()) {
-					return filepath.SkipDir
+			for _, entry := range entries {
+				if ctx.Err() != nil {
+					return
 				}
-				if path != root && !pathContainsFile(path, fileURIPath(sourceURI)) && directoryHasJavaScriptProjectConfig(path) {
-					return filepath.SkipDir
+				path := filepath.Join(directory, entry.Name())
+				if walkHook != nil {
+					walkHook(path)
 				}
-				return nil
+				if entry.IsDir() {
+					if !fileFilter.skipsDirectory(path, entry.Name()) {
+						walk(path)
+					}
+					continue
+				}
+				if fileFilter.includesFile(path) {
+					workspacePaths = append(workspacePaths, path)
+				}
 			}
-			if fileFilter.includesFile(path) {
-				workspacePaths = append(workspacePaths, path)
-			}
-			return nil
-		})
-		if walkErr != nil && ctx.Err() != nil {
+		}
+		if walkHook != nil {
+			walkHook(root)
+		}
+		if !fileFilter.skipsDirectory(root, filepath.Base(root)) {
+			walk(root)
+		}
+		if ctx.Err() != nil {
 			return nil, false
 		}
 		sort.Strings(workspacePaths)

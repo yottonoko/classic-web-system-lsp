@@ -20,6 +20,25 @@ func directoryHasJavaScriptProjectConfig(path string) bool {
 	return false
 }
 
+// javaScriptProjectConfigListed is directoryHasJavaScriptProjectConfig for a
+// directory whose entries are already listed. It stats only names the listing
+// cannot settle, such as symlinks or names that differ in case.
+func javaScriptProjectConfigListed(path string, entries []os.DirEntry) bool {
+	for _, entry := range entries {
+		name := entry.Name()
+		if !strings.EqualFold(name, "jsconfig.json") && !strings.EqualFold(name, "tsconfig.json") {
+			continue
+		}
+		if name != "jsconfig.json" && name != "tsconfig.json" || entry.Type()&os.ModeSymlink != 0 {
+			return directoryHasJavaScriptProjectConfig(path)
+		}
+		if !entry.IsDir() {
+			return true
+		}
+	}
+	return false
+}
+
 type javaScriptProjectConfig struct {
 	Options map[string]any
 	Types   []string

@@ -487,6 +487,9 @@ func (s *Server) didChangeWatchedFiles(params didChangeWatchedFilesParams) error
 	javascriptProjectChanged := false
 	javascriptProjectConfigChanged := false
 	javascriptProjectChanges := make([]fileEvent, 0, len(params.Changes))
+	// Every handled event, so the JavaScript project identity can follow the
+	// filesystem generation instead of revalidating every directory it keeps.
+	javascriptIdentityChanges := make([]fileEvent, 0, len(params.Changes))
 	includeResolutionStructureChanged := false
 	gitIgnoreChanged := false
 	changedPublicBoundary := map[string]bool{}
@@ -525,6 +528,7 @@ func (s *Server) didChangeWatchedFiles(params didChangeWatchedFilesParams) error
 		s.invalidateFsPath(cleanPath)
 		s.invalidateSourceSnapshot(cleanPath)
 		changedPaths[cleanPath] = struct{}{}
+		javascriptIdentityChanges = append(javascriptIdentityChanges, change)
 		if gitIgnoreEvent {
 			gitIgnoreChanged = true
 			invalidateJavaScriptProjectDiscoverySettings(s)
@@ -619,7 +623,7 @@ func (s *Server) didChangeWatchedFiles(params didChangeWatchedFilesParams) error
 		s.deleteParsedCacheForURILocked(uri)
 		s.mu.Unlock()
 	}
-	s.updateJavaScriptProjectIdentityForWatchedFiles(javascriptProjectChanges)
+	s.updateJavaScriptProjectIdentityForWatchedFiles(javascriptIdentityChanges)
 	if len(changedPaths) == 0 {
 		return nil
 	}

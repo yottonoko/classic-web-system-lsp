@@ -33,21 +33,51 @@ func (s *Server) javascriptProjectFingerprintContext(ctx context.Context) string
 		return ""
 	}
 	settingsKey := javascriptProjectIdentitySettingsKeyForSettings(roots, settings)
+	currentGeneration := func() int {
+		if gateway == nil {
+			return 0
+		}
+		return gateway.Generation()
+	}
+	remembered := func(generation int) (string, bool) {
+		if cache == nil {
+			return "", false
+		}
+		cached, ok := javascriptProjectIdentityMemory.Load(cache)
+		if !ok {
+			return "", false
+		}
+		entry := cached.(javascriptProjectIdentityMemoryEntry)
+		return entry.fingerprint, entry.fsGeneration == generation && entry.settingsKey == settingsKey
+	}
+	// Diagnostics for many pages ask at once after a change. Let one caller
+	// revalidate or rescan the project while the others wait for its result.
+	var gate chan struct{}
+	defer func() {
+		if gate != nil {
+			<-gate
+		}
+	}()
 	const maxAttempts = 3
 	for attempt := 0; attempt < maxAttempts; attempt++ {
 		if ctx.Err() != nil {
 			return ""
 		}
-		generation := 0
-		if gateway != nil {
-			generation = gateway.Generation()
+		generation := currentGeneration()
+		if fingerprint, ok := remembered(generation); ok {
+			return fingerprint
 		}
-		if cache != nil {
-			if cached, ok := javascriptProjectIdentityMemory.Load(cache); ok {
-				entry := cached.(javascriptProjectIdentityMemoryEntry)
-				if entry.fsGeneration == generation && entry.recordHash == javascriptProjectIdentityRecordHash(settingsKey, entry.record) {
-					return entry.fingerprint
-				}
+		if cache != nil && gate == nil {
+			candidate := javascriptProjectIdentityScanGate(cache)
+			select {
+			case candidate <- struct{}{}:
+				gate = candidate
+			case <-ctx.Done():
+				return ""
+			}
+			generation = currentGeneration()
+			if fingerprint, ok := remembered(generation); ok {
+				return fingerprint
 			}
 		}
 		if cache != nil && cache.Enabled() {
@@ -70,7 +100,7 @@ func (s *Server) javascriptProjectFingerprintContext(ctx context.Context) string
 						return workspacepkg.DiskContentHash("javascript-project-identity-unstable-v1\x00" + record.Fingerprint + "\x00" + strconv.Itoa(generation) + "\x00" + strconv.Itoa(gateway.Generation()))
 					}
 					recordHash := javascriptProjectIdentityRecordHash(settingsKey, record)
-					javascriptProjectIdentityMemory.Store(cache, javascriptProjectIdentityMemoryEntry{fsGeneration: generation, fingerprint: record.Fingerprint, recordHash: recordHash, record: record})
+					javascriptProjectIdentityMemory.Store(cache, javascriptProjectIdentityMemoryEntry{fsGeneration: generation, fingerprint: record.Fingerprint, settingsKey: settingsKey, recordHash: recordHash, record: record})
 					s.logAnalysisDatabaseEvent("javascriptProjectIdentity", "restore", map[string]any{
 						"files": len(record.Files), "fingerprint": shortLogKey(record.Fingerprint), "settingsKey": shortLogKey(settingsKey),
 					})
@@ -82,15 +112,11 @@ func (s *Server) javascriptProjectFingerprintContext(ctx context.Context) string
 		if ctx.Err() != nil {
 			return ""
 		}
-		currentGeneration := generation
-		if gateway != nil {
-			currentGeneration = gateway.Generation()
-		}
-		if currentGeneration != generation {
+		if scannedGeneration := currentGeneration(); scannedGeneration != generation {
 			if attempt+1 < maxAttempts {
 				continue
 			}
-			return workspacepkg.DiskContentHash("javascript-project-identity-unstable-v1\x00" + record.Fingerprint + "\x00" + strconv.Itoa(generation) + "\x00" + strconv.Itoa(currentGeneration))
+			return workspacepkg.DiskContentHash("javascript-project-identity-unstable-v1\x00" + record.Fingerprint + "\x00" + strconv.Itoa(generation) + "\x00" + strconv.Itoa(scannedGeneration))
 		}
 		if cache != nil {
 			s.storeJavaScriptProjectIdentity(cache, settingsKey, generation, record, true)
@@ -98,6 +124,13 @@ func (s *Server) javascriptProjectFingerprintContext(ctx context.Context) string
 		return record.Fingerprint
 	}
 	return ""
+}
+
+var javascriptProjectIdentityScanGates sync.Map // *workspacepkg.DiskAnalysisCache -> chan struct{}
+
+func javascriptProjectIdentityScanGate(cache *workspacepkg.DiskAnalysisCache) chan struct{} {
+	gate, _ := javascriptProjectIdentityScanGates.LoadOrStore(cache, make(chan struct{}, 1))
+	return gate.(chan struct{})
 }
 
 func (s *Server) javascriptProjectIdentityRoots() ([]string, *workspacepkg.FsGateway) {
@@ -362,6 +395,7 @@ func (s *Server) storeJavaScriptProjectIdentity(cache *workspacepkg.DiskAnalysis
 	javascriptProjectIdentityMemory.Store(cache, javascriptProjectIdentityMemoryEntry{
 		fsGeneration: generation,
 		fingerprint:  record.Fingerprint,
+		settingsKey:  settingsKey,
 		recordHash:   recordHash,
 		record:       record,
 	})
@@ -396,7 +430,7 @@ func (s *Server) updateJavaScriptProjectIdentityForWatchedFiles(changes []fileEv
 	var record javascriptProjectIdentityRecord
 	if cached, ok := javascriptProjectIdentityMemory.Load(cache); ok {
 		entry := cached.(javascriptProjectIdentityMemoryEntry)
-		if entry.recordHash == javascriptProjectIdentityRecordHash(settingsKey, entry.record) {
+		if entry.settingsKey == settingsKey {
 			record = entry.record
 		}
 	}
@@ -417,7 +451,25 @@ func (s *Server) updateJavaScriptProjectIdentityForWatchedFiles(changes []fileEv
 	identityChanged := false
 	for _, change := range changes {
 		path := filepath.Clean(fileURIPath(change.URI))
-		if path == "." || !javascriptProjectIdentityPathAllowed(path, roots, settings) {
+		if path == "." {
+			continue
+		}
+		if !javascriptProjectIdentityPathAllowed(path, roots, settings) {
+			// Other files leave the identity alone, but adding or removing one
+			// changes the time the record keeps for its directory.
+			parent := filepath.Dir(path)
+			if _, exists := directories[parent]; exists && change.Type != fileChangeChanged {
+				if info, ok := s.fsStat(parent); ok && info.Directory {
+					metadata := workspacepkg.DiskAnalysisSourceMetadata{FileName: parent, MtimeMS: info.MtimeMS}
+					if directories[parent] != metadata {
+						directories[parent] = metadata
+						identityChanged = true
+					}
+				} else {
+					delete(directories, parent)
+					identityChanged = true
+				}
+			}
 			continue
 		}
 		if change.Type == fileChangeDeleted {
