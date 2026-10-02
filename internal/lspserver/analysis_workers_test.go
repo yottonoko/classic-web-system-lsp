@@ -167,3 +167,61 @@ func TestNestedAnalysisCompletesWhenAllOuterWorkersNest(t *testing.T) {
 		t.Fatal("mutually nested outer workers deadlocked")
 	}
 }
+
+func TestRequestAnalysisFinishesWhileBulkWorkersAreSaturated(t *testing.T) {
+	pool := &analysisWorkerPool{}
+	pool.setWorkers(2)
+	bulkStarted := make(chan struct{}, 2)
+	releaseBulk := make(chan struct{})
+	bulkDone := make(chan struct{})
+	go func() {
+		defer close(bulkDone)
+		pool.parallelForBulk(context.Background(), 2, func(context.Context, int) {
+			bulkStarted <- struct{}{}
+			<-releaseBulk
+		})
+	}()
+	for range 2 {
+		select {
+		case <-bulkStarted:
+		case <-time.After(time.Second):
+			t.Fatal("bulk analysis did not occupy every bulk slot")
+		}
+	}
+
+	var completed atomic.Int64
+	requestDone := make(chan struct{})
+	go func() {
+		defer close(requestDone)
+		pool.parallelForRequest(context.Background(), 5, func(context.Context, int) {
+			completed.Add(1)
+		})
+	}()
+	select {
+	case <-requestDone:
+	case <-time.After(time.Second):
+		t.Fatal("request analysis waited behind saturated bulk work")
+	}
+	if completed.Load() != 5 {
+		t.Fatalf("request analysis ran %d of 5 items", completed.Load())
+	}
+
+	bulkRequestDone := make(chan struct{})
+	go func() {
+		defer close(bulkRequestDone)
+		pool.parallelForBulk(context.Background(), 1, func(context.Context, int) {})
+	}()
+	select {
+	case <-bulkRequestDone:
+		t.Fatal("bulk analysis did not wait for a bulk slot")
+	case <-time.After(100 * time.Millisecond):
+	}
+	close(releaseBulk)
+	for _, done := range []chan struct{}{bulkDone, bulkRequestDone} {
+		select {
+		case <-done:
+		case <-time.After(time.Second):
+			t.Fatal("bulk analysis did not finish")
+		}
+	}
+}

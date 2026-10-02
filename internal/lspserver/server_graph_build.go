@@ -98,7 +98,7 @@ func (s *Server) buildDocumentSetGraphWithProgressAtGeneration(ctx context.Conte
 	}
 	if workerSymbolExtraction && workers != nil {
 		s.logDebugSummary("[asp-lsp] graphVbIndex.workerSymbolExtraction: documents=" + strconv.Itoa(len(documents)))
-		workers.parallelForBulk(ctx, len(documents), collectDeclarations)
+		workers.parallelForRequest(ctx, len(documents), collectDeclarations)
 	} else {
 		for index := range documents {
 			collectDeclarations(ctx, index)

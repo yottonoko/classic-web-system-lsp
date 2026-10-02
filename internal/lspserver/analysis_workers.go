@@ -98,6 +98,20 @@ func (p *analysisWorkerPool) parallelForBulk(ctx context.Context, count int, wor
 	p.parallelForClass(ctx, count, true, work)
 }
 
+// parallelForRequest runs bulk work for a user request. The calling
+// goroutine always works, and helpers join while bulk capacity is free, so a
+// request keeps making progress, and returns, while background passes hold
+// every bulk slot.
+func (p *analysisWorkerPool) parallelForRequest(ctx context.Context, count int, work func(context.Context, int)) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if ctx.Value(analysisWorkerContextKey{}) == nil {
+		ctx = context.WithValue(ctx, analysisWorkerContextKey{}, true)
+	}
+	p.parallelForClass(ctx, count, true, work)
+}
+
 func (p *analysisWorkerPool) parallelForClass(ctx context.Context, count int, bulk bool, work func(context.Context, int)) {
 	if count <= 0 {
 		return

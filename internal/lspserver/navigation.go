@@ -163,15 +163,25 @@ func (s *Server) buildNavigationGraphContextResult(ctx context.Context, params e
 		builder.navigationError = ctx.Err()
 		return navigationGraphBuildResult{err: navigationGraphIncompleteError(ctx, nil)}
 	}
+	// Running the programs is most of the extraction work, so it reports
+	// progress under the same label before the documents are emitted.
+	precomputed := 0
 	builder.precomputeVBScriptNavigationPrograms(func(count int, fn func(int)) {
-		s.analysisWorkers.parallelForBulk(ctx, count, func(_ context.Context, index int) { fn(index) })
+		precomputed = count
+		progress := newOrderedProgress(func(current int, _ string) {
+			report(labelPrefix+".extract", "", current, count+len(documents))
+		})
+		s.analysisWorkers.parallelForRequest(ctx, count, func(_ context.Context, index int) {
+			fn(index)
+			progress.advance("")
+		})
 	})
 	for index, parsed := range documents {
 		if ctx.Err() != nil {
 			return navigationGraphBuildResult{err: ctx.Err()}
 		}
 		if parsed == nil {
-			report(labelPrefix+".extract", "", index+1, len(documents))
+			report(labelPrefix+".extract", "", precomputed+index+1, precomputed+len(documents))
 			continue
 		}
 		documentOwners := []string{parsed.URI}
@@ -188,7 +198,7 @@ func (s *Server) buildNavigationGraphContextResult(ctx context.Context, params e
 				return navigationGraphBuildResult{err: navigationGraphIncompleteError(ctx, builder.navigationError)}
 			}
 		}
-		report(labelPrefix+".extract", parsed.URI, index+1, len(documents))
+		report(labelPrefix+".extract", parsed.URI, precomputed+index+1, precomputed+len(documents))
 	}
 	if builder.navigationError != nil || ctx.Err() != nil || !s.graphGenerationCurrent(ctx, collection.generation) {
 		return navigationGraphBuildResult{err: navigationGraphIncompleteError(ctx, builder.navigationError)}
@@ -427,7 +437,7 @@ func (s *Server) navigationFolderDocumentsContextWithProgressResult(ctx context.
 	}
 	parsedByIndex := make([]*core.ParsedDocument, len(files))
 	errorsByIndex := make([]error, len(files))
-	s.analysisWorkers.parallelForBulk(ctx, len(files), func(workerCtx context.Context, index int) {
+	s.analysisWorkers.parallelForRequest(ctx, len(files), func(workerCtx context.Context, index int) {
 		if !allowed[index] || workerCtx.Err() != nil {
 			return
 		}
@@ -520,10 +530,16 @@ func navigationIncludeRelationsWithProgress(ctx context.Context, s *Server, docu
 		}
 	}
 	resolved := make([]includeResolution, len(pending))
-	s.analysisWorkers.parallelForBulk(ctx, len(pending), func(workerCtx context.Context, index int) {
+	progress := newOrderedProgress(func(current int, _ string) {
+		if report != nil {
+			report("", "", current, len(pending)+len(documents))
+		}
+	})
+	s.analysisWorkers.parallelForRequest(ctx, len(pending), func(workerCtx context.Context, index int) {
 		if workerCtx.Err() == nil {
 			resolved[index].details, resolved[index].ok = s.includeTargetDetailsForModeContext(workerCtx, pending[index].owner, pending[index].include.Path, pending[index].include.Mode)
 		}
+		progress.advance("")
 	})
 	if ctx.Err() != nil {
 		return owners, relations
@@ -537,7 +553,7 @@ func navigationIncludeRelationsWithProgress(ctx context.Context, s *Server, docu
 		}
 		if document == nil {
 			if report != nil {
-				report("", "", index+1, len(documents))
+				report("", "", len(pending)+index+1, len(pending)+len(documents))
 			}
 			continue
 		}
@@ -575,10 +591,30 @@ func navigationIncludeRelationsWithProgress(ctx context.Context, s *Server, docu
 			owners[key] = append(owners[key], document.URI)
 		}
 		if report != nil {
-			report("", document.URI, index+1, len(documents))
+			report("", document.URI, len(pending)+index+1, len(pending)+len(documents))
 		}
 	}
 	return owners, relations
+}
+
+// orderedProgress reports a counter advanced by parallel workers so that the
+// reported values only increase.
+type orderedProgress struct {
+	mu      sync.Mutex
+	current int
+	report  func(current int, detail string)
+}
+
+func newOrderedProgress(report func(current int, detail string)) *orderedProgress {
+	return &orderedProgress{report: report}
+}
+
+// advance counts one finished item; detail names it in the report.
+func (progress *orderedProgress) advance(detail string) {
+	progress.mu.Lock()
+	defer progress.mu.Unlock()
+	progress.current++
+	progress.report(progress.current, detail)
 }
 
 type navigationGraphBuilder struct {

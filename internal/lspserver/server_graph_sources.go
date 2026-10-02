@@ -149,7 +149,7 @@ func (s *Server) workspaceGraphDocumentsContextWithProgressResult(ctx context.Co
 		parsed[index] = s.parseTextContext(memoCtx, source.URI, source.Text, defaultLanguage)
 	}
 	if shouldParallelParseGraphSources(keys, documents) {
-		s.analysisWorkers.parallelForBulk(ctx, len(keys), func(workerCtx context.Context, index int) {
+		s.analysisWorkers.parallelForRequest(ctx, len(keys), func(workerCtx context.Context, index int) {
 			if workerCtx.Err() != nil {
 				return
 			}
@@ -325,7 +325,7 @@ func (s *Server) workspaceGraphSourceDocumentsContext(ctx context.Context) graph
 	}
 	sort.Strings(keys)
 	parsed := make([]*core.ParsedDocument, len(keys))
-	s.analysisWorkers.parallelForBulk(withIncludeResolutionMemo(ctx), len(keys), func(workerCtx context.Context, index int) {
+	s.analysisWorkers.parallelForRequest(withIncludeResolutionMemo(ctx), len(keys), func(workerCtx context.Context, index int) {
 		if workerCtx.Err() != nil {
 			return
 		}

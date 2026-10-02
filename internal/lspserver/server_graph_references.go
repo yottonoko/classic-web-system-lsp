@@ -284,19 +284,33 @@ func (s *Server) graphMemberReferencesWithProgress(ctx context.Context, document
 		typeContexts[key] = cached
 		return cached
 	}
-	for index, parsed := range orderedDocuments {
-		if ctx.Err() != nil {
-			return nil, nil
+	// Type contexts execute each page with its includes; build them in
+	// parallel, then keep the first context per document identity as the
+	// sequential contextFor calls would.
+	indexed := make([]graphMemberTypeContext, len(orderedDocuments))
+	progress := newOrderedProgress(func(current int, detail string) {
+		if report != nil {
+			report(labelPrefix+".indexMembers", detail, current, len(orderedDocuments))
 		}
+	})
+	s.analysisWorkers.parallelForRequest(ctx, len(orderedDocuments), func(workerCtx context.Context, index int) {
+		detail := ""
+		if parsed := orderedDocuments[index]; parsed != nil && workerCtx.Err() == nil {
+			indexed[index] = s.graphMemberTypeContext(workerCtx, parsed, len(parsed.Includes) > 0)
+			detail = progressDetailForURI(parsed.URI)
+		}
+		progress.advance(detail)
+	})
+	if ctx.Err() != nil {
+		return nil, nil
+	}
+	for index, parsed := range orderedDocuments {
 		if parsed == nil {
-			if report != nil {
-				report(labelPrefix+".indexMembers", "", index+1, len(orderedDocuments))
-			}
 			continue
 		}
-		contextFor(parsed, len(parsed.Includes) > 0)
-		if report != nil {
-			report(labelPrefix+".indexMembers", progressDetailForURI(parsed.URI), index+1, len(orderedDocuments))
+		key := workspacepkg.FileIdentityKeyFromURI(parsed.URI)
+		if cached, ok := typeContexts[key]; !ok || len(parsed.Includes) > 0 && !cached.attempted {
+			typeContexts[key] = indexed[index]
 		}
 	}
 	nodeByID := map[string]graph.Node{}
@@ -329,106 +343,143 @@ func (s *Server) graphMemberReferencesWithProgress(ctx context.Context, document
 			Ranges: []lsp.Location{{URI: uri, Range: occurrenceRange}},
 		}
 	}
+	// Resolving receiver types and declarations reads the type contexts once
+	// per include owner, so it runs in parallel per occurrence; nodes and
+	// edges are added afterwards in document and occurrence order.
+	type memberResolution struct {
+		typeNames   []string
+		baseTargets []string
+	}
+	type memberWork struct {
+		document   int
+		occurrence graphMemberOccurrence
+	}
+	var work []memberWork
 	for index, parsed := range orderedDocuments {
-		if ctx.Err() != nil {
-			return nil, nil
-		}
 		if parsed == nil {
-			if report != nil {
-				report(labelPrefix+".linkMembers", "", index+1, len(orderedDocuments))
-			}
 			continue
 		}
-		for _, occurrence := range graphMemberOccurrences(parsed) {
-			if len(occurrence.Parts) >= 2 {
-				receiverName := occurrence.Parts[0]
-				memberName := occurrence.Parts[len(occurrence.Parts)-1]
-				offset := core.SourceDocument(parsed).OffsetAt(occurrence.Range.Start)
-				binding := graphMemberBindingAt(parsed, receiverName, offset)
-				ownerURIs := includeOwners[workspacepkg.FileIdentityKeyFromURI(parsed.URI)]
-				typeNames := make([]string, 0, len(ownerURIs)+1)
-				appendTypeName := func(typeName string) {
-					if typeName == "" {
-						return
-					}
-					for _, existing := range typeNames {
-						if strings.EqualFold(existing, typeName) {
-							return
-						}
-					}
-					typeNames = append(typeNames, typeName)
-				}
-				if len(ownerURIs) > 0 {
-					for _, ownerURI := range ownerURIs {
-						owner := documentsByIdentity[workspacepkg.FileIdentityKeyFromURI(ownerURI)]
-						if owner == nil {
-							continue
-						}
-						typeName, _ := graphMemberTypeAtContext(parsed, receiverName, binding, contextFor(owner, true), configuredTypes, true)
-						appendTypeName(typeName)
-					}
-					// A local declaration belongs to the fragment itself and must
-					// remain visible under every owner.
-					if len(typeNames) == 0 {
-						localType, localBound := graphMemberTypeAtContext(parsed, receiverName, binding, contextFor(parsed, false), configuredTypes, false)
-						if localBound {
-							appendTypeName(localType)
-						}
-					}
-				} else {
-					typeName, _ := graphMemberTypeAtContext(parsed, receiverName, binding, contextFor(parsed, false), configuredTypes, true)
-					appendTypeName(typeName)
-				}
-				for _, typeName := range typeNames {
-					if len(vbscriptConcreteTypeNames(typeName)) == 1 {
-						if node, ok := s.configuredComMemberGraphNode(typeName, memberName); ok {
-							addNode(node)
-							addEdge(graphReferenceSourceID(parsed, occurrence.Range), node.ID, parsed.URI, occurrence.Range)
-						}
-					} else {
-						for _, node := range s.configuredComMemberGraphNodes(typeName, memberName) {
-							addNode(node)
-							addEdge(graphReferenceSourceID(parsed, occurrence.Range), node.ID, parsed.URI, occurrence.Range)
-						}
-					}
-				}
-			}
-			nodeIDs := make([]string, 0, len(occurrence.Parts)-1)
-			for index := 1; index < len(occurrence.Parts); index++ {
-				fullPath := strings.Join(occurrence.Parts[:index+1], ".")
-				receiver := strings.Join(occurrence.Parts[:index], ".")
-				member := occurrence.Parts[index]
-				id := graphMemberNodeID(parsed.URI, fullPath)
-				nodeIDs = append(nodeIDs, id)
-				addNode(graph.Node{
-					ID:           id,
-					Label:        member,
-					Kind:         "vbMemberReference",
-					URI:          parsed.URI,
-					Role:         "member",
-					ReceiverName: receiver,
-					MemberName:   member,
-					FullPath:     fullPath,
-				})
-			}
-			deepestID := nodeIDs[len(nodeIDs)-1]
-			addEdge(graphReferenceSourceID(parsed, occurrence.Range), deepestID, parsed.URI, occurrence.Range)
-			for index := len(nodeIDs) - 1; index >= 0; index-- {
-				target := ""
-				if index == 0 {
-					baseTargets := graphMemberDeclarationIDsForOccurrence(parsed, occurrence, includeOwners[workspacepkg.FileIdentityKeyFromURI(parsed.URI)], documentsByIdentity, configuredSettings)
-					for _, baseTarget := range baseTargets {
-						addEdge(nodeIDs[index], baseTarget, parsed.URI, occurrence.Range)
-					}
-					continue
-				} else {
-					target = nodeIDs[index-1]
-				}
-				addEdge(nodeIDs[index], target, parsed.URI, occurrence.Range)
+		ownerURIs := includeOwners[workspacepkg.FileIdentityKeyFromURI(parsed.URI)]
+		for _, ownerURI := range ownerURIs {
+			if owner := documentsByIdentity[workspacepkg.FileIdentityKeyFromURI(ownerURI)]; owner != nil {
+				contextFor(owner, true)
 			}
 		}
+		contextFor(parsed, false)
+		for _, occurrence := range graphMemberOccurrences(parsed) {
+			work = append(work, memberWork{document: index, occurrence: occurrence})
+		}
+	}
+	cachedContext := func(parsed *core.ParsedDocument) graphMemberTypeContext {
+		return typeContexts[workspacepkg.FileIdentityKeyFromURI(parsed.URI)]
+	}
+	resolutions := make([]memberResolution, len(work))
+	linkProgress := newOrderedProgress(func(current int, detail string) {
 		if report != nil {
-			report(labelPrefix+".linkMembers", progressDetailForURI(parsed.URI), index+1, len(orderedDocuments))
+			report(labelPrefix+".linkMembers", detail, current, len(work))
+		}
+	})
+	s.analysisWorkers.parallelForRequest(ctx, len(work), func(workerCtx context.Context, index int) {
+		if workerCtx.Err() != nil {
+			return
+		}
+		parsed := orderedDocuments[work[index].document]
+		occurrence := work[index].occurrence
+		ownerURIs := includeOwners[workspacepkg.FileIdentityKeyFromURI(parsed.URI)]
+		resolution := &resolutions[index]
+		if len(occurrence.Parts) >= 2 {
+			receiverName := occurrence.Parts[0]
+			offset := core.SourceDocument(parsed).OffsetAt(occurrence.Range.Start)
+			binding := graphMemberBindingAt(parsed, receiverName, offset)
+			typeNames := make([]string, 0, len(ownerURIs)+1)
+			appendTypeName := func(typeName string) {
+				if typeName == "" {
+					return
+				}
+				for _, existing := range typeNames {
+					if strings.EqualFold(existing, typeName) {
+						return
+					}
+				}
+				typeNames = append(typeNames, typeName)
+			}
+			if len(ownerURIs) > 0 {
+				for _, ownerURI := range ownerURIs {
+					owner := documentsByIdentity[workspacepkg.FileIdentityKeyFromURI(ownerURI)]
+					if owner == nil {
+						continue
+					}
+					typeName, _ := graphMemberTypeAtContext(parsed, receiverName, binding, cachedContext(owner), configuredTypes, true)
+					appendTypeName(typeName)
+				}
+				// A local declaration belongs to the fragment itself and must
+				// remain visible under every owner.
+				if len(typeNames) == 0 {
+					localType, localBound := graphMemberTypeAtContext(parsed, receiverName, binding, cachedContext(parsed), configuredTypes, false)
+					if localBound {
+						appendTypeName(localType)
+					}
+				}
+			} else {
+				typeName, _ := graphMemberTypeAtContext(parsed, receiverName, binding, cachedContext(parsed), configuredTypes, true)
+				appendTypeName(typeName)
+			}
+			resolution.typeNames = typeNames
+		}
+		resolution.baseTargets = graphMemberDeclarationIDsForOccurrence(parsed, occurrence, ownerURIs, documentsByIdentity, configuredSettings)
+		linkProgress.advance(progressDetailForURI(parsed.URI))
+	})
+	if ctx.Err() != nil {
+		return nil, nil
+	}
+	for index, item := range work {
+		parsed := orderedDocuments[item.document]
+		occurrence := item.occurrence
+		resolution := resolutions[index]
+		if len(occurrence.Parts) >= 2 {
+			memberName := occurrence.Parts[len(occurrence.Parts)-1]
+			for _, typeName := range resolution.typeNames {
+				if len(vbscriptConcreteTypeNames(typeName)) == 1 {
+					if node, ok := s.configuredComMemberGraphNode(typeName, memberName); ok {
+						addNode(node)
+						addEdge(graphReferenceSourceID(parsed, occurrence.Range), node.ID, parsed.URI, occurrence.Range)
+					}
+				} else {
+					for _, node := range s.configuredComMemberGraphNodes(typeName, memberName) {
+						addNode(node)
+						addEdge(graphReferenceSourceID(parsed, occurrence.Range), node.ID, parsed.URI, occurrence.Range)
+					}
+				}
+			}
+		}
+		nodeIDs := make([]string, 0, len(occurrence.Parts)-1)
+		for index := 1; index < len(occurrence.Parts); index++ {
+			fullPath := strings.Join(occurrence.Parts[:index+1], ".")
+			receiver := strings.Join(occurrence.Parts[:index], ".")
+			member := occurrence.Parts[index]
+			id := graphMemberNodeID(parsed.URI, fullPath)
+			nodeIDs = append(nodeIDs, id)
+			addNode(graph.Node{
+				ID:           id,
+				Label:        member,
+				Kind:         "vbMemberReference",
+				URI:          parsed.URI,
+				Role:         "member",
+				ReceiverName: receiver,
+				MemberName:   member,
+				FullPath:     fullPath,
+			})
+		}
+		deepestID := nodeIDs[len(nodeIDs)-1]
+		addEdge(graphReferenceSourceID(parsed, occurrence.Range), deepestID, parsed.URI, occurrence.Range)
+		for index := len(nodeIDs) - 1; index >= 0; index-- {
+			if index == 0 {
+				for _, baseTarget := range resolution.baseTargets {
+					addEdge(nodeIDs[index], baseTarget, parsed.URI, occurrence.Range)
+				}
+				continue
+			}
+			addEdge(nodeIDs[index], nodeIDs[index-1], parsed.URI, occurrence.Range)
 		}
 	}
 	nodes := make([]graph.Node, 0, len(nodeByID))
@@ -1081,7 +1132,7 @@ func (s *Server) addGraphReferenceLinksWithProgressAndStats(ctx context.Context,
 	linkGroups := make([]map[string]*graphReferenceLinkCount, len(documents))
 	localStats := make([]graphReferenceTraversalStats, len(documents))
 	var completed atomic.Int64
-	s.analysisWorkers.parallelForBulk(ctx, len(documents), func(workerCtx context.Context, index int) {
+	s.analysisWorkers.parallelForRequest(ctx, len(documents), func(workerCtx context.Context, index int) {
 		if workerCtx.Err() != nil {
 			return
 		}

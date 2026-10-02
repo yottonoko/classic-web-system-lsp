@@ -11,7 +11,7 @@ This ledger is the deletion gate for removing the legacy TypeScript/JavaScript L
 ## Summary
 
 - Legacy TS/Vitest cases tracked: 828
-- Go tests discovered: 2167
+- Go tests discovered: 2168
 - `covered`: 470
 - `covered-by-package`: 90
 - `merged`: 268

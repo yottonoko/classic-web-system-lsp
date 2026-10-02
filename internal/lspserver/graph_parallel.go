@@ -20,7 +20,7 @@ type graphDocumentAnalysis struct {
 func (s *Server) graphDocumentAnalysesWithProgress(ctx context.Context, documents []*core.ParsedDocument, report graphProgressReporter, labelPrefix string) map[string]graphDocumentAnalysis {
 	analyses := make([]graphDocumentAnalysis, len(documents))
 	var completed atomic.Int64
-	s.analysisWorkers.parallelForBulk(ctx, len(documents), func(workerCtx context.Context, index int) {
+	s.analysisWorkers.parallelForRequest(ctx, len(documents), func(workerCtx context.Context, index int) {
 		if workerCtx.Err() != nil {
 			return
 		}
