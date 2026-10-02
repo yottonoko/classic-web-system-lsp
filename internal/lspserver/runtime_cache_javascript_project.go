@@ -761,7 +761,7 @@ func (s *Server) diskIncludePathFingerprint(path string, entries map[string]work
 	defer delete(visited, identity)
 	parts := []string{cleaned}
 	if open := s.documentByURI(filePathURI(cleaned)); open != nil {
-		parts = append(parts, "content", workspacepkg.DiskContentHash(open.Text))
+		parts = append(parts, "content", textContentHash(open.Text))
 	} else if entry, ok := entries[identity]; ok && entry.Source.ContentHash != "" {
 		parts = append(parts, "content", entry.Source.ContentHash)
 	} else if info, ok := s.fsStat(cleaned); ok {

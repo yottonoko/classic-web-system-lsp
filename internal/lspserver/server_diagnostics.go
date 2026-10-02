@@ -526,7 +526,7 @@ func (s *Server) diagnosticTargetRevisionForParsedContext(ctx context.Context, p
 	if ctx.Err() != nil {
 		return diagnosticTargetRevision{}, false
 	}
-	contentHash := workspacepkg.DiskContentHash(parsed.Text)
+	contentHash := textContentHash(parsed.Text)
 	s.mu.Lock()
 	if doc := s.openDocumentByURILocked(parsed.URI); doc != nil {
 		text, version := doc.Text, doc.Version
@@ -559,7 +559,7 @@ func (s *Server) diagnosticTargetRevisionContext(ctx context.Context, uri string
 	if doc := s.openDocumentByURILocked(uri); doc != nil {
 		text, version := doc.Text, doc.Version
 		s.mu.Unlock()
-		hash := workspacepkg.DiskContentHash(text)
+		hash := textContentHash(text)
 		return diagnosticTargetRevision{
 			contentHash:  hash,
 			version:      version,
@@ -571,7 +571,7 @@ func (s *Server) diagnosticTargetRevisionContext(ctx context.Context, uri string
 	if doc := s.workspaceDocumentByURILocked(uri); doc != nil {
 		text := doc.Text
 		s.mu.Unlock()
-		hash := workspacepkg.DiskContentHash(text)
+		hash := textContentHash(text)
 		return diagnosticTargetRevision{contentHash: hash, document: doc, documentHash: hash}, true
 	}
 	s.mu.Unlock()
