@@ -483,7 +483,10 @@ func (b *Beautifier) Beautify() (string, error) {
 		case b.ch == `"` || b.ch == `'`:
 			preserveQuoteSpace := previousCh == `"` || previousCh == `'`
 			b.preserveSingleSpace(preserveQuoteSpace || isAfterSpace)
-			b.printString(b.ch + b.eatString(b.ch))
+			// eatString moves b.ch, so read the quote before calling it; Go does
+			// not order the field read against the call in b.ch + b.eatString().
+			quote := b.ch
+			b.printString(quote + b.eatString(quote))
 			b.eatWhitespace(true)
 		case b.ch == ";":
 			insideNonSemicolonValues = false
