@@ -20,6 +20,24 @@ func TestTextDocumentUTF16Positions(t *testing.T) {
 	}
 }
 
+func TestTextDocumentPositionAtMapsOffsetsInsideRuneToRuneStart(t *testing.T) {
+	text := "a😀b\n日本"
+	doc := NewTextDocument("file:///unicode.asp", "classic-asp", 1, text)
+	for offset := len("a") + 1; offset < len("a😀"); offset++ {
+		if got := doc.PositionAt(offset); got != (lsp.Position{Line: 0, Character: 1}) {
+			t.Fatalf("PositionAt(%d) inside emoji = %#v, want character 1", offset, got)
+		}
+	}
+	previous := lsp.Position{}
+	for offset := 0; offset <= len(text); offset++ {
+		got := doc.PositionAt(offset)
+		if got.Line < previous.Line || got.Line == previous.Line && got.Character < previous.Character {
+			t.Fatalf("PositionAt(%d) = %#v moved before PositionAt(%d) = %#v", offset, got, offset-1, previous)
+		}
+		previous = got
+	}
+}
+
 func TestTextDocumentOffsetAtClampsToLineContentEnd(t *testing.T) {
 	tests := []struct {
 		name     string

@@ -1,6 +1,7 @@
 package vbscript
 
 import (
+	"reflect"
 	"strings"
 	"testing"
 
@@ -39,6 +40,19 @@ func TestCSTTokenizesLeadingDecimalPointNumericLiterals(t *testing.T) {
 		if !found {
 			t.Fatalf("numeric literal %q missing from %#v", literal, tokens)
 		}
+	}
+}
+
+func TestCSTTokenizesNonASCIISymbolsAsWholeRunes(t *testing.T) {
+	tokens := Tokenize("😀0 日")
+	want := []Token{
+		{Kind: "symbol", Start: 0, End: len("😀"), Text: "😀"},
+		{Kind: "number", Start: len("😀"), End: len("😀0"), Text: "0"},
+		{Kind: "whitespace", Start: len("😀0"), End: len("😀0 "), Text: " "},
+		{Kind: "symbol", Start: len("😀0 "), End: len("😀0 日"), Text: "日"},
+	}
+	if !reflect.DeepEqual(tokens, want) {
+		t.Fatalf("Tokenize() = %#v, want %#v", tokens, want)
 	}
 }
 

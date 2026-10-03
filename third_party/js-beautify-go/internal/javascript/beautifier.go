@@ -2167,7 +2167,61 @@ func readJSTemplate(source string, i int, templating []string) (string, int) {
 		next := i + len(item.open) + end + len(item.close)
 		return source[i:next], next
 	}
+	// Like upstream's TemplatablePattern, smarty is only read when it is
+	// enabled explicitly and django and handlebars are off.
+	if containsJSTemplating(templating, "smarty") && !hasJSTemplating(templating, "django") && !hasJSTemplating(templating, "handlebars") {
+		if next := readSmartyTemplate(source, i); next > i {
+			return source[i:next], next
+		}
+	}
 	return "", i
+}
+
+// readSmartyTemplate returns the end of a smarty comment, literal block, or
+// tag at i. An unterminated template runs to the end of the source.
+func readSmartyTemplate(source string, i int) int {
+	untilAfter := func(start int, close *regexp.Regexp) int {
+		if location := close.FindStringIndex(source[start:]); location != nil {
+			return start + location[1]
+		}
+		return len(source)
+	}
+	switch {
+	case strings.HasPrefix(source[i:], "{*"):
+		return untilAfter(i+2, smartyCommentClose)
+	case strings.HasPrefix(source[i:], "{literal}"):
+		return untilAfter(i+len("{literal}"), smartyLiteralClose)
+	case i+1 < len(source) && source[i] == '{':
+		next, _ := utf8.DecodeRuneInString(source[i+1:])
+		if next == '}' || next == '{' || isJSWhitespaceRune(next) {
+			return i
+		}
+		return untilAfter(i+1, smartyTagClose)
+	}
+	return i
+}
+
+var (
+	smartyCommentClose = regexp.MustCompile(`\*\}`)
+	smartyLiteralClose = regexp.MustCompile(`\{/literal\}`)
+	smartyTagClose     = regexp.MustCompile(`[^\t\n\x{0B}\f\r \x{A0}\x{1680}\x{2000}-\x{200A}\x{2028}\x{2029}\x{202F}\x{205F}\x{3000}\x{FEFF}]\}`)
+)
+
+func isJSWhitespaceRune(r rune) bool {
+	switch r {
+	case '\t', '\n', '\v', '\f', '\r', ' ', 0xA0, 0x1680, 0x2028, 0x2029, 0x202F, 0x205F, 0x3000, 0xFEFF:
+		return true
+	}
+	return r >= 0x2000 && r <= 0x200A
+}
+
+func containsJSTemplating(items []string, name string) bool {
+	for _, item := range items {
+		if item == name {
+			return true
+		}
+	}
+	return false
 }
 
 func hasJSTemplating(items []string, name string) bool {

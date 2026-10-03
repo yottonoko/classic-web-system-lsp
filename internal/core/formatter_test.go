@@ -3,6 +3,8 @@ package core
 import (
 	"strings"
 	"testing"
+
+	"github.com/yottonoko/classic-web-system-lsp/internal/lsp"
 )
 
 func TestFormatDocumentKeepsASPDelimiters(t *testing.T) {
@@ -189,6 +191,61 @@ func TestFormatDocumentDelegatesWholeHTMLWhenNoASPRegions(t *testing.T) {
 	}
 	if edits[0].NewText != "<div>\n  <span>x</span>\n</div>" {
 		t.Fatalf("formatted = %q", edits[0].NewText)
+	}
+}
+
+func TestFormatDocumentRejectsHTMLOutputThatChangesServerRegions(t *testing.T) {
+	tests := []struct {
+		name   string
+		source string
+		html   func(string) string
+	}{
+		{
+			name:   "creates an ASP block",
+			source: "<p>a < %b</p>",
+			html:   func(source string) string { return strings.ReplaceAll(source, "< %", "<%") },
+		},
+		{
+			name:   "drops an ASP block around HTML",
+			source: "<div><%= value %></div>",
+			html: func(source string) string {
+				return strings.ReplaceAll(source, aspHTMLPlaceholderToken("", 0), "")
+			},
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			parsed := ParseDocument("file:///format.asp", test.source, Settings{})
+			edits := FormatDocument(parsed, FormattingOptions{
+				TabSize:      2,
+				InsertSpaces: true,
+				FormatHTML: func(source string, _ FormattingOptions) (string, error) {
+					return test.html(source), nil
+				},
+			})
+			if len(edits) != 0 {
+				t.Fatalf("edits = %#v, want none when server regions change", edits)
+			}
+		})
+	}
+}
+
+func TestFormattingRejectsRegionFormatterOutputThatAddsASPBlocks(t *testing.T) {
+	source := "<style>.a { b: < % }</style>"
+	parsed := ParseDocument("file:///format.asp", source, Settings{})
+	options := FormattingOptions{
+		TabSize:      2,
+		InsertSpaces: true,
+		FormatCSS: func(css string, _ FormattingOptions) (string, error) {
+			return strings.ReplaceAll(css, "< %", "<%"), nil
+		},
+	}
+	if edits := FormatDocument(parsed, options); len(edits) != 0 {
+		t.Fatalf("document edits = %#v, want none when server regions change", edits)
+	}
+	whole := lsp.Range{End: NewTextDocument(parsed.URI, "classic-asp", 0, source).PositionAt(len(source))}
+	if edits := FormatRange(parsed, whole, options); len(edits) != 0 {
+		t.Fatalf("range edits = %#v, want none when server regions change", edits)
 	}
 }
 

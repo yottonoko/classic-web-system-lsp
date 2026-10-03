@@ -18,6 +18,36 @@ func TestBeautifyBasicHTML(t *testing.T) {
 	}
 }
 
+func TestBeautifyExtraLinersAddExactlyOneBlankLine(t *testing.T) {
+	options := map[string]any{"indent_size": 2, "indent_char": " "}
+	tests := []struct {
+		input string
+		want  string
+	}{
+		{"<html><head></head><body></body></html>", "<html>\n\n<head></head>\n\n<body></body>\n\n</html>"},
+		{"<html>\n\n<head></head>\n\n<body></body>\n\n</html>", "<html>\n\n<head></head>\n\n<body></body>\n\n</html>"},
+		{"<html><head><title>x</title></head><body><p>a</p></body></html>", "<html>\n\n<head>\n  <title>x</title>\n</head>\n\n<body>\n  <p>a</p>\n</body>\n\n</html>"},
+		{"0<body>", "0\n\n<body>"},
+		{"<p>a</p>\n\n<body>\n</body>", "<p>a</p>\n\n<body>\n</body>"},
+	}
+	for _, test := range tests {
+		got, err := Beautify(test.input, options, nil, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got != test.want {
+			t.Fatalf("Beautify(%q) = %q, want %q", test.input, got, test.want)
+		}
+		again, err := Beautify(got, options, nil, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if again != got {
+			t.Fatalf("Beautify is not idempotent for %q: %q then %q", test.input, got, again)
+		}
+	}
+}
+
 func TestBeautifyNormalizesIncompleteStartTagAttributes(t *testing.T) {
 	got, err := Beautify(`<img  src = "foo"`, map[string]any{
 		"indent_size": 2,
@@ -283,38 +313,50 @@ func TestBeautifyTerminatesOnUnterminatedTemplateMarkers(t *testing.T) {
 	}
 }
 
-func TestSplitTagRejectsEmptyClosingTag(t *testing.T) {
-	if _, _, _, _, ok := splitTag("</ >"); ok {
-		t.Fatal("splitTag accepted a closing tag without a name")
+// Expected outputs come from js-beautify 1.15.4 with indent_size 2.
+func TestBeautifyMatchesUpstreamForBlankLinesAndMalformedHTML(t *testing.T) {
+	tests := []struct {
+		input   string
+		options map[string]any
+		want    string
+	}{
+		{
+			input: "<html>\n\n\n\n<head></head>\n\n\n<body></body>\n\n\n</html>",
+			want:  "<html>\n\n\n\n<head></head>\n\n\n<body></body>\n\n\n</html>",
+		},
+		{
+			input:   "<html>\n\n\n\n<head></head>\n\n\n<body></body>\n\n\n</html>",
+			options: map[string]any{"max_preserve_newlines": 1},
+			want:    "<html>\n\n<head></head>\n\n<body></body>\n\n</html>",
+		},
+		{input: "<A><", want: "<A>\n  <"},
+		{input: "<p>a < b > c</p>", want: "<p>a < b> c</p>"},
+		{input: "<div><p>x</div>", want: "<div>\n  <p>x\n</div>"},
+		{input: "<ul><li>a<li>b</ul>", want: "<ul>\n  <li>a\n  <li>b\n</ul>"},
+		{input: "<select><option>a<option>b</select>", want: "<select>\n  <option>a\n  <option>b\n</select>"},
+		{input: "<p>a</p></div><p>b", want: "<p>a</p>\n</div>\n<p>b"},
+		{input: "<div <span>x</span>", want: "<div <span>x</span>"},
+		{
+			input:   "<div></ ></div>",
+			options: map[string]any{"wrap_attributes": "force"},
+			want:    "<div>\n  </>\n</div>",
+		},
+		{
+			input: "<table><tr><td>1<td>2<tr><td>3</table>",
+			want:  "<table>\n  <tr>\n    <td>1\n    <td>2\n  <tr>\n    <td>3\n</table>",
+		},
 	}
-	got, err := Beautify("<div></ ></div>", map[string]any{"wrap_attributes": "force"}, nil, nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if want := "<div>\n</ >\n</div>"; got != want {
-		t.Fatalf("Beautify() = %q, want %q", got, want)
-	}
-}
-
-func TestIndexedSimpleCloseSpanMatchesScan(t *testing.T) {
-	sources := []string{
-		"<table><tr><td>a<td>b<tr><td>c</td><td>d</table>",
-		"<ul><li>a<li>b<ul><li>c</li></ul><li>d</ul>",
-		"<p>a<p>b</p><P>c</P ><p>d",
-		`<td title="</td>">a<td>b</td></td>`,
-		"<select><option>a<option selected>b</option></select>",
-		"<span>a<span>b</span>c</span><span/>d</span>",
-	}
-	for _, source := range sources {
-		b := NewBeautifier(source, nil, nil, nil)
-		for start := 0; start <= len(source); start++ {
-			for _, closeTag := range []string{"</td>", "</li>", "</p>", "</option>", "</span>", "</ul>"} {
-				gotStart, gotEnd, gotOK := b.findSimpleCloseSpan(source, start, closeTag)
-				wantStart, wantEnd, wantOK := findSimpleCloseSpan(source[start:], closeTag)
-				if gotOK != wantOK || (gotOK && (gotStart != wantStart || gotEnd != wantEnd)) {
-					t.Fatalf("findSimpleCloseSpan(%q, %d, %q) = %d, %d, %v; scan = %d, %d, %v", source, start, closeTag, gotStart, gotEnd, gotOK, wantStart, wantEnd, wantOK)
-				}
-			}
+	for _, test := range tests {
+		options := map[string]any{"indent_size": 2, "indent_char": " "}
+		for key, value := range test.options {
+			options[key] = value
+		}
+		got, err := Beautify(test.input, options, nil, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got != test.want {
+			t.Fatalf("Beautify(%q) = %q, want %q", test.input, got, test.want)
 		}
 	}
 }

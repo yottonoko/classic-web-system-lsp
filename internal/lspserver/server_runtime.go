@@ -437,23 +437,36 @@ func (s *Server) Serve(ctx context.Context) error {
 		requests.Wait()
 		workerDone <- firstErr
 	}()
+	var closeWorkOnce sync.Once
+	var droppedWork []serverWorkItem
+	closeWork := func(drain bool) {
+		closeWorkOnce.Do(func() { droppedWork = work.close(drain) })
+	}
 	var stopWorkerOnce sync.Once
 	var stopWorkerErr error
 	stopWorker := func(drain bool, cause error) error {
 		stopWorkerOnce.Do(func() {
-			completeDroppedWork(work.close(drain), cause)
+			closeWork(drain)
+			completeDroppedWork(droppedWork, cause)
 			stopWorkerErr = <-workerDone
 		})
 		return stopWorkerErr
+	}
+	// Close the queue before cancelling: cancelling one in-flight request can
+	// release the worker, which must not then start a queued request whose
+	// cancellation has not been applied yet.
+	abortWorker := func(cause error) error {
+		closeWork(false)
+		s.cancelAllRequests()
+		cancelServe()
+		return stopWorker(false, cause)
 	}
 	stopOnFatal := func() error {
 		fatal := s.writeFatalError()
 		if fatal == nil {
 			return nil
 		}
-		s.cancelAllRequests()
-		cancelServe()
-		_ = stopWorker(false, fatal)
+		_ = abortWorker(fatal)
 		return fatal
 	}
 	stopOnContextDone := func() error {
@@ -493,14 +506,10 @@ func (s *Server) Serve(ctx context.Context) error {
 			return err
 		case err := <-workerFailed:
 			if fatal := s.writeFatalError(); fatal != nil {
-				s.cancelAllRequests()
-				cancelServe()
-				_ = stopWorker(false, fatal)
+				_ = abortWorker(fatal)
 				return fatal
 			}
-			s.cancelAllRequests()
-			cancelServe()
-			_ = stopWorker(false, err)
+			_ = abortWorker(err)
 			if fatal := s.writeFatalError(); fatal != nil {
 				return fatal
 			}
@@ -513,9 +522,7 @@ func (s *Server) Serve(ctx context.Context) error {
 		message, err := readMessage(reader)
 		if err != nil {
 			if fatal := s.writeFatalError(); fatal != nil {
-				s.cancelAllRequests()
-				cancelServe()
-				_ = stopWorker(false, fatal)
+				_ = abortWorker(fatal)
 				return fatal
 			}
 			if contextErr := ctx.Err(); contextErr != nil {
@@ -534,9 +541,7 @@ func (s *Server) Serve(ctx context.Context) error {
 			if errors.Is(err, io.EOF) {
 				return stopOnContextDone()
 			}
-			s.cancelAllRequests()
-			cancelServe()
-			_ = stopWorker(false, err)
+			_ = abortWorker(err)
 			if fatal := s.writeFatalError(); fatal != nil {
 				return fatal
 			}
@@ -546,9 +551,7 @@ func (s *Server) Serve(ctx context.Context) error {
 			return err
 		}
 		if fatal := s.writeFatalError(); fatal != nil {
-			s.cancelAllRequests()
-			cancelServe()
-			_ = stopWorker(false, fatal)
+			_ = abortWorker(fatal)
 			return fatal
 		}
 		if contextErr := ctx.Err(); contextErr != nil {
@@ -632,9 +635,7 @@ func (s *Server) Serve(ctx context.Context) error {
 		} else {
 			s.logCompletedLSPEvent(nil, message.Method, "notification", receivedAt, nil, queueErr, message.logSpan)
 		}
-		s.cancelAllRequests()
-		cancelServe()
-		_ = stopWorker(false, queueErr)
+		_ = abortWorker(queueErr)
 		if fatal := s.writeFatalError(); fatal != nil {
 			return fatal
 		}

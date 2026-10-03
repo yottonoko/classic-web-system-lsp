@@ -36,6 +36,23 @@ function report(overrides = {}) {
   );
 }
 
+function isProcessRunning(pid) {
+  try {
+    process.kill(pid, 0);
+  } catch (error) {
+    if (error?.code === "ESRCH") return false;
+    throw error;
+  }
+  // A killed orphan stays a zombie until init reaps it, and some container init processes reap late.
+  if (process.platform !== "linux") return true;
+  try {
+    const stat = fs.readFileSync(`/proc/${pid}/stat`, "utf8");
+    return stat[stat.lastIndexOf(")") + 2] !== "Z";
+  } catch {
+    return false;
+  }
+}
+
 test("parses benchmark memory output and normalizes the parallelism suffix", () => {
   const parsed = parseBenchmarkOutput(
     [
@@ -165,5 +182,5 @@ test("process timeout kills a SIGTERM-ignoring descendant process group", async 
   const descendantPID = Number(result.stdout.trim());
   assert.equal(Number.isSafeInteger(descendantPID), true);
   await new Promise((resolve) => setTimeout(resolve, 50));
-  assert.throws(() => process.kill(descendantPID, 0), { code: "ESRCH" });
+  assert.equal(isProcessRunning(descendantPID), false);
 });

@@ -34,6 +34,9 @@ func TestExportAnalysisExcelRequestPreservesTrustedReadFailureCauseAndTarget(t *
 	if runtime.GOOS == "windows" {
 		t.Skip("permission-denied behavior is not portable to Windows")
 	}
+	if !filePermissionBitsEnforced(t) {
+		t.Skip("permission bits do not deny reads for this user (for example root), so chmod cannot inject a read failure")
+	}
 	server, root, targetPath := newExcelRequestInputTestServer(t)
 	sourcePath := filepath.Join(root, "read-failure.asp")
 	if err := os.WriteFile(sourcePath, []byte(`<% Dim ExportedValue %>`), 0o600); err != nil {
@@ -105,6 +108,23 @@ func newExcelRequestInputTestServer(t *testing.T) (*Server, string, string) {
 		t.Fatal(err)
 	}
 	return server, root, targetPath
+}
+
+func filePermissionBitsEnforced(t *testing.T) bool {
+	t.Helper()
+	probePath := filepath.Join(t.TempDir(), "permission-probe")
+	if err := os.WriteFile(probePath, nil, 0); err != nil {
+		t.Fatal(err)
+	}
+	probe, err := os.Open(probePath)
+	if err == nil {
+		_ = probe.Close()
+		return false
+	}
+	if !errors.Is(err, os.ErrPermission) {
+		t.Fatalf("Open(%q) error = %v, want permission denied or success", probePath, err)
+	}
+	return true
 }
 
 func assertExcelRequestErrorAndTarget(t *testing.T, result any, rpcErr *rpcError, targetPath string, code int, message string) {

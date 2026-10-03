@@ -18,8 +18,15 @@ func TestLegacyHTMLCases(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	// The corpus comes from js-beautify 2.0, which formats type="importmap"
+	// as JavaScript. This port follows 1.15.4, the version vendored by
+	// vscode-html-languageservice, which leaves importmap content as is.
+	skipped := map[string]bool{"Tests for script and style types (issue 453, 821)/022": true}
 	failures := 0
 	for _, tc := range cases {
+		if skipped[tc.Name] {
+			continue
+		}
 		got, err := Beautify(tc.Input, tc.Options, javascript.Beautify, css.Beautify)
 		if err != nil {
 			t.Fatalf("%s: %v", tc.Name, err)
