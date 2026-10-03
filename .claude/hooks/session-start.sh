@@ -19,7 +19,9 @@ cd "${CLAUDE_PROJECT_DIR:-$(cd "$(dirname "$0")/../.." && pwd)}"
   # modules the build needs. Avoid `go mod download`: in workspace mode it rewrites go.work.sum.
   pnpm run build:go
 
-  git config --get core.hooksPath >/dev/null || git config core.hooksPath .githooks
+  # Set the repository value explicitly; a global or system core.hooksPath would otherwise
+  # take effect and leave the vendoring guard hooks disabled.
+  git config --local core.hooksPath .githooks
 
   if ! command -v just >/dev/null 2>&1; then
     export DEBIAN_FRONTEND=noninteractive
