@@ -113,3 +113,22 @@ func TestFormattersTolerateOutOfRangeOptions(t *testing.T) {
 		core.FormatDocument(parsed, options)
 	}
 }
+
+func TestFormatDocumentDoesNotTurnLiteralTextIntoASPBlocks(t *testing.T) {
+	for _, source := range []string{"< %0", "<p>a < %b</p>", "<p>1 < %</p><%= x %>"} {
+		parsed := core.ParseDocument("file:///site/literal.asp", source, core.Settings{})
+		edits := core.FormatDocument(parsed, core.FormattingOptions{
+			TabSize:          2,
+			InsertSpaces:     true,
+			FormatHTML:       FormatHTML,
+			FormatCSS:        FormatCSS,
+			FormatJavaScript: FormatJavaScript,
+		})
+		for _, edit := range edits {
+			formatted := core.ParseDocument(parsed.URI, edit.NewText, core.Settings{})
+			if len(formatted.Regions) != len(parsed.Regions) || strings.Contains(edit.NewText, "<%b") || strings.Count(edit.NewText, "<%") != strings.Count(source, "<%") {
+				t.Fatalf("FormatDocument(%q) = %q, which changes the server regions", source, edit.NewText)
+			}
+		}
+	}
+}

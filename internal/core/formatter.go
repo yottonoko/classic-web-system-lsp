@@ -2,9 +2,11 @@ package core
 
 import (
 	"regexp"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
+	"unicode"
 
 	"github.com/yottonoko/classic-web-system-lsp/internal/lsp"
 )
@@ -98,7 +100,7 @@ func FormatDocument(parsed *ParsedDocument, options FormattingOptions) []lsp.Tex
 		formatted = formatText(parsed, options, 0, len(parsed.Text))
 	}
 	formatted = finalizeFormattedText(formatted, parsed.Text, options)
-	if formatted == parsed.Text {
+	if formatted == parsed.Text || !formattingPreservesServerRegions(parsed, formatted) {
 		return nil
 	}
 	source := NewTextDocument(parsed.URI, "classic-asp", 0, parsed.Text)
@@ -122,10 +124,42 @@ func FormatRange(parsed *ParsedDocument, r lsp.Range, options FormattingOptions)
 	formatted := formatText(parsed, options, start, end)
 	original := parsed.Text[start:end]
 	formatted = finalizeFormattedRangeText(formatted, original, options)
-	if formatted == original {
+	if formatted == original || !formattingPreservesServerRegions(parsed, parsed.Text[:start]+formatted+parsed.Text[end:]) {
 		return nil
 	}
 	return []lsp.TextEdit{{Range: source.Range(start, end), NewText: formatted}}
+}
+
+// formattingPreservesServerRegions rejects output that creates, drops, or
+// rewrites server regions. Embedded formatters do not know Classic ASP; the
+// HTML formatter, for example, collapses the text "< %" into a "<%" delimiter.
+// Server code may only change in whitespace and letter case, which is what the
+// VBScript formatter adjusts.
+func formattingPreservesServerRegions(parsed *ParsedDocument, formatted string) bool {
+	reparsed := ParseDocument(parsed.URI, formatted, Settings{DefaultLanguage: string(parsed.DefaultLanguage)})
+	return slices.Equal(serverRegionSignatures(parsed.Text, parsed.Regions), serverRegionSignatures(formatted, reparsed.Regions))
+}
+
+type serverRegionSignature struct {
+	kind RegionKind
+	code string
+}
+
+func serverRegionSignatures(text string, regions []Region) []serverRegionSignature {
+	signatures := []serverRegionSignature{}
+	for _, region := range regions {
+		if !isASPHole(region) && region.Kind != RegionServerScript {
+			continue
+		}
+		code := strings.Map(func(r rune) rune {
+			if unicode.IsSpace(r) {
+				return -1
+			}
+			return unicode.ToLower(r)
+		}, text[region.ContentStart:region.ContentEnd])
+		signatures = append(signatures, serverRegionSignature{kind: region.Kind, code: code})
+	}
+	return signatures
 }
 
 func shouldFormatWholeHTMLDocument(parsed *ParsedDocument, options FormattingOptions) bool {
