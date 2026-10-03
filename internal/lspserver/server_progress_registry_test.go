@@ -252,3 +252,53 @@ func TestProgressPublisherReplacesPendingStatusBehindSlowWrite(t *testing.T) {
 		t.Fatalf("stale analyzing status followed final idle status: %s", encoded)
 	}
 }
+
+func TestProgressTaskBeginWaitsForASnapshotThatIncludesIt(t *testing.T) {
+	output := newBlockingStatusWriter()
+	server := New(nil, output, io.Discard)
+	background, _ := server.beginProgressTask("test", "analyzing", "test", "test.files", "", 10, false)
+	select {
+	case <-output.entered:
+	case <-time.After(time.Second):
+		t.Fatal("initial progress status did not reach the writer")
+	}
+	begun := make(chan string, 1)
+	go func() {
+		taskID, _ := server.beginDocumentProgressTask("references.count", "analyzing", "references", "references.workspace", "SharedTitle", "file:///workspace/common.inc", 1, true, 0, false)
+		begun <- taskID
+	}()
+	deadline := time.Now().Add(time.Second)
+	for {
+		server.mu.Lock()
+		pending := server.progressPendingStatus != nil
+		server.mu.Unlock()
+		if pending {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("reference count status was not queued behind the slow write")
+		}
+		time.Sleep(time.Millisecond)
+	}
+	// A newer snapshot replaces the pending one before anything is written.
+	server.updateProgressTaskImmediate(background, "test", "test.files", "", 1, 10, nil, "running")
+	select {
+	case <-begun:
+		t.Fatal("begin returned before any status containing the task was written")
+	case <-time.After(50 * time.Millisecond):
+	}
+	close(output.release)
+	var taskID string
+	select {
+	case taskID = <-begun:
+	case <-time.After(time.Second):
+		t.Fatal("begin did not return after the writer resumed")
+	}
+	server.finishProgressTask(taskID, "references", "completed")
+	server.finishProgressTask(background, "test", "completed")
+	server.progressPublishWG.Wait()
+	server.stopProgressPublisher()
+	if encoded := output.output.String(); !strings.Contains(encoded, `"id":"`+taskID+`"`) {
+		t.Fatalf("no published status contained %s: %s", taskID, encoded)
+	}
+}

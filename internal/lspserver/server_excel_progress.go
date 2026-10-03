@@ -29,6 +29,17 @@ type serverProgressTask struct {
 type progressStatusPublication struct {
 	status map[string]any
 	done   chan struct{}
+	// superseded holds the done channels of replaced pending publications.
+	// This snapshot was taken later and includes their state, so their waiters
+	// are released only once it is written.
+	superseded []chan struct{}
+}
+
+func (publication *progressStatusPublication) complete() {
+	close(publication.done)
+	for _, done := range publication.superseded {
+		close(done)
+	}
 }
 
 func progressDetailForURI(uri string) string {
@@ -248,7 +259,7 @@ func (s *Server) stopProgressPublisher() {
 	}
 	s.progressPendingReason = ""
 	if s.progressPendingStatus != nil {
-		close(s.progressPendingStatus.done)
+		s.progressPendingStatus.complete()
 		s.progressPendingStatus = nil
 	}
 	s.mu.Unlock()
@@ -258,8 +269,8 @@ func (s *Server) stopProgressPublisher() {
 func (s *Server) enqueueProgressStatusLocked(status map[string]any) <-chan struct{} {
 	publication := &progressStatusPublication{status: status, done: make(chan struct{})}
 	if s.progressPublishInFlight {
-		if s.progressPendingStatus != nil {
-			close(s.progressPendingStatus.done)
+		if pending := s.progressPendingStatus; pending != nil {
+			publication.superseded = append(pending.superseded, pending.done)
 		}
 		s.progressPendingStatus = publication
 		return publication.done
@@ -274,11 +285,11 @@ func (s *Server) runProgressPublisher(publication *progressStatusPublication) {
 	defer s.progressPublishWG.Done()
 	for publication != nil {
 		s.reportAsyncRPCWriteError(s.publishStatus(publication.status))
-		close(publication.done)
+		publication.complete()
 		s.mu.Lock()
 		if s.progressPublisherClosed {
 			if s.progressPendingStatus != nil {
-				close(s.progressPendingStatus.done)
+				s.progressPendingStatus.complete()
 				s.progressPendingStatus = nil
 			}
 			s.progressPublishInFlight = false
