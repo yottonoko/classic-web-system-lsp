@@ -43,6 +43,22 @@ func TestBuildVirtualDocumentKeepsSourceOrderedMappingsAcrossCSSRegionKinds(t *t
 	}
 }
 
+func TestBuildVirtualDocumentMapsStyleElementWithStyleAttribute(t *testing.T) {
+	source := `<style style="color: red">a { color: blue }</style>`
+	parsed := ParseDocument("file:///site/style-attribute.asp", source, Settings{})
+	css := BuildVirtualDocument(parsed, LanguageCSS)
+	for _, needle := range []string{"red", "blue"} {
+		offset := strings.Index(source, needle)
+		virtualOffset, ok := css.ToVirtualOffset(offset)
+		if !ok || !strings.HasPrefix(css.Text[virtualOffset:], needle) {
+			t.Fatalf("%q at source offset %d mapped to %d, %v in %q; segments %#v", needle, offset, virtualOffset, ok, css.Text, css.Segments)
+		}
+		if sourceOffset, ok := css.ToSourceOffset(virtualOffset); !ok || sourceOffset != offset {
+			t.Fatalf("%q round trip = %d, %v; want %d", needle, sourceOffset, ok, offset)
+		}
+	}
+}
+
 func TestBuildEmbeddedRegionVirtualDocumentWithReplacementsAdjustsSourceMappings(t *testing.T) {
 	source := `<style>.card { color: <%= color %>; background: <%= background %>; }</style>`
 	parsed := ParseDocument("file:///site/css-replacements.asp", source, Settings{})

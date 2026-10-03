@@ -169,10 +169,17 @@ func buildVirtualDocument(parsed *ParsedDocument, language EmbeddedLanguage) Vir
 		}
 		return sorted[i].Start < sorted[j].Start
 	})
+	// Emit owners in content order so source-map segments stay sorted by source
+	// offset: a style attribute on a <style> tag starts after the element but
+	// its content precedes the element body.
+	var owners []Region
 	for _, region := range sorted {
-		if region.Language != language {
-			continue
+		if region.Language == language {
+			owners = append(owners, region)
 		}
+	}
+	sort.SliceStable(owners, func(i, j int) bool { return owners[i].ContentStart < owners[j].ContentStart })
+	for _, region := range owners {
 		prefix := ""
 		suffix := "\n"
 		if language == LanguageCSS {
