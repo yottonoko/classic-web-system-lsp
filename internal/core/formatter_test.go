@@ -226,13 +226,26 @@ func TestFormatDocumentRejectsHTMLOutputThatChangesServerRegions(t *testing.T) {
 			if len(edits) != 0 {
 				t.Fatalf("edits = %#v, want none when server regions change", edits)
 			}
-			whole := lsp.Range{End: NewTextDocument(parsed.URI, "classic-asp", 0, test.source).PositionAt(len(test.source))}
-			if edits := FormatRange(parsed, whole, FormattingOptions{TabSize: 2, InsertSpaces: true, FormatHTML: func(source string, _ FormattingOptions) (string, error) {
-				return test.html(source), nil
-			}}); len(edits) != 0 {
-				t.Fatalf("range edits = %#v, want none when server regions change", edits)
-			}
 		})
+	}
+}
+
+func TestFormattingRejectsRegionFormatterOutputThatAddsASPBlocks(t *testing.T) {
+	source := "<style>.a { b: < % }</style>"
+	parsed := ParseDocument("file:///format.asp", source, Settings{})
+	options := FormattingOptions{
+		TabSize:      2,
+		InsertSpaces: true,
+		FormatCSS: func(css string, _ FormattingOptions) (string, error) {
+			return strings.ReplaceAll(css, "< %", "<%"), nil
+		},
+	}
+	if edits := FormatDocument(parsed, options); len(edits) != 0 {
+		t.Fatalf("document edits = %#v, want none when server regions change", edits)
+	}
+	whole := lsp.Range{End: NewTextDocument(parsed.URI, "classic-asp", 0, source).PositionAt(len(source))}
+	if edits := FormatRange(parsed, whole, options); len(edits) != 0 {
+		t.Fatalf("range edits = %#v, want none when server regions change", edits)
 	}
 }
 

@@ -84,23 +84,29 @@ type FormattingOptions struct {
 func FormatDocument(parsed *ParsedDocument, options FormattingOptions) []lsp.TextEdit {
 	options = SanitizeFormattingOptions(options)
 	formatted := ""
+	// The HTML formatter can change the HTML context around ASP blocks, so its
+	// output is always checked; region formatters only when cheap signs allow.
+	formattedHTML := false
 	if shouldFormatWholeHTMLDocument(parsed, options) {
 		var err error
 		formatted, err = options.FormatHTML(parsed.Text, options)
 		if err != nil {
 			formatted = parsed.Text
 		}
+		formattedHTML = err == nil
 	} else if shouldFormatHTMLAroundASP(parsed, options) {
-		var ok bool
-		formatted, ok = formatHTMLAroundASP(parsed, options)
-		if !ok {
+		formatted, formattedHTML = formatHTMLAroundASP(parsed, options)
+		if !formattedHTML {
 			formatted = formatText(parsed, options, 0, len(parsed.Text))
 		}
 	} else {
 		formatted = formatText(parsed, options, 0, len(parsed.Text))
 	}
 	formatted = finalizeFormattedText(formatted, parsed.Text, options)
-	if formatted == parsed.Text || !formattingPreservesServerRegions(parsed, formatted) {
+	if formatted == parsed.Text {
+		return nil
+	}
+	if (formattedHTML || formattingMayChangeServerRegions(parsed, parsed.Text, formatted)) && !formattingPreservesServerRegions(parsed, formatted) {
 		return nil
 	}
 	source := NewTextDocument(parsed.URI, "classic-asp", 0, parsed.Text)
@@ -124,20 +130,88 @@ func FormatRange(parsed *ParsedDocument, r lsp.Range, options FormattingOptions)
 	formatted := formatText(parsed, options, start, end)
 	original := parsed.Text[start:end]
 	formatted = finalizeFormattedRangeText(formatted, original, options)
-	if formatted == original || !formattingPreservesServerRegions(parsed, parsed.Text[:start]+formatted+parsed.Text[end:]) {
+	if formatted == original {
+		return nil
+	}
+	if formattingMayChangeServerRegions(parsed, original, formatted) && !formattingPreservesServerRegions(parsed, parsed.Text[:start]+formatted+parsed.Text[end:]) {
 		return nil
 	}
 	return []lsp.TextEdit{{Range: source.Range(start, end), NewText: formatted}}
 }
 
-// formattingPreservesServerRegions rejects output that creates, drops, or
-// rewrites server regions. Embedded formatters do not know Classic ASP; the
-// HTML formatter, for example, collapses the text "< %" into a "<%" delimiter.
+// formattingPreservesServerRegions rejects a formatted document whose server
+// regions were created, dropped, or rewritten. Embedded formatters do not know
+// Classic ASP: the HTML formatter collapses the text "< %" into a "<%"
+// delimiter, and the CSS formatter can drop a quote between "<" and "%".
 // Server code may only change in whitespace and letter case, which is what the
 // VBScript formatter adjusts.
-func formattingPreservesServerRegions(parsed *ParsedDocument, formatted string) bool {
-	reparsed := ParseDocument(parsed.URI, formatted, Settings{DefaultLanguage: string(parsed.DefaultLanguage)})
-	return slices.Equal(serverRegionSignatures(parsed.Text, parsed.Regions), serverRegionSignatures(formatted, reparsed.Regions))
+func formattingPreservesServerRegions(parsed *ParsedDocument, document string) bool {
+	before := serverRegionSignatures(parsed.Text, parsed.Regions)
+	// Server regions need "<%" or a runat attribute.
+	if !strings.Contains(document, "<%") && !containsASCIIFold(document, "runat") {
+		return len(before) == 0
+	}
+	reparsed := ParseDocument(parsed.URI, document, Settings{DefaultLanguage: string(parsed.DefaultLanguage)})
+	return slices.Equal(before, serverRegionSignatures(document, reparsed.Regions))
+}
+
+// formattingMayChangeServerRegions is a cheap precondition for re-parsing
+// output that did not pass through the HTML formatter. Terminated server
+// regions are formatted from their exact source text, so they can only change
+// when formatting changes the number of ASP delimiters, when the source has
+// "<%" or runat text that the parser did not treat as a server region, when an
+// unterminated ASP block runs into text that other formatters rewrite, or when
+// an ASP block sits inside script or style text whose quoting decides how the
+// parser scans it.
+func formattingMayChangeServerRegions(parsed *ParsedDocument, original, formatted string) bool {
+	if strings.Count(formatted, "<%") != strings.Count(original, "<%") ||
+		strings.Count(formatted, "%>") != strings.Count(original, "%>") {
+		return true
+	}
+	var embedded []Region
+	for _, region := range parsed.Regions {
+		if region.Kind == RegionClientScript || region.Kind == RegionStyle || region.Kind == RegionStyleAttribute {
+			embedded = append(embedded, region)
+		}
+	}
+	holes, serverScripts := 0, 0
+	for _, region := range parsed.Regions {
+		if region.Kind == RegionServerScript {
+			serverScripts++
+		}
+		if !isASPHole(region) {
+			continue
+		}
+		if region.ContentEnd == region.End {
+			return true
+		}
+		for _, owner := range embedded {
+			if region.Start >= owner.ContentStart && region.End <= owner.ContentEnd {
+				return true
+			}
+		}
+		holes++
+	}
+	return strings.Count(parsed.Text, "<%") != holes || countASCIIFold(parsed.Text, "runat") != serverScripts
+}
+
+// countASCIIFold counts matches of a lowercase ASCII needle whose first byte
+// does not occur again inside it.
+func countASCIIFold(text, needle string) int {
+	count := 0
+	for _, first := range [2]byte{needle[0], needle[0] &^ 0x20} {
+		for rest := text; ; {
+			index := strings.IndexByte(rest, first)
+			if index < 0 || len(rest)-index < len(needle) {
+				break
+			}
+			if asciiEqualFold(rest[index:index+len(needle)], needle) {
+				count++
+			}
+			rest = rest[index+1:]
+		}
+	}
+	return count
 }
 
 type serverRegionSignature struct {
