@@ -35,6 +35,22 @@ End Function
 	}
 }
 
+func TestSelectionRangeKeepsRangesOrderedAroundNonASCIISymbols(t *testing.T) {
+	source := "<%😀0"
+	parsed := core.ParseDocument("file:///selection.asp", source, core.Settings{})
+	doc := core.NewTextDocument(parsed.URI, "classic-asp", 0, source)
+	for offset := 0; offset <= len(source); offset++ {
+		for current := SelectionRange(parsed, doc.PositionAt(offset)); current != nil; current = current.Parent {
+			if compareSelectionPositions(current.Range.Start, current.Range.End) > 0 {
+				t.Fatalf("selection range at offset %d is inverted: %#v", offset, current.Range)
+			}
+		}
+	}
+	if selection := SelectionRange(parsed, lsp.Position{Line: 0, Character: 2}); selection == nil || selection.Range != (lsp.Range{Start: lsp.Position{Line: 0, Character: 2}, End: lsp.Position{Line: 0, Character: 4}}) {
+		t.Fatalf("emoji token selection = %#v, want the whole surrogate pair", selection)
+	}
+}
+
 func selectionRangeContains(outer, inner lsp.Range) bool {
 	return compareSelectionPositions(outer.Start, inner.Start) <= 0 && compareSelectionPositions(outer.End, inner.End) >= 0
 }

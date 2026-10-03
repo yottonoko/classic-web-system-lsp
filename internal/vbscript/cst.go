@@ -2,6 +2,7 @@ package vbscript
 
 import (
 	"strings"
+	"unicode/utf8"
 
 	"github.com/yottonoko/classic-web-system-lsp/internal/core"
 )
@@ -293,8 +294,12 @@ func tokenizeWithBase(text string, base int) []Token {
 				tokens = append(tokens, Token{Kind: kind, Start: base + start, End: base + offset, Text: text[start:offset]})
 				continue
 			}
-			tokens = append(tokens, Token{Kind: "symbol", Start: base + offset, End: base + offset + 1, Text: text[offset : offset+1]})
-			offset++
+			size := 1
+			if text[offset] >= utf8.RuneSelf {
+				_, size = utf8.DecodeRuneInString(text[offset:])
+			}
+			tokens = append(tokens, Token{Kind: "symbol", Start: base + offset, End: base + offset + size, Text: text[offset : offset+size]})
+			offset += size
 		}
 	}
 	return tokens

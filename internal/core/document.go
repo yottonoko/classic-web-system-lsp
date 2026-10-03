@@ -172,6 +172,11 @@ func (d *TextDocument) PositionAt(offset int) lsp.Position {
 	if d.isLineASCII(line) {
 		return lsp.Position{Line: line, Character: offset - d.lineStarts[line]}
 	}
+	// Map offsets inside a multi-byte rune to the rune start; counting a
+	// truncated UTF-8 prefix would make positions non-monotonic.
+	for offset > d.lineStarts[line] && offset < len(d.Text) && !utf8.RuneStart(d.Text[offset]) {
+		offset--
+	}
 	return lsp.Position{Line: line, Character: utf16Length(d.Text[d.lineStarts[line]:offset])}
 }
 
