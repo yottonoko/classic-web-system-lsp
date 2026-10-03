@@ -18,6 +18,36 @@ func TestBeautifyBasicHTML(t *testing.T) {
 	}
 }
 
+func TestBeautifyExtraLinersAddExactlyOneBlankLine(t *testing.T) {
+	options := map[string]any{"indent_size": 2, "indent_char": " "}
+	tests := []struct {
+		input string
+		want  string
+	}{
+		{"<html><head></head><body></body></html>", "<html>\n\n<head></head>\n\n<body></body>\n\n</html>"},
+		{"<html>\n\n<head></head>\n\n<body></body>\n\n</html>", "<html>\n\n<head></head>\n\n<body></body>\n\n</html>"},
+		{"<html><head><title>x</title></head><body><p>a</p></body></html>", "<html>\n\n<head>\n  <title>x</title>\n</head>\n\n<body>\n  <p>a</p>\n</body>\n\n</html>"},
+		{"0<body>", "0\n\n<body>"},
+		{"<p>a</p>\n\n<body>\n</body>", "<p>a</p>\n\n<body>\n</body>"},
+	}
+	for _, test := range tests {
+		got, err := Beautify(test.input, options, nil, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got != test.want {
+			t.Fatalf("Beautify(%q) = %q, want %q", test.input, got, test.want)
+		}
+		again, err := Beautify(got, options, nil, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if again != got {
+			t.Fatalf("Beautify is not idempotent for %q: %q then %q", test.input, got, again)
+		}
+	}
+}
+
 func TestBeautifyNormalizesIncompleteStartTagAttributes(t *testing.T) {
 	got, err := Beautify(`<img  src = "foo"`, map[string]any{
 		"indent_size": 2,

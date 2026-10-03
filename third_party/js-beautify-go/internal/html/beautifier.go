@@ -212,7 +212,7 @@ func (b *Beautifier) Beautify() (string, error) {
 				closeTag := "</" + name + ">"
 				if hasPrefixASCIIFold(source[next:], closeTag) {
 					if hasExtraLiner(name, false, b.options) {
-						b.output.AddNewLine(true)
+						b.addExtraLinerBefore()
 					} else if !inlineTag && !b.output.JustAddedNewline() {
 						b.output.AddNewLine(false)
 					}
@@ -249,7 +249,7 @@ func (b *Beautifier) Beautify() (string, error) {
 					content, closeStart, closeEnd, ok := b.readSimpleHTMLContent(source, next, closeTag, tag)
 					if ok {
 						if hasExtraLiner(name, false, b.options) {
-							b.output.AddNewLine(true)
+							b.addExtraLinerBefore()
 						} else if !inlineTag && !b.output.JustAddedNewline() {
 							b.output.AddNewLine(false)
 						}
@@ -410,7 +410,7 @@ func (b *Beautifier) Beautify() (string, error) {
 				}
 			}
 			if hasExtraLiner(name, false, b.options) {
-				b.output.AddNewLine(true)
+				b.addExtraLinerBefore()
 			} else if !inlineTag && !b.output.JustAddedNewline() {
 				b.output.AddNewLine(false)
 			}
