@@ -60,6 +60,7 @@ For cross-compilation, set `CGO_ENABLED=0`, `GOOS`, and `GOARCH` before the comm
 ## Git
 
 - Do not stage unrelated files.
+- Enable the vendoring guard hooks with `git config core.hooksPath .githooks`. Claude Code cloud sessions enable them through `.claude/hooks/session-start.sh`.
 - Commit messages in this repository may be English.
 - Every commit message must end with exactly one `Co-authored-by` trailer for the agent that creates the commit.
 
