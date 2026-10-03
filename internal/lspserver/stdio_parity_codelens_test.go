@@ -69,7 +69,8 @@ Response.Write SharedTitle()
 	go func() {
 		response <- client.request("codeLens/resolve", referencesCodeLens).Result
 	}()
-	status := client.waitForNotification("aspLsp/status", "references.count")
+	// Match the resolve task ID; batch labels such as references.countDocuments share the prefix.
+	status := client.waitForNotification("aspLsp/status", `"id":"references.count-`)
 	statusText := string(status.Params)
 	if !strings.Contains(statusText, "references.count") ||
 		!strings.Contains(statusText, "SharedTitle") ||
