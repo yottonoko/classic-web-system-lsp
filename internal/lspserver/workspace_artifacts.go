@@ -642,7 +642,8 @@ func workspaceFingerprint(value any) workspaceArtifactFingerprint {
 	var payload []byte
 	switch value := value.(type) {
 	case string:
-		payload = []byte(value)
+		// Same hex SHA-256 encoding, shared with the content hash cache.
+		return workspaceArtifactFingerprint(workspacepkg.DiskContentHash(value))
 	case []byte:
 		payload = value
 	default:
