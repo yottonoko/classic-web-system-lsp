@@ -225,7 +225,7 @@ func (s *Server) applyWorkspaceDocumentRevisionWithSnapshotIfCurrentAndPublished
 	if !s.workspaceDocumentArtifactRevisionCurrent(manifest, revision) {
 		return workspaceDocumentRevisionResult{Manifest: manifest, Delta: delta, Stale: true}
 	}
-	if !s.applyWorkspaceArtifactDelta(previous, manifest, snapshot.ReferenceShard, delta, revision) {
+	if !s.applyWorkspaceArtifactDelta(previous, manifest, parsed, snapshot.ReferenceShard, delta, revision) {
 		return workspaceDocumentRevisionResult{Manifest: manifest, Delta: delta, Stale: true}
 	}
 	if !s.queueWorkspaceDocumentArtifactDeltaIfCurrent(manifest, delta, revision) {
@@ -345,7 +345,7 @@ func (s *Server) removeWorkspaceDocumentRevision(uri string) workspaceDocumentRe
 	return workspaceDocumentRevisionResult{Manifest: previous, Delta: delta}
 }
 
-func (s *Server) applyWorkspaceArtifactDelta(previous, current *workspaceDocumentArtifactManifest, referenceShard *vbscript.ReferenceShard, delta workspaceDocumentArtifactDelta, revision uint64) bool {
+func (s *Server) applyWorkspaceArtifactDelta(previous, current *workspaceDocumentArtifactManifest, analysisParsed *core.ParsedDocument, referenceShard *vbscript.ReferenceShard, delta workspaceDocumentArtifactDelta, revision uint64) bool {
 	if current == nil || !s.workspaceDocumentArtifactRevisionCurrent(current, revision) {
 		return false
 	}
@@ -354,7 +354,7 @@ func (s *Server) applyWorkspaceArtifactDelta(previous, current *workspaceDocumen
 		return false
 	}
 	runWorkspaceArtifactReferenceIndexTestHook()
-	indexUpdate, indexCurrent := s.updateWorkspaceReferenceIndexIfCurrent(current.CST, referenceShard, current, revision)
+	indexUpdate, indexCurrent := s.updateWorkspaceReferenceIndexIfCurrent(current.CST, analysisParsed, referenceShard, current, revision)
 	if !indexCurrent {
 		return false
 	}
@@ -427,14 +427,18 @@ func (s *Server) applyWorkspaceArtifactDelta(previous, current *workspaceDocumen
 // holding the server lock, then atomically validates the owning artifact and
 // applies the prepared segments while holding s.mu. This prevents a stale
 // artifact worker from mutating the index after a newer artifact publishes.
-func (s *Server) updateWorkspaceReferenceIndexIfCurrent(parsed *core.ParsedDocument, referenceShard *vbscript.ReferenceShard, manifest *workspaceDocumentArtifactManifest, revision uint64) (workspaceReferenceIndexUpdate, bool) {
+//
+// analysisParsed is the revision that built the manifest. Its warm runtime
+// analysis derives the segments, which are still owned by the manifest CST.
+func (s *Server) updateWorkspaceReferenceIndexIfCurrent(parsed, analysisParsed *core.ParsedDocument, referenceShard *vbscript.ReferenceShard, manifest *workspaceDocumentArtifactManifest, revision uint64) (workspaceReferenceIndexUpdate, bool) {
 	if manifest == nil {
 		return workspaceReferenceIndexUpdate{}, false
 	}
-	preparedUpdate, prepared := s.referenceWorkspaceIndex.prepareContextModeWithShards(
+	preparedUpdate, prepared := s.referenceWorkspaceIndex.prepareContextModeWithAnalysis(
 		context.Background(),
 		[]*core.ParsedDocument{parsed},
 		map[*core.ParsedDocument]*vbscript.ReferenceShard{parsed: referenceShard},
+		map[*core.ParsedDocument]*core.ParsedDocument{parsed: analysisParsed},
 		true,
 	)
 	s.mu.Lock()

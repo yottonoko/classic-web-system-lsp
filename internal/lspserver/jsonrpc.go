@@ -36,6 +36,7 @@ type rpcMessage struct {
 	revisionNotificationValid   bool
 	revisionNotificationErr     error
 	didChangeParams             *didChangeParams
+	didOpenParams               *didOpenParams
 }
 
 type rpcError struct {
@@ -124,8 +125,8 @@ func requireObjectParams(params json.RawMessage) error {
 	if len(bytes.TrimSpace(params)) == 0 || bytes.Equal(bytes.TrimSpace(params), []byte("null")) {
 		return fmt.Errorf("params must be an object")
 	}
-	var object map[string]json.RawMessage
-	if err := json.Unmarshal(params, &object); err != nil || object == nil {
+	// Equivalent to decoding into a non-nil map, without copying every member.
+	if trimmed := bytes.TrimSpace(params); trimmed[0] != '{' || !json.Valid(trimmed) {
 		return fmt.Errorf("params must be an object")
 	}
 	return nil

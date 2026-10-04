@@ -891,7 +891,10 @@ func prepareRevisionAdvancingNotification(message *rpcMessage) bool {
 	switch message.Method {
 	case "textDocument/didOpen":
 		var value didOpenParams
-		valid = json.Unmarshal(params, &value) == nil && value.TextDocument.URI != "" && value.TextDocument.LanguageID != ""
+		if json.Unmarshal(params, &value) == nil {
+			message.didOpenParams = &value
+			valid = value.TextDocument.URI != "" && value.TextDocument.LanguageID != ""
+		}
 	case "textDocument/didChange":
 		var value didChangeParams
 		if json.Unmarshal(params, &value) == nil {

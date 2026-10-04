@@ -510,9 +510,10 @@ func (s *Server) workspaceReferencePersistedCountSummaries(parsed *core.ParsedDo
 			}
 			return ranges[i].End.Character < ranges[j].End.Character
 		})
+		countFingerprint, locationFingerprint := workspaceReferenceSegmentFingerprints(base.CountFingerprint, base.LocationFingerprint, counts, declarationRanges)
 		result[name] = persistedWorkspaceReferenceCountSummary{
-			CountFingerprint:    workspaceReferenceSegmentFingerprint(base.CountFingerprint, counts, declarationRanges),
-			LocationFingerprint: workspaceReferenceSegmentFingerprint(base.LocationFingerprint, counts, declarationRanges),
+			CountFingerprint:    countFingerprint,
+			LocationFingerprint: locationFingerprint,
 			Counts:              counts, DeclarationRanges: ranges,
 		}
 	}
