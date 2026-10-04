@@ -368,3 +368,11 @@ func TestIsVBKeywordMatchesCaseInsensitivelyWithinBufferLimit(t *testing.T) {
 		}
 	}
 }
+
+func TestLowerVBTokenTextMatchesStringsToLower(t *testing.T) {
+	for _, value := range []string{"", "If", "END", "elseif", "Response", "_", "Ünicode", "PropertyNameLongerThanSixteen", "ByVal"} {
+		if got, want := lowerVBTokenText(value), strings.ToLower(value); got != want {
+			t.Fatalf("lowerVBTokenText(%q) = %q, want %q", value, got, want)
+		}
+	}
+}

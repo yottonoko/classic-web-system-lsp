@@ -1099,8 +1099,10 @@ func summarizeReferenceName(name string, postings []ReferencePosting, declaratio
 }
 
 func referenceCountFingerprint(summary ReferenceNameSummary) string {
-	hash := sha256.New()
-	var number [8]byte
+	// Build the hash input in one buffer; per-write hash.Hash calls make every
+	// small byte slice escape to the heap.
+	var storage [128]byte
+	payload := storage[:0]
 	values := [...]int{
 		summary.Postings,
 		summary.Roles.Declarations,
@@ -1112,59 +1114,74 @@ func referenceCountFingerprint(summary ReferenceNameSummary) string {
 		summary.Roles.Crefs,
 	}
 	for _, value := range values {
-		binary.LittleEndian.PutUint64(number[:], uint64(value))
-		_, _ = hash.Write(number[:])
+		payload = binary.LittleEndian.AppendUint64(payload, uint64(value))
 	}
-	if summary.Declared {
-		_, _ = hash.Write([]byte{1})
-	} else {
-		_, _ = hash.Write([]byte{0})
-	}
+	payload = appendFingerprintBool(payload, summary.Declared)
 	for _, resolved := range summary.GlobalResolutions {
-		if resolved {
-			_, _ = hash.Write([]byte{1})
-		} else {
-			_, _ = hash.Write([]byte{0})
-		}
+		payload = appendFingerprintBool(payload, resolved)
 	}
-	return hex.EncodeToString(hash.Sum(nil))
+	return fingerprintHex(payload)
 }
 
 func referenceLocationFingerprint(name string, postings []ReferencePosting, declaration Symbol, declared bool) string {
-	hash := sha256.New()
-	var number [8]byte
-	writeString := func(value string) {
-		binary.LittleEndian.PutUint64(number[:], uint64(len(value)))
-		_, _ = hash.Write(number[:])
-		_, _ = hash.Write([]byte(value))
-	}
-	writePosition := func(position lsp.Position) {
-		binary.LittleEndian.PutUint32(number[:4], uint32(position.Line))
-		binary.LittleEndian.PutUint32(number[4:], uint32(position.Character))
-		_, _ = hash.Write(number[:])
-	}
-	writeString(name)
+	buffer := fingerprintBufferPool.Get().(*[]byte)
+	defer func() {
+		if cap(*buffer) <= maxPooledFingerprintBuffer {
+			fingerprintBufferPool.Put(buffer)
+		}
+	}()
+	payload := (*buffer)[:0]
+	defer func() { *buffer = payload[:0] }()
+	payload = appendFingerprintString(payload, name)
+	payload = appendFingerprintBool(payload, declared)
 	if declared {
-		_, _ = hash.Write([]byte{1})
-		writeString(declaration.Name)
-		writeString(declaration.Kind)
-		writePosition(declaration.Range.Start)
-		writePosition(declaration.Range.End)
-	} else {
-		_, _ = hash.Write([]byte{0})
+		payload = appendFingerprintString(payload, declaration.Name)
+		payload = appendFingerprintString(payload, declaration.Kind)
+		payload = appendFingerprintPosition(payload, declaration.Range.Start)
+		payload = appendFingerprintPosition(payload, declaration.Range.End)
 	}
 	for _, posting := range postings {
-		writeString(posting.Name)
-		writePosition(posting.Range.Start)
-		writePosition(posting.Range.End)
-		binary.LittleEndian.PutUint64(number[:], uint64(posting.Roles))
-		_, _ = hash.Write(number[:])
-		writeString(posting.Scope)
-		writeString(posting.ScopeKind)
-		writeString(posting.Owner)
-		writeString(posting.ClassOwner)
+		payload = appendFingerprintString(payload, posting.Name)
+		payload = appendFingerprintPosition(payload, posting.Range.Start)
+		payload = appendFingerprintPosition(payload, posting.Range.End)
+		payload = binary.LittleEndian.AppendUint64(payload, uint64(posting.Roles))
+		payload = appendFingerprintString(payload, posting.Scope)
+		payload = appendFingerprintString(payload, posting.ScopeKind)
+		payload = appendFingerprintString(payload, posting.Owner)
+		payload = appendFingerprintString(payload, posting.ClassOwner)
 	}
-	return hex.EncodeToString(hash.Sum(nil))
+	return fingerprintHex(payload)
+}
+
+// The location payload grows with the posting count, so frequently referenced
+// names reuse pooled storage instead of regrowing a fresh slice per name.
+const maxPooledFingerprintBuffer = 1 << 20
+
+var fingerprintBufferPool = sync.Pool{New: func() any {
+	buffer := make([]byte, 0, 4096)
+	return &buffer
+}}
+
+func appendFingerprintBool(payload []byte, value bool) []byte {
+	if value {
+		return append(payload, 1)
+	}
+	return append(payload, 0)
+}
+
+func appendFingerprintString(payload []byte, value string) []byte {
+	payload = binary.LittleEndian.AppendUint64(payload, uint64(len(value)))
+	return append(payload, value...)
+}
+
+func appendFingerprintPosition(payload []byte, position lsp.Position) []byte {
+	payload = binary.LittleEndian.AppendUint32(payload, uint32(position.Line))
+	return binary.LittleEndian.AppendUint32(payload, uint32(position.Character))
+}
+
+func fingerprintHex(payload []byte) string {
+	sum := sha256.Sum256(payload)
+	return hex.EncodeToString(sum[:])
 }
 
 func referenceScopesFromTokens(source *core.TextDocument, text string, base int, tokens []Token) []referenceScopeOffsets {
