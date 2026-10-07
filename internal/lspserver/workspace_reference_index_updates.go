@@ -327,10 +327,6 @@ func prepareWorkspaceReferenceCountDocumentFrom(key string, parsed, analysis *co
 	}
 }
 
-func prepareWorkspaceEmbeddedClassSegments(key string, parsed *core.ParsedDocument) ([]string, map[string]*workspaceEmbeddedClassSegment, string) {
-	return prepareWorkspaceEmbeddedClassSegmentsFrom(key, parsed, parsed)
-}
-
 func prepareWorkspaceEmbeddedClassSegmentsFrom(key string, parsed, analysis *core.ParsedDocument) ([]string, map[string]*workspaceEmbeddedClassSegment, string) {
 	indexed := embeddedReferenceRangesFor(analysis)
 	byName := make(map[string][]lsp.Range, len(indexed.cssClasses)+len(indexed.htmlClasses)+len(indexed.javascriptClasses))
