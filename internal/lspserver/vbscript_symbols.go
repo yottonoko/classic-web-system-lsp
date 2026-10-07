@@ -384,8 +384,11 @@ func vbProcedureScopesFromCST(parsed *core.ParsedDocument) []vbProcedureScope {
 	if parsed == nil {
 		return nil
 	}
-	doc := core.SourceDocument(parsed)
 	scopes := make([]vbProcedureScope, 0)
+	if !vbRegionsMayDeclareProcedures(parsed) {
+		return scopes
+	}
+	doc := core.SourceDocument(parsed)
 	var collect func(*vbscript.CSTNode)
 	collect = func(node *vbscript.CSTNode) {
 		if node == nil {
@@ -422,6 +425,48 @@ func vbProcedureScopesFromCST(parsed *core.ParsedDocument) []vbProcedureScope {
 	}
 	collect(vbscript.ParseDocumentCST(parsed))
 	return scopes
+}
+
+// vbRegionsMayDeclareProcedures conservatively reports whether the document
+// CST can contain Procedure or Property nodes. Their headers need an ASCII
+// identifier token spelled Sub, Function, or Property, and CST tokens never
+// span VBScript regions, so a document without those words in its VBScript
+// regions can skip building the CST.
+func vbRegionsMayDeclareProcedures(parsed *core.ParsedDocument) bool {
+	for _, region := range parsed.Regions {
+		if region.Language != core.LanguageVBScript {
+			continue
+		}
+		start := max(0, min(region.ContentStart, len(parsed.Text)))
+		end := max(start, min(region.ContentEnd, len(parsed.Text)))
+		text := parsed.Text[start:end]
+		if containsASCIIFold(text, "sub") || containsASCIIFold(text, "function") || containsASCIIFold(text, "property") {
+			return true
+		}
+	}
+	return false
+}
+
+// containsASCIIFold reports whether text contains word under ASCII case
+// folding. word must be lowercase ASCII letters.
+func containsASCIIFold(text, word string) bool {
+	first := word[0]
+	for index := 0; index+len(word) <= len(text); index++ {
+		if text[index]|0x20 != first {
+			continue
+		}
+		matched := true
+		for offset := 1; offset < len(word); offset++ {
+			if text[index+offset]|0x20 != word[offset] {
+				matched = false
+				break
+			}
+		}
+		if matched {
+			return true
+		}
+	}
+	return false
 }
 
 func vbProcedureScopeAtLine(scopes []vbProcedureScope, line int) string {
@@ -1032,12 +1077,15 @@ func implicitVBDeclarations(parsed *core.ParsedDocument) []vbUsageDeclaration {
 	procedures := vbProcedureScopes(parsed)
 	procedureIndex := newVBProcedureScopeIndex(procedures)
 	candidates := map[string]vbUsageDeclaration{}
+	var tokenBuffer []vbscript.Token
+	var spans []vbIdentifierSpan
 	for _, region := range parsed.Regions {
 		if region.Language != core.LanguageVBScript {
 			continue
 		}
 		text := parsed.Text[region.ContentStart:region.ContentEnd]
-		for _, span := range vbIdentifierSpansForAnalysis(text) {
+		tokenBuffer, spans = appendVBIdentifierSpansForAnalysis(tokenBuffer[:0], spans[:0], text)
+		for _, span := range spans {
 			start := region.ContentStart + span.Start
 			end := region.ContentStart + span.End
 			if _, declaration := declarationRanges[offsetRangeKey(start, end)]; declaration {
@@ -1231,17 +1279,19 @@ func vbLocalDeclarationShadowNames(parsed *core.ParsedDocument) map[string]map[s
 	return shadowNames
 }
 
-// vbIdentifierSpansForAnalysis uses the shared lexer so date literals and
-// their contents cannot become implicit declarations.
-func vbIdentifierSpansForAnalysis(text string) []vbIdentifierSpan {
-	spans := make([]vbIdentifierSpan, 0, 16)
-	for _, token := range vbscript.Tokenize(text) {
+// appendVBIdentifierSpansForAnalysis uses the shared lexer so date literals
+// and their contents cannot become implicit declarations. It reuses tokens as
+// scratch storage and returns it so callers can tokenize many regions with one
+// buffer.
+func appendVBIdentifierSpansForAnalysis(tokens []vbscript.Token, spans []vbIdentifierSpan, text string) ([]vbscript.Token, []vbIdentifierSpan) {
+	tokens = vbscript.AppendTokens(tokens, text)
+	for _, token := range tokens {
 		if token.Kind != "identifier" {
 			continue
 		}
 		spans = append(spans, vbIdentifierSpan{Start: token.Start, End: token.End})
 	}
-	return spans
+	return tokens, spans
 }
 
 func init() {

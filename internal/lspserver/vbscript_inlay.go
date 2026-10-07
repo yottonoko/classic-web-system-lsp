@@ -648,7 +648,29 @@ func assignedVBValueFromStatementForDocument(parsed *core.ParsedDocument, statem
 	return lowerName, inferVBValueTypeForDocument(parsed, expression), true
 }
 
+const implicitAssignmentInlayDeclarationsAnalysisKey = "lspserver.implicit-assignment-inlay-declarations.v1"
+
+// implicitAssignmentInlayDeclarations returns a shared slice for the
+// include-aware form without included names, which depends only on the parsed
+// source and is requested by several analyses of one revision. Callers must
+// not modify the result.
 func implicitAssignmentInlayDeclarations(parsed *core.ParsedDocument, includeAware bool, includedGlobalNames map[string]struct{}) []vbUsageDeclaration {
+	if !includeAware || len(includedGlobalNames) > 0 {
+		return buildImplicitAssignmentInlayDeclarations(parsed, includeAware, includedGlobalNames)
+	}
+	if value, ok := parsed.LoadRuntimeAnalysis(implicitAssignmentInlayDeclarationsAnalysisKey); ok {
+		if cached, ok := value.([]vbUsageDeclaration); ok {
+			return cached
+		}
+	}
+	declarations := buildImplicitAssignmentInlayDeclarations(parsed, true, nil)
+	if declarations != nil {
+		parsed.StoreRuntimeAnalysis(implicitAssignmentInlayDeclarationsAnalysisKey, declarations)
+	}
+	return declarations
+}
+
+func buildImplicitAssignmentInlayDeclarations(parsed *core.ParsedDocument, includeAware bool, includedGlobalNames map[string]struct{}) []vbUsageDeclaration {
 	if hasVBOptionExplicit(parsed) {
 		return nil
 	}

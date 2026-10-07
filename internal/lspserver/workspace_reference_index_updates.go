@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/binary"
 	"encoding/hex"
+	"io"
 	"sort"
 	"strings"
 
@@ -42,6 +43,14 @@ func (index *workspaceReferenceIndex) prepareContextMode(ctx context.Context, ca
 }
 
 func (index *workspaceReferenceIndex) prepareContextModeWithShards(ctx context.Context, candidates []*core.ParsedDocument, shards map[*core.ParsedDocument]*vbscript.ReferenceShard, requireFull bool) (workspaceReferenceIndexUpdate, []workspaceReferencePreparedDocument) {
+	return index.prepareContextModeWithAnalysis(ctx, candidates, shards, nil, requireFull)
+}
+
+// prepareContextModeWithAnalysis is prepareContextModeWithShards with optional
+// analysis sources. A source is a parsed revision of the same text whose
+// runtime analysis is already warm; it is only read, and the prepared entries
+// still reference the candidate document.
+func (index *workspaceReferenceIndex) prepareContextModeWithAnalysis(ctx context.Context, candidates []*core.ParsedDocument, shards map[*core.ParsedDocument]*vbscript.ReferenceShard, analysisSources map[*core.ParsedDocument]*core.ParsedDocument, requireFull bool) (workspaceReferenceIndexUpdate, []workspaceReferencePreparedDocument) {
 	if index == nil || len(candidates) == 0 {
 		return workspaceReferenceIndexUpdate{}, nil
 	}
@@ -67,6 +76,7 @@ func (index *workspaceReferenceIndex) prepareContextModeWithShards(ctx context.C
 
 	type pendingDocument struct {
 		candidate *core.ParsedDocument
+		analysis  *core.ParsedDocument
 		shard     *vbscript.ReferenceShard
 	}
 	pending := make([]pendingDocument, 0, len(candidates))
@@ -77,7 +87,11 @@ func (index *workspaceReferenceIndex) prepareContextModeWithShards(ctx context.C
 		}
 		key, found := index.parsedDocuments[candidate]
 		if !found || requireFull && index.documents[key].countSummaryOnly {
-			pending = append(pending, pendingDocument{candidate: candidate, shard: shards[candidate]})
+			analysis := candidate
+			if source := analysisSources[candidate]; sameParsedAnalysisSource(candidate, source) {
+				analysis = source
+			}
+			pending = append(pending, pendingDocument{candidate: candidate, analysis: analysis, shard: shards[candidate]})
 		}
 	}
 	index.mu.RUnlock()
@@ -115,17 +129,18 @@ func (index *workspaceReferenceIndex) prepareContextModeWithShards(ctx context.C
 		if workerCtx.Err() != nil {
 			return
 		}
+		analysis := pending[position].analysis
 		shard := pending[position].shard
 		if shard == nil {
-			shard = vbscript.BuildReferenceShard(candidate)
+			shard = vbscript.BuildReferenceShard(analysis)
 		}
 		if requireFull {
 			if embeddedBuildTestHook != nil {
 				embeddedBuildTestHook(key)
 			}
-			prepared[position] = prepareWorkspaceReferenceDocument(key, candidate, sourceHash, shard, ticket)
+			prepared[position] = prepareWorkspaceReferenceDocumentFrom(key, candidate, analysis, sourceHash, shard, ticket)
 		} else {
-			prepared[position] = prepareWorkspaceReferenceCountDocument(key, candidate, sourceHash, shard, ticket)
+			prepared[position] = prepareWorkspaceReferenceCountDocumentFrom(key, candidate, analysis, sourceHash, shard, ticket)
 		}
 	})
 	if ctx.Err() != nil {
@@ -210,8 +225,22 @@ type workspaceReferencePreparedDocument struct {
 	ticket              uint64
 }
 
+// sameParsedAnalysisSource reports whether source can stand in for parsed when
+// deriving source-only analysis facts.
+func sameParsedAnalysisSource(parsed, source *core.ParsedDocument) bool {
+	return source != nil && parsed != nil && source != parsed && source.URI == parsed.URI &&
+		source.DefaultLanguage == parsed.DefaultLanguage && source.Text == parsed.Text &&
+		len(source.Regions) == len(parsed.Regions)
+}
+
 func prepareWorkspaceReferenceDocument(key string, parsed *core.ParsedDocument, sourceHash string, shard *vbscript.ReferenceShard, ticket uint64) workspaceReferencePreparedDocument {
-	prepared := prepareWorkspaceReferenceCountDocument(key, parsed, sourceHash, shard, ticket)
+	return prepareWorkspaceReferenceDocumentFrom(key, parsed, parsed, sourceHash, shard, ticket)
+}
+
+// prepareWorkspaceReferenceDocumentFrom derives facts from analysis and records
+// parsed as the owner of the prepared segments.
+func prepareWorkspaceReferenceDocumentFrom(key string, parsed, analysis *core.ParsedDocument, sourceHash string, shard *vbscript.ReferenceShard, ticket uint64) workspaceReferencePreparedDocument {
+	prepared := prepareWorkspaceReferenceCountDocumentFrom(key, parsed, analysis, sourceHash, shard, ticket)
 	locationHash := sha256.New()
 	for _, name := range prepared.names {
 		segment := prepared.segments[name]
@@ -223,14 +252,18 @@ func prepareWorkspaceReferenceDocument(key string, parsed *core.ParsedDocument, 
 		_, _ = locationHash.Write([]byte(segment.locationFingerprint))
 	}
 	prepared.locationFingerprint = hex.EncodeToString(locationHash.Sum(nil))
-	prepared.embeddedNames, prepared.embeddedSegments, prepared.embeddedFingerprint = prepareWorkspaceEmbeddedClassSegments(key, parsed)
+	prepared.embeddedNames, prepared.embeddedSegments, prepared.embeddedFingerprint = prepareWorkspaceEmbeddedClassSegmentsFrom(key, parsed, analysis)
 	prepared.countSummaryOnly = false
 	return prepared
 }
 
 func prepareWorkspaceReferenceCountDocument(key string, parsed *core.ParsedDocument, sourceHash string, shard *vbscript.ReferenceShard, ticket uint64) workspaceReferencePreparedDocument {
+	return prepareWorkspaceReferenceCountDocumentFrom(key, parsed, parsed, sourceHash, shard, ticket)
+}
+
+func prepareWorkspaceReferenceCountDocumentFrom(key string, parsed, analysis *core.ParsedDocument, sourceHash string, shard *vbscript.ReferenceShard, ticket uint64) workspaceReferencePreparedDocument {
 	names := shard.NormalizedNames()
-	documentFacts := vbReferenceDocumentIndexForShard(parsed, shard)
+	documentFacts := vbReferenceDocumentIndexForShard(analysis, shard)
 	countHash := sha256.New()
 	locationHash := sha256.New()
 	segments := make(map[string]*workspaceReferenceDocumentSegment, len(names))
@@ -240,8 +273,7 @@ func prepareWorkspaceReferenceCountDocument(key string, parsed *core.ParsedDocum
 		globalResolutions := shard.GlobalResolutionsFor(name)
 		declarationRanges := documentFacts.declarationRanges[name]
 		counts := summarizeWorkspaceReferencePostingsWithResolutions(postings, globalResolutions, declarationRanges)
-		countFingerprint := workspaceReferenceSegmentFingerprint(summary.CountFingerprint, counts, declarationRanges)
-		locationFingerprint := workspaceReferenceSegmentFingerprint(summary.LocationFingerprint, counts, declarationRanges)
+		countFingerprint, locationFingerprint := workspaceReferenceSegmentFingerprints(summary.CountFingerprint, summary.LocationFingerprint, counts, declarationRanges)
 		segments[name] = &workspaceReferenceDocumentSegment{
 			documentKey:         key,
 			name:                name,
@@ -259,7 +291,7 @@ func prepareWorkspaceReferenceCountDocument(key string, parsed *core.ParsedDocum
 		_, _ = locationHash.Write([]byte{0})
 		_, _ = locationHash.Write([]byte(locationFingerprint))
 	}
-	for _, declaration := range implicitVBDeclarations(parsed) {
+	for _, declaration := range implicitVBDeclarations(analysis) {
 		if declaration.Local {
 			continue
 		}
@@ -296,7 +328,11 @@ func prepareWorkspaceReferenceCountDocument(key string, parsed *core.ParsedDocum
 }
 
 func prepareWorkspaceEmbeddedClassSegments(key string, parsed *core.ParsedDocument) ([]string, map[string]*workspaceEmbeddedClassSegment, string) {
-	indexed := embeddedReferenceRangesFor(parsed)
+	return prepareWorkspaceEmbeddedClassSegmentsFrom(key, parsed, parsed)
+}
+
+func prepareWorkspaceEmbeddedClassSegmentsFrom(key string, parsed, analysis *core.ParsedDocument) ([]string, map[string]*workspaceEmbeddedClassSegment, string) {
+	indexed := embeddedReferenceRangesFor(analysis)
 	byName := make(map[string][]lsp.Range, len(indexed.cssClasses)+len(indexed.htmlClasses)+len(indexed.javascriptClasses))
 	for name, ranges := range indexed.cssClasses {
 		byName[name] = append(byName[name], ranges...)
@@ -340,43 +376,56 @@ func workspaceEmbeddedClassFingerprint(name string, ranges []lsp.Range) string {
 }
 
 func workspaceReferenceSegmentFingerprint(base string, counts workspaceReferenceCountSummary, declarationRanges map[lsp.Range]struct{}) string {
-	hash := sha256.New()
-	_, _ = hash.Write([]byte(base))
-	var number [8]byte
+	fingerprint, _ := workspaceReferenceSegmentFingerprints(base, "", counts, declarationRanges)
+	return fingerprint
+}
+
+// workspaceReferenceSegmentFingerprints hashes the count and location bases
+// against one shared encoding of counts and sorted declaration ranges.
+func workspaceReferenceSegmentFingerprints(countBase, locationBase string, counts workspaceReferenceCountSummary, declarationRanges map[lsp.Range]struct{}) (string, string) {
 	values := [...]int{
 		counts.Declarations, counts.Reads, counts.Writes, counts.Calls, counts.Crefs,
 		counts.ObjectInitializations, counts.CodeLensReferences, counts.CodeLensCalls,
 		counts.UnqualifiedCodeLensReferences, counts.UnqualifiedCodeLensCalls, counts.Total,
 	}
+	var storage [256]byte
+	suffix := storage[:0]
 	for _, value := range values {
-		binary.LittleEndian.PutUint64(number[:], uint64(value))
-		_, _ = hash.Write(number[:])
+		suffix = binary.LittleEndian.AppendUint64(suffix, uint64(value))
 	}
-	ranges := make([]lsp.Range, 0, len(declarationRanges))
-	for item := range declarationRanges {
-		ranges = append(ranges, item)
+	if len(declarationRanges) > 0 {
+		ranges := make([]lsp.Range, 0, len(declarationRanges))
+		for item := range declarationRanges {
+			ranges = append(ranges, item)
+		}
+		sort.Slice(ranges, func(i, j int) bool {
+			if ranges[i].Start.Line != ranges[j].Start.Line {
+				return ranges[i].Start.Line < ranges[j].Start.Line
+			}
+			if ranges[i].Start.Character != ranges[j].Start.Character {
+				return ranges[i].Start.Character < ranges[j].Start.Character
+			}
+			if ranges[i].End.Line != ranges[j].End.Line {
+				return ranges[i].End.Line < ranges[j].End.Line
+			}
+			return ranges[i].End.Character < ranges[j].End.Character
+		})
+		for _, item := range ranges {
+			suffix = binary.LittleEndian.AppendUint32(suffix, uint32(item.Start.Line))
+			suffix = binary.LittleEndian.AppendUint32(suffix, uint32(item.Start.Character))
+			suffix = binary.LittleEndian.AppendUint32(suffix, uint32(item.End.Line))
+			suffix = binary.LittleEndian.AppendUint32(suffix, uint32(item.End.Character))
+		}
 	}
-	sort.Slice(ranges, func(i, j int) bool {
-		if ranges[i].Start.Line != ranges[j].Start.Line {
-			return ranges[i].Start.Line < ranges[j].Start.Line
-		}
-		if ranges[i].Start.Character != ranges[j].Start.Character {
-			return ranges[i].Start.Character < ranges[j].Start.Character
-		}
-		if ranges[i].End.Line != ranges[j].End.Line {
-			return ranges[i].End.Line < ranges[j].End.Line
-		}
-		return ranges[i].End.Character < ranges[j].End.Character
-	})
-	for _, item := range ranges {
-		binary.LittleEndian.PutUint32(number[:4], uint32(item.Start.Line))
-		binary.LittleEndian.PutUint32(number[4:], uint32(item.Start.Character))
-		_, _ = hash.Write(number[:])
-		binary.LittleEndian.PutUint32(number[:4], uint32(item.End.Line))
-		binary.LittleEndian.PutUint32(number[4:], uint32(item.End.Character))
-		_, _ = hash.Write(number[:])
+	hash := sha256.New()
+	fingerprint := func(base string) string {
+		hash.Reset()
+		_, _ = io.WriteString(hash, base)
+		_, _ = hash.Write(suffix)
+		var sum [sha256.Size]byte
+		return hex.EncodeToString(hash.Sum(sum[:0]))
 	}
-	return hex.EncodeToString(hash.Sum(nil))
+	return fingerprint(countBase), fingerprint(locationBase)
 }
 
 func (index *workspaceReferenceIndex) applyPrepared(prepared []workspaceReferencePreparedDocument) workspaceReferenceIndexUpdate {

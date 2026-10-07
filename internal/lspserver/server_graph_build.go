@@ -1431,4 +1431,59 @@ type graphMemberOccurrence struct {
 	Parts        []string
 }
 
-var graphMemberChainPattern = regexp.MustCompile(`\b[A-Za-z_][A-Za-z0-9_]*(?:\s*\.\s*[A-Za-z_][A-Za-z0-9_]*)+`)
+// graphMemberChainMatches returns the same indexes as
+// regexp.MustCompile(`\b[A-Za-z_][A-Za-z0-9_]*(?:\s*\.\s*[A-Za-z_][A-Za-z0-9_]*)+`).FindAllStringIndex(text, -1)
+// without the regexp engine's per-position backtracking cost.
+func graphMemberChainMatches(text string) [][]int {
+	var matches [][]int
+	for offset := 0; offset < len(text); {
+		if !isVBIdentifier(text[offset]) {
+			offset++
+			continue
+		}
+		start := offset
+		wordEnd := offset + 1
+		for wordEnd < len(text) && isVBIdentifier(text[wordEnd]) {
+			wordEnd++
+		}
+		end := wordEnd
+		if isVBIdentifierStart(text[start]) {
+			for {
+				next := skipGraphMemberChainSpace(text, end)
+				if next >= len(text) || text[next] != '.' {
+					break
+				}
+				next = skipGraphMemberChainSpace(text, next+1)
+				if next >= len(text) || !isVBIdentifierStart(text[next]) {
+					break
+				}
+				next++
+				for next < len(text) && isVBIdentifier(text[next]) {
+					next++
+				}
+				end = next
+			}
+		}
+		if end > wordEnd {
+			matches = append(matches, []int{start, end})
+			offset = end
+			continue
+		}
+		offset = wordEnd
+	}
+	return matches
+}
+
+// skipGraphMemberChainSpace skips the RE2 \s class: tab, newline, form feed,
+// carriage return, and space.
+func skipGraphMemberChainSpace(text string, offset int) int {
+	for offset < len(text) {
+		switch text[offset] {
+		case '\t', '\n', '\f', '\r', ' ':
+			offset++
+		default:
+			return offset
+		}
+	}
+	return offset
+}

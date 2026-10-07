@@ -431,7 +431,7 @@ func putDiskCacheLogicalSize(meta *bolt.Bucket, size int64) error {
 	return meta.Put(diskCacheLogicalSizeKey, value)
 }
 
-func DiskContentHash(text string) string { return stableDiskHash(text) }
+func DiskContentHash(text string) string { return contentHashes.hash(text) }
 
 func stableDiskHash(text string) string {
 	sum := sha256.Sum256([]byte(text))

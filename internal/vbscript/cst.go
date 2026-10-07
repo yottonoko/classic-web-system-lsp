@@ -28,7 +28,7 @@ func ParseCST(text string) *CSTNode {
 	stack := []*CSTNode{document}
 	for _, index := range cstStatementStartIndexes(significant) {
 		token := significant[index]
-		first := strings.ToLower(token.Text)
+		first := lowerVBTokenText(token.Text)
 		second := lowerCSTToken(significant, index+1)
 
 		if first == "elseif" {
@@ -213,8 +213,17 @@ func Tokenize(text string) []Token {
 	return tokenizeWithBase(text, 0)
 }
 
+// AppendTokens appends the tokens of text to dst. Callers that tokenize many
+// short texts can reuse one buffer instead of allocating one per text.
+func AppendTokens(dst []Token, text string) []Token {
+	return appendTokensWithBase(dst, text, 0)
+}
+
 func tokenizeWithBase(text string, base int) []Token {
-	tokens := make([]Token, 0, len(text)/4)
+	return appendTokensWithBase(make([]Token, 0, len(text)/4), text, base)
+}
+
+func appendTokensWithBase(tokens []Token, text string, base int) []Token {
 	for offset := 0; offset < len(text); {
 		switch text[offset] {
 		case ' ', '\t':
@@ -306,7 +315,16 @@ func tokenizeWithBase(text string, base int) []Token {
 }
 
 func significantTokens(tokens []Token) []Token {
-	return appendSignificantTokens(make([]Token, 0, len(tokens)), tokens)
+	count := 0
+	continuation := false
+	for _, token := range tokens {
+		if token.Kind == "whitespace" || token.Kind == "comment" && !continuation {
+			continue
+		}
+		count++
+		continuation = token.Text == "_"
+	}
+	return appendSignificantTokens(make([]Token, 0, count), tokens)
 }
 
 // appendSignificantTokens also supports compacting tokens in place by passing
@@ -769,8 +787,36 @@ func lowerCSTToken(tokens []Token, index int) string {
 	if index < 0 || index >= len(tokens) {
 		return ""
 	}
-	return strings.ToLower(tokens[index].Text)
+	return lowerVBTokenText(tokens[index].Text)
 }
+
+// lowerVBTokenText is strings.ToLower that returns the shared lower-case
+// spelling for keywords, which statement scans lower-case for every token.
+func lowerVBTokenText(value string) string {
+	if len(value) == 0 || len(value) > vbKeywordMaxLength {
+		return strings.ToLower(value)
+	}
+	var buffer [vbKeywordMaxLength]byte
+	for index := 0; index < len(value); index++ {
+		character := value[index]
+		if character >= 'A' && character <= 'Z' {
+			character += 'a' - 'A'
+		}
+		buffer[index] = character
+	}
+	if name, ok := vbKeywordNames[string(buffer[:len(value)])]; ok {
+		return name
+	}
+	return strings.ToLower(value)
+}
+
+var vbKeywordNames = func() map[string]string {
+	names := make(map[string]string, len(vbKeywords))
+	for name := range vbKeywords {
+		names[name] = name
+	}
+	return names
+}()
 
 func cstStatementHasSymbol(tokens []Token, index int, symbol string) bool {
 	end := cstStatementEndIndex(tokens, index)

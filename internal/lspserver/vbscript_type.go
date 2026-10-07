@@ -2312,7 +2312,7 @@ func vbscriptTypeMemberOccurrences(parsed *core.ParsedDocument) []graphMemberOcc
 				lineEnd++
 			}
 			line := parsed.Text[lineStart:lineEnd]
-			for _, match := range graphMemberChainPattern.FindAllStringIndex(line, -1) {
+			for _, match := range graphMemberChainMatches(line) {
 				start := lineStart + match[0]
 				end := lineStart + match[1]
 				if previousNonSpaceSameLine(parsed.Text, start) == '.' {

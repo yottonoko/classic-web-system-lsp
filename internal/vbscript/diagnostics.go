@@ -438,7 +438,7 @@ func lowerTokenText(tokens []Token, index int) string {
 	if index < 0 || index >= len(tokens) {
 		return ""
 	}
-	return strings.ToLower(tokens[index].Text)
+	return lowerVBTokenText(tokens[index].Text)
 }
 
 func closeSyntaxBlock(stack []openBlock, kinds ...string) []openBlock {

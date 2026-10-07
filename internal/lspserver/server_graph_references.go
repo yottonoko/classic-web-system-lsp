@@ -460,7 +460,7 @@ func graphMemberOccurrences(parsed *core.ParsedDocument) []graphMemberOccurrence
 			continue
 		}
 		text := parsed.Text[region.ContentStart:region.ContentEnd]
-		for _, match := range graphMemberChainPattern.FindAllStringIndex(text, -1) {
+		for _, match := range graphMemberChainMatches(text) {
 			start := region.ContentStart + match[0]
 			end := region.ContentStart + match[1]
 			if previousNonSpace(parsed.Text, start) == '.' {

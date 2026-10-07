@@ -69,39 +69,37 @@ func vbscriptDocumentTokensRuntimeFor(parsed *core.ParsedDocument) *vbscriptDocu
 }
 
 func buildVBScriptDocumentTokensRuntime(parsed *core.ParsedDocument) *vbscriptDocumentTokensRuntime {
-	regions := make([]vbscriptDocumentTokenRegion, 0)
-	tokenCount := 0
+	type tokenSpan struct{ start, end int }
+	contentBytes := 0
 	for _, region := range parsed.Regions {
-		if region.Language != core.LanguageVBScript || region.ContentStart >= region.ContentEnd {
-			continue
+		if region.Language == core.LanguageVBScript && region.ContentStart < region.ContentEnd {
+			contentBytes += region.ContentEnd - region.ContentStart
 		}
-		raw := tokenizeWithBase(parsed.Text[region.ContentStart:region.ContentEnd], region.ContentStart)
-		if len(regions) > 0 {
-			tokenCount++
-		}
-		significant := appendSignificantTokens(raw[:0], raw)
-		tokenCount += len(significant)
-		regions = append(regions, vbscriptDocumentTokenRegion{
-			start:  region.Start,
-			end:    region.End,
-			tokens: significant,
-		})
 	}
-	tokens := make([]Token, 0, tokenCount)
-	regionIndex := 0
+	// Stage every region in one buffer and compact each region in place right
+	// after tokenizing it, so lossless per-region token arrays are not kept.
+	staged := make([]Token, 0, contentBytes/4+1)
+	regions := make([]vbscriptDocumentTokenRegion, 0)
+	spans := make([]tokenSpan, 0)
 	for _, region := range parsed.Regions {
 		if region.Language != core.LanguageVBScript || region.ContentStart >= region.ContentEnd {
 			continue
 		}
-		if regionIndex > 0 {
-			tokens = append(tokens, Token{Kind: "newline", Start: region.ContentStart, End: region.ContentStart, Text: "\n"})
+		if len(regions) > 0 {
+			staged = append(staged, Token{Kind: "newline", Start: region.ContentStart, End: region.ContentStart, Text: "\n"})
 		}
-		item := &regions[regionIndex]
-		start := len(tokens)
-		tokens = append(tokens, item.tokens...)
+		start := len(staged)
+		staged = appendTokensWithBase(staged, parsed.Text[region.ContentStart:region.ContentEnd], region.ContentStart)
+		significant := appendSignificantTokens(staged[start:start], staged[start:])
+		staged = staged[:start+len(significant)]
+		spans = append(spans, tokenSpan{start: start, end: len(staged)})
+		regions = append(regions, vbscriptDocumentTokenRegion{start: region.Start, end: region.End})
+	}
+	tokens := make([]Token, len(staged))
+	copy(tokens, staged)
+	for index, span := range spans {
 		// Limit capacity so appending to a region cannot overwrite its neighbor.
-		item.tokens = tokens[start:len(tokens):len(tokens)]
-		regionIndex++
+		regions[index].tokens = tokens[span.start:span.end:span.end]
 	}
 	return &vbscriptDocumentTokensRuntime{
 		tokens:  tokens,

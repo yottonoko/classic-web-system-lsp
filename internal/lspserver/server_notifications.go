@@ -131,7 +131,9 @@ func (s *Server) handleNotificationMessage(ctx context.Context, message *rpcMess
 		return s.publishDiagnostics(p.TextDocument.URI)
 	case "textDocument/didOpen":
 		var p didOpenParams
-		if err := decodeNotificationParams(params, &p); err != nil {
+		if message.didOpenParams != nil {
+			p = *message.didOpenParams
+		} else if err := decodeNotificationParams(params, &p); err != nil {
 			return err
 		}
 		doc := core.NewTextDocument(p.TextDocument.URI, p.TextDocument.LanguageID, p.TextDocument.Version, p.TextDocument.Text)

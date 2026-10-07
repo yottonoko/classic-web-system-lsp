@@ -66,6 +66,43 @@ func TestWorkspaceReferenceIndexUsesProvidedShardForStructuralClone(t *testing.T
 	}
 }
 
+func TestWorkspaceReferenceIndexDerivesCloneSegmentsFromAnalysisSource(t *testing.T) {
+	const source = "<% Dim shared : shared = 1 : implicitValue = shared : Response.Write shared %>\n<div class=\"box\"></div>"
+	original := core.ParseDocument("file:///analysis-source.asp", source, core.Settings{DefaultLanguage: "VBScript"})
+	snapshot := buildWorkspaceArtifactSnapshotReducedContext(context.Background(), original)
+	clone := original.CloneStructural()
+	fresh := original.CloneStructural()
+
+	_, prepared := newWorkspaceReferenceIndex().prepareContextModeWithAnalysis(
+		context.Background(),
+		[]*core.ParsedDocument{clone},
+		map[*core.ParsedDocument]*vbscript.ReferenceShard{clone: snapshot.ReferenceShard},
+		map[*core.ParsedDocument]*core.ParsedDocument{clone: original},
+		true,
+	)
+	_, expected := newWorkspaceReferenceIndex().prepareContextModeWithShards(
+		context.Background(),
+		[]*core.ParsedDocument{fresh},
+		map[*core.ParsedDocument]*vbscript.ReferenceShard{fresh: vbscript.BuildReferenceShard(fresh)},
+		true,
+	)
+	if len(prepared) != 1 || len(expected) != 1 {
+		t.Fatalf("prepared = %d, expected = %d documents", len(prepared), len(expected))
+	}
+	got, want := prepared[0], expected[0]
+	if got.parsed != clone || got.countFingerprint != want.countFingerprint || got.locationFingerprint != want.locationFingerprint || got.embeddedFingerprint != want.embeddedFingerprint {
+		t.Fatalf("analysis-source preparation = %#v, want fingerprints of %#v owned by the clone", got, want)
+	}
+	for name, segment := range got.segments {
+		if segment.parsed != clone {
+			t.Fatalf("segment %q is owned by %p, want clone %p", name, segment.parsed, clone)
+		}
+	}
+	if _, cached := clone.LoadRuntimeAnalysis(vbReferenceDocumentFactsAnalysisKey); cached {
+		t.Fatal("clone derived reference facts instead of reading the analysis source")
+	}
+}
+
 func TestImplicitGlobalReferencePlansParseOnlyRelatedIncludeTrees(t *testing.T) {
 	server := New(nil, io.Discard, io.Discard)
 	root := t.TempDir()

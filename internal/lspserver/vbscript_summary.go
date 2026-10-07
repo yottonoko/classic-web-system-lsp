@@ -244,7 +244,7 @@ func collectVBScriptExternalRefs(parsed *core.ParsedDocument) []vbExternalRef {
 			continue
 		}
 		text := parsed.Text[region.ContentStart:region.ContentEnd]
-		for _, match := range graphMemberChainPattern.FindAllStringIndex(text, -1) {
+		for _, match := range graphMemberChainMatches(text) {
 			start := region.ContentStart + match[0]
 			end := region.ContentStart + match[1]
 			if isVBScriptCommentOffset(parsed.Text, start) {
@@ -423,15 +423,25 @@ type vbExportBoundary struct {
 }
 
 func publicExportBoundaries(exports []vbExportSummary) []vbExportBoundary {
-	boundaries := make([]vbExportBoundary, 0, len(exports))
-	for _, export := range exports {
-		boundaries = append(boundaries, publicExportBoundary(export))
+	type keyedBoundary struct {
+		key      string
+		boundary vbExportBoundary
 	}
-	sort.SliceStable(boundaries, func(i, j int) bool {
-		left, _ := json.Marshal(boundaries[i])
-		right, _ := json.Marshal(boundaries[j])
-		return string(left) < string(right)
+	// Encode each boundary once; the comparator would otherwise encode both
+	// operands on every comparison.
+	keyed := make([]keyedBoundary, 0, len(exports))
+	for _, export := range exports {
+		boundary := publicExportBoundary(export)
+		key, _ := json.Marshal(boundary)
+		keyed = append(keyed, keyedBoundary{key: string(key), boundary: boundary})
+	}
+	sort.SliceStable(keyed, func(i, j int) bool {
+		return keyed[i].key < keyed[j].key
 	})
+	boundaries := make([]vbExportBoundary, len(keyed))
+	for index, item := range keyed {
+		boundaries[index] = item.boundary
+	}
 	return boundaries
 }
 
