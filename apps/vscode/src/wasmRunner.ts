@@ -95,7 +95,10 @@ export class FrameParser {
       }
 
       frames.push(Buffer.from(this.buffer.subarray(bodyStart, frameEnd)));
-      this.buffer = this.buffer.subarray(frameEnd);
+      this.buffer =
+        frameEnd >= this.buffer.length
+          ? Buffer.alloc(0)
+          : Buffer.from(this.buffer.subarray(frameEnd));
     }
 
     return frames;
@@ -169,7 +172,7 @@ function spawnWorkerProcess(wasmPath: string, extraArgs: string[]): ChildProcess
 
 function runDualWorkerCoordinator(wasmPath: string, extraArgs: string[]): void {
   const interactive = spawnWorkerProcess(wasmPath, extraArgs);
-  const heavy = spawnWorkerProcess(wasmPath, extraArgs);
+  const heavy = spawnWorkerProcess(wasmPath, ["--no-publish", ...extraArgs]);
 
   const clientParser = new FrameParser();
   const interactiveParser = new FrameParser();
@@ -259,6 +262,7 @@ function runDualWorkerCoordinator(wasmPath: string, extraArgs: string[]): void {
         msg.id !== null &&
         controlRequestIds.has(msg.id)
       ) {
+        controlRequestIds.delete(msg.id);
         return;
       }
     }
