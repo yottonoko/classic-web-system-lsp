@@ -38,17 +38,24 @@ export function resolveAspLspServer(options: ResolveServerOptions): ResolvedServ
   }
 
   const platform = options.platform ?? process.platform;
-  const binaryName = platform === "win32" ? "classic-asp-lsp.exe" : "classic-asp-lsp";
+  const binaryNames =
+    platform === "win32"
+      ? ["classic-asp-lsp.exe", "mixin-asp-lsp.exe"]
+      : ["classic-asp-lsp", "mixin-asp-lsp"];
   const fileExists = options.fileExists ?? fs.existsSync;
 
-  const bundledNative = path.join(options.extensionPath, "server", binaryName);
-  if (fileExists(bundledNative)) {
-    return { kind: "native", command: bundledNative, args: extraArgs };
+  for (const binaryName of binaryNames) {
+    const bundledNative = path.join(options.extensionPath, "server", binaryName);
+    if (fileExists(bundledNative)) {
+      return { kind: "native", command: bundledNative, args: extraArgs };
+    }
   }
 
-  const bundledWasm = path.join(options.extensionPath, "server", "classic-asp-lsp.wasm");
-  if (fileExists(bundledWasm)) {
-    return { kind: "wasm", wasmPath: bundledWasm, args: extraArgs };
+  for (const wasmName of ["classic-asp-lsp.wasm", "mixin-asp-lsp.wasm"]) {
+    const bundledWasm = path.join(options.extensionPath, "server", wasmName);
+    if (fileExists(bundledWasm)) {
+      return { kind: "wasm", wasmPath: bundledWasm, args: extraArgs };
+    }
   }
 
   const envBin = (options.env ?? process.env).CLASSIC_ASP_LSP_BIN?.trim() ?? "";
