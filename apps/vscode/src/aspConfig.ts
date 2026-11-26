@@ -41,6 +41,9 @@ export interface AspLspSettings {
     scopeMarkers: boolean;
   };
   onTypeFormatting: boolean;
+  html: {
+    linkedEditing: boolean;
+  };
   io: {
     networkMode: "auto" | "always" | "never";
     statTtlMs: number;
@@ -68,6 +71,9 @@ export function readAspLspSettings(section = "aspLsp"): AspLspSettings {
       scopeMarkers: cfg.get<boolean>("inlayHints.scopeMarkers", true),
     },
     onTypeFormatting: cfg.get<boolean>("onTypeFormatting", true),
+    html: {
+      linkedEditing: cfg.get<boolean>("html.linkedEditing", true),
+    },
     io: {
       networkMode: cfg.get<"auto" | "always" | "never">("io.networkMode", "auto"),
       statTtlMs: cfg.get<number>("io.statTtlMs", 5000),

@@ -210,6 +210,11 @@
           "default": true,
           "markdownDescription": "%config.onTypeFormatting.description%"
         },
+        "aspLsp.html.linkedEditing": {
+          "type": "boolean",
+          "default": true,
+          "markdownDescription": "%config.html.linkedEditing.description%"
+        },
         "aspLsp.io.networkMode": {
           "type": "string",
           "enum": [
@@ -405,7 +410,8 @@
     },
     "configurationDefaults": {
       "[classic-asp]": {
-        "files.autoGuessEncoding": true
+        "files.autoGuessEncoding": true,
+        "editor.linkedEditing": true
       },
       "[vbscript]": {
         "files.autoGuessEncoding": true

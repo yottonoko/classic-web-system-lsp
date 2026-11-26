@@ -135,6 +135,10 @@ describe("lint settings in package.json", () => {
 
   it("declares lint enabled, groups, and all 9 rule overrides", () => {
     expect(props["aspLsp.lint.enabled"]).toMatchObject({ type: "boolean", default: true });
+    expect(props["aspLsp.html.linkedEditing"]).toMatchObject({ type: "boolean", default: true });
+    expect(pkg.contributes.configurationDefaults["[classic-asp]"]["editor.linkedEditing"]).toBe(
+      true,
+    );
     for (const group of ["security", "correctness", "style"]) {
       expect(props[`aspLsp.lint.groups.${group}`]).toMatchObject({
         type: "boolean",
