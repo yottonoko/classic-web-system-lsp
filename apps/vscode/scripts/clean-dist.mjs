@@ -1,6 +1,5 @@
-import { rm } from "node:fs/promises";
-import path from "node:path";
+import * as fs from "node:fs";
+import * as path from "node:path";
 
-const extensionRoot = path.resolve(import.meta.dirname, "..");
-
-await rm(path.join(extensionRoot, "dist"), { recursive: true, force: true });
+const distDir = path.resolve(import.meta.dirname, "..", "dist");
+fs.rmSync(distDir, { recursive: true, force: true });
