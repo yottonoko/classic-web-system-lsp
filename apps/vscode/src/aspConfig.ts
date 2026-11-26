@@ -24,6 +24,11 @@ export interface AspLspSettings {
     statTtlMs: number;
     diskCache: boolean;
   };
+  workspace: {
+    includes: string[];
+    excludes: string[];
+    respectGitIgnore: boolean;
+  };
 }
 
 export function readAspLspSettings(section = "aspLsp"): AspLspSettings {
@@ -44,6 +49,11 @@ export function readAspLspSettings(section = "aspLsp"): AspLspSettings {
       networkMode: cfg.get<"auto" | "always" | "never">("io.networkMode", "auto"),
       statTtlMs: cfg.get<number>("io.statTtlMs", 5000),
       diskCache: cfg.get<boolean>("io.diskCache", true),
+    },
+    workspace: {
+      includes: cfg.get<string[]>("workspace.includes", ["**/*.{asp,asa,inc,vbs}"]),
+      excludes: cfg.get<string[]>("workspace.excludes", []),
+      respectGitIgnore: cfg.get<boolean>("workspace.respectGitIgnore", false),
     },
   };
 }

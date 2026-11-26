@@ -231,6 +231,29 @@
           "default": true,
           "markdownDescription": "%config.io.diskCache.description%"
         },
+        "aspLsp.workspace.includes": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": [
+            "**/*.{asp,asa,inc,vbs}"
+          ],
+          "description": "%config.workspace.includes.description%"
+        },
+        "aspLsp.workspace.excludes": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": [],
+          "description": "%config.workspace.excludes.description%"
+        },
+        "aspLsp.workspace.respectGitIgnore": {
+          "type": "boolean",
+          "default": false,
+          "description": "%config.workspace.respectGitIgnore.description%"
+        },
         "aspLsp.trace.server": {
           "type": "string",
           "enum": [

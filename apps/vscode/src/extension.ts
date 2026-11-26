@@ -92,9 +92,10 @@ async function startClient(context: vscode.ExtensionContext): Promise<void> {
     },
     synchronize: {
       // Notify the server on file create/change/delete so network-drive & DB caches invalidate event-driven.
-      fileEvents: vscode.workspace.createFileSystemWatcher(
-        "**/*.{asp,asa,inc,vbs,vba,bas,cls,frm}",
-      ),
+      fileEvents: [
+        vscode.workspace.createFileSystemWatcher("**/*.{asp,asa,inc,vbs,vba,bas,cls,frm}"),
+        vscode.workspace.createFileSystemWatcher("**/.gitignore"),
+      ],
     },
     outputChannel,
     errorHandler: {
