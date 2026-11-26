@@ -46,6 +46,7 @@ async function main(): Promise<void> {
 }
 
 main().catch((err: unknown) => {
-  process.stderr.write(`classic-asp-lsp wasm runner error: ${String(err)}\n`);
+  const detail = err instanceof Error && err.stack ? err.stack : String(err);
+  process.stderr.write(`classic-asp-lsp wasm runner error: ${detail}\n`);
   process.exit(1);
 });
