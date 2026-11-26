@@ -1,6 +1,6 @@
 # Repository Instructions
 
-This repository contains the **Classic ASP LSP** VS Code extension (`v1.0.0+`), powered by the standalone Mixin-built Classic ASP / VBScript language server CLI (`classic-asp-lsp`, built from `yottonoko/mixin-lang`: `tools/asp_lsp.mxz`).
+This repository contains the **Classic ASP LSP** VS Code extension (`v0.12.0+`), powered by the standalone Mixin-built Classic ASP / VBScript language server CLI (`classic-asp-lsp`, built from `yottonoko/mixin-lang`: `tools/asp_lsp.mxz`).
 
 ## Architecture & Ownership Boundary
 
