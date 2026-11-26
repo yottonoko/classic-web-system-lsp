@@ -1,0 +1,44 @@
+<script language="VBScript" runat="Server">
+Option Explicit
+
+Sub Application_OnStart()
+    Application.Lock
+    Application("AppName") = "Northwind Classic ERP"
+    Application("AppVersion") = "4.8.2"
+    Application("StartedAt") = Now()
+    Application("ActiveSessions") = 0
+    Application("TotalRequests") = 0
+    Application("DefaultCurrency") = "JPY"
+    Application("DefaultTaxRate") = 0.10
+    Application.Unlock
+End Sub
+
+Sub Application_OnEnd()
+    Application.Lock
+    Application("LastShutdownAt") = Now()
+    Application.Unlock
+End Sub
+
+Sub Session_OnStart()
+    Session.Timeout = 30
+    Session.CodePage = 65001
+    Session("UserId") = 0
+    Session("UserName") = "guest"
+    Session("UserRole") = "viewer"
+    Session("TenantCode") = "HQ-TOKYO"
+    Session("Locale") = "ja-JP"
+    Session("CsrfToken") = ""
+
+    Application.Lock
+    Application("ActiveSessions") = CLng(Application("ActiveSessions")) + 1
+    Application.Unlock
+End Sub
+
+Sub Session_OnEnd()
+    Application.Lock
+    If CLng(Application("ActiveSessions")) > 0 Then
+        Application("ActiveSessions") = CLng(Application("ActiveSessions")) - 1
+    End If
+    Application.Unlock
+End Sub
+</script>
