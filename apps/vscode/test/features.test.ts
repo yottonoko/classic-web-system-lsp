@@ -141,6 +141,8 @@ describe("lint settings in package.json", () => {
       default: "typescript",
       enum: ["typescript", "jsdoc"],
     });
+    const commands = pkg.contributes.commands as Array<{ command: string; title: string }>;
+    expect(commands.some((c) => c.command === "aspLsp.clearCache")).toBe(true);
     expect(pkg.contributes.configurationDefaults["[classic-asp]"]["editor.linkedEditing"]).toBe(
       true,
     );

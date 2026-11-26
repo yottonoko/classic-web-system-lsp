@@ -1,3 +1,5 @@
+import * as fs from "node:fs";
+import * as os from "node:os";
 import * as path from "node:path";
 import * as vscode from "vscode";
 import {
@@ -193,6 +195,11 @@ async function toggleAspComment(method: string, fallbackCommand: string): Promis
   }
 }
 
+function resolveCacheDir(): string {
+  const mixinHome = process.env.MIXIN_HOME || path.join(os.homedir(), ".mixinlang");
+  return path.join(mixinHome, "asp-lsp-cache");
+}
+
 export async function activate(context: vscode.ExtensionContext): Promise<void> {
   outputChannel = vscode.window.createOutputChannel("Classic ASP LSP", { log: true });
   context.subscriptions.push(outputChannel);
@@ -201,6 +208,23 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     vscode.commands.registerCommand("aspLsp.restartServer", async () => {
       await stopClient();
       await startClient(context);
+    }),
+    vscode.commands.registerCommand("aspLsp.clearCache", async () => {
+      await stopClient();
+      const cacheDir = resolveCacheDir();
+      let removed = 0;
+      if (fs.existsSync(cacheDir)) {
+        for (const entry of fs.readdirSync(cacheDir)) {
+          fs.rmSync(path.join(cacheDir, entry), { recursive: true, force: true });
+          removed += 1;
+        }
+      }
+      await startClient(context);
+      const isJa = vscode.env.language.startsWith("ja");
+      const msg = isJa
+        ? `Classic ASP LSP: キャッシュを削除しました（${removed} 件）。`
+        : `Classic ASP LSP: Cleared ${removed} cache file(s).`;
+      void vscode.window.showInformationMessage(msg);
     }),
     vscode.commands.registerCommand("aspLsp.toggleLineComment", async () => {
       await toggleAspComment("asp/toggleLineComment", "editor.action.commentLine");
