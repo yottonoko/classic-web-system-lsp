@@ -13,3 +13,13 @@ await build({
     sourcemap: true,
   },
 });
+
+await build({
+  input: path.join(rootDir, "src", "wasmRunner.ts"),
+  platform: "node",
+  output: {
+    file: path.join(rootDir, "dist", "wasm-runner.js"),
+    format: "cjs",
+    sourcemap: true,
+  },
+});

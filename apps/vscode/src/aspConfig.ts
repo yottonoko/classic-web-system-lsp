@@ -1,12 +1,11 @@
 import * as vscode from "vscode";
 
 /**
- * Shared Classic ASP / VBScript LSP feature settings passed to
- * `mixin lsp --asp-only` via `initializationOptions.aspLsp` and
+ * Shared Classic ASP / VBScript LSP feature settings passed to the standalone
+ * `classic-asp-lsp` server via `initializationOptions.aspLsp` and
  * `workspace/didChangeConfiguration`.
  *
- * Mirrors `editors/vscode/src/aspConfig.ts` in `mixin-lang` so settings stay
- * consistent between Mixin's own extension and this standalone extension.
+ * Mirrors `editors/vscode/src/aspConfig.ts` in `mixin-lang`.
  */
 export interface AspLspSettings {
   codeLens: {
@@ -20,6 +19,11 @@ export interface AspLspSettings {
     scopeMarkers: boolean;
   };
   onTypeFormatting: boolean;
+  io: {
+    networkMode: "auto" | "always" | "never";
+    statTtlMs: number;
+    diskCache: boolean;
+  };
 }
 
 export function readAspLspSettings(section = "aspLsp"): AspLspSettings {
@@ -36,5 +40,10 @@ export function readAspLspSettings(section = "aspLsp"): AspLspSettings {
       scopeMarkers: cfg.get<boolean>("inlayHints.scopeMarkers", true),
     },
     onTypeFormatting: cfg.get<boolean>("onTypeFormatting", true),
+    io: {
+      networkMode: cfg.get<"auto" | "always" | "never">("io.networkMode", "auto"),
+      statTtlMs: cfg.get<number>("io.statTtlMs", 5000),
+      diskCache: cfg.get<boolean>("io.diskCache", true),
+    },
   };
 }

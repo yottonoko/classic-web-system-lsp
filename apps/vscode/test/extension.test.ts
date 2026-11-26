@@ -1,62 +1,87 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
 import { describe, expect, it } from "vitest";
-import { resolveMixinServerPath } from "../src/serverPath.js";
+import { resolveAspLspServer } from "../src/serverPath.js";
 
 const extensionRoot = path.resolve(import.meta.dirname, "..");
 
-describe("resolveMixinServerPath", () => {
-  it("prefers explicit configured path", () => {
+describe("resolveAspLspServer", () => {
+  it("prefers explicit configured native or wasm path", () => {
     expect(
-      resolveMixinServerPath({
-        configuredPath: "/custom/bin/mixin",
+      resolveAspLspServer({
+        configuredPath: "/custom/bin/classic-asp-lsp",
         extensionPath: "/ext",
-        env: { MIXIN_BIN: "/env/mixin" },
+        env: { CLASSIC_ASP_LSP_BIN: "/env/classic-asp-lsp" },
         fileExists: () => true,
       }),
-    ).toBe("/custom/bin/mixin");
-  });
+    ).toEqual({ kind: "native", command: "/custom/bin/classic-asp-lsp", args: [] });
 
-  it("uses bundled server/mixin when present", () => {
     expect(
-      resolveMixinServerPath({
-        configuredPath: "",
+      resolveAspLspServer({
+        configuredPath: "/custom/classic-asp-lsp.wasm",
+        extraArgs: ["--lang=asp"],
         extensionPath: "/ext",
-        platform: "linux",
-        fileExists: (p) => p === path.join("/ext", "server", "mixin"),
+        fileExists: () => true,
       }),
-    ).toBe(path.join("/ext", "server", "mixin"));
+    ).toEqual({ kind: "wasm", wasmPath: "/custom/classic-asp-lsp.wasm", args: ["--lang=asp"] });
   });
 
-  it("uses bundled server/mixin.exe on Windows", () => {
+  it("uses bundled native binary on Windows and POSIX", () => {
     expect(
-      resolveMixinServerPath({
-        configuredPath: "",
+      resolveAspLspServer({
         extensionPath: "/ext",
         platform: "win32",
-        fileExists: (p) => p === path.join("/ext", "server", "mixin.exe"),
+        fileExists: (p) => p === path.join("/ext", "server", "classic-asp-lsp.exe"),
       }),
-    ).toBe(path.join("/ext", "server", "mixin.exe"));
+    ).toEqual({
+      kind: "native",
+      command: path.join("/ext", "server", "classic-asp-lsp.exe"),
+      args: [],
+    });
+
+    expect(
+      resolveAspLspServer({
+        extensionPath: "/ext",
+        platform: "linux",
+        fileExists: (p) => p === path.join("/ext", "server", "classic-asp-lsp"),
+      }),
+    ).toEqual({
+      kind: "native",
+      command: path.join("/ext", "server", "classic-asp-lsp"),
+      args: [],
+    });
   });
 
-  it("falls back to MIXIN_BIN env var then PATH", () => {
+  it("falls back to bundled WASM (Any OS) when native binary is absent", () => {
     expect(
-      resolveMixinServerPath({
-        configuredPath: "",
+      resolveAspLspServer({
         extensionPath: "/ext",
-        env: { MIXIN_BIN: "/env/mixin" },
+        platform: "darwin",
+        fileExists: (p) => p === path.join("/ext", "server", "classic-asp-lsp.wasm"),
+      }),
+    ).toEqual({
+      kind: "wasm",
+      wasmPath: path.join("/ext", "server", "classic-asp-lsp.wasm"),
+      args: [],
+    });
+  });
+
+  it("falls back to CLASSIC_ASP_LSP_BIN env var then PATH", () => {
+    expect(
+      resolveAspLspServer({
+        extensionPath: "/ext",
+        env: { CLASSIC_ASP_LSP_BIN: "/env/classic-asp-lsp.wasm" },
         fileExists: () => false,
       }),
-    ).toBe("/env/mixin");
+    ).toEqual({ kind: "wasm", wasmPath: "/env/classic-asp-lsp.wasm", args: [] });
 
     expect(
-      resolveMixinServerPath({
-        configuredPath: "",
+      resolveAspLspServer({
         extensionPath: "/ext",
         env: {},
         fileExists: () => false,
       }),
-    ).toBe("mixin");
+    ).toEqual({ kind: "native", command: "classic-asp-lsp", args: [] });
   });
 });
 

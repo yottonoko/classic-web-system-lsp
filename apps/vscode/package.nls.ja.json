@@ -1,10 +1,10 @@
 {
-  "extension.description": "Mixin（`mixin lsp --asp-only`）を組み込んだ Classic ASP / VBScript 向け言語サポート拡張機能。",
+  "extension.description": "独立版 `classic-asp-lsp` サーバー（Windows ネイティブ版 / WASM 汎用版）で動作する Classic ASP / VBScript 向け言語サポート拡張機能。",
   "configuration.title": "Classic ASP LSP",
   "command.restartServer.title": "Classic ASP LSP: 言語サーバーを再起動",
   "command.showReferences.title": "Classic ASP LSP: 参照を表示",
-  "config.server.path.description": "`mixin lsp --asp-only` を実行する `mixin` 実行ファイルのパス。空の場合は同梱の `server/mixin` または `PATH` 上の `mixin` を使用します。",
-  "config.server.extraArgs.description": "`mixin lsp --asp-only` に渡す追加引数。",
+  "config.server.path.description": "独立版 `classic-asp-lsp` 実行ファイルまたは `.wasm` モジュールのパス。空の場合は同梱の `server/classic-asp-lsp(.exe|.wasm)` または `PATH` 上の `classic-asp-lsp` を使用します。",
+  "config.server.extraArgs.description": "独立版 `classic-asp-lsp` サーバーに渡す追加引数。",
   "config.codeLens.references.description": "Classic ASP / VBScript のプロシージャ・クラス・トップレベル宣言の上に参照数 CodeLens を表示します。",
   "config.codeLens.includes.description": "Classic ASP の `<!-- #include -->` ディレクティブの上にファイルを開く CodeLens を表示します。",
   "config.inlayHints.variableTypes.description": "Classic ASP / VBScript の `Dim` / `Const` 宣言に推論された型インレイヒント（`As Type`）を表示します。",
@@ -12,5 +12,8 @@
   "config.inlayHints.parameterNames.description": "ユーザー定義の Classic ASP / VBScript プロシージャ呼び出しに引数名インレイヒント（`param:`）を表示します。",
   "config.inlayHints.scopeMarkers.description": "変数型インレイヒントに `(local)` / `(global)` のスコープ表示を含めます。",
   "config.onTypeFormatting.description": "Classic ASP / VBScript 領域内での改行および `%>` 入力時の自動インデントを有効にします。",
+  "config.io.networkMode.description": "ネットワークドライブ・セキュリティソフト向け `#include` I/O 削減モード（`auto`: UNC/共有ドライブを自動判定してイベント駆動化、`always`: 常にイベント駆動で `stat()` を抑制、`never`: ローカル TTL のみ）。",
+  "config.io.statTtlMs.description": "ローカル `#include` ファイルのメタデータをキャッシュ信用するミリ秒数（セキュリティソフトのスキャン負荷を軽減）。",
+  "config.io.diskCache.description": "`#include` ファイルキャッシュを `~/.mixinlang/asp-lsp-cache/` のローカル DB に永続化し、低速ネットワーク経由の再読み込みを削減します。",
   "config.trace.server.description": "VS Code と Classic ASP 言語サーバー間の通信トレースレベル。"
 }

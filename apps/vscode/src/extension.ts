@@ -1,3 +1,4 @@
+import * as path from "node:path";
 import * as vscode from "vscode";
 import {
   LanguageClient,
@@ -6,7 +7,7 @@ import {
   TransportKind,
 } from "vscode-languageclient/node";
 import { readAspLspSettings } from "./aspConfig.js";
-import { resolveMixinServerPath } from "./serverPath.js";
+import { resolveAspLspServer } from "./serverPath.js";
 
 interface LspPosition {
   line: number;
@@ -28,19 +29,43 @@ function toVscodePosition(pos: LspPosition): vscode.Position {
   return new vscode.Position(pos.line, pos.character);
 }
 
-async function startClient(context: vscode.ExtensionContext): Promise<void> {
+function buildServerOptions(context: vscode.ExtensionContext): ServerOptions {
   const config = vscode.workspace.getConfiguration("aspLsp");
-  const command = resolveMixinServerPath({
+  const resolved = resolveAspLspServer({
     configuredPath: config.get<string>("server.path", ""),
+    extraArgs: config.get<string[]>("server.extraArgs", []),
     extensionPath: context.extensionPath,
   });
-  const extraArgs = config.get<string[]>("server.extraArgs", []);
-  const args = ["lsp", "--asp-only", ...extraArgs];
 
-  const serverOptions: ServerOptions = {
-    run: { command, args, transport: TransportKind.stdio },
-    debug: { command, args, transport: TransportKind.stdio },
+  if (resolved.kind === "wasm") {
+    const runnerPath = path.join(context.extensionPath, "dist", "wasm-runner.js");
+    const preopens = (vscode.workspace.workspaceFolders ?? [])
+      .map((f) => f.uri.fsPath)
+      .join(path.delimiter);
+    const exec = {
+      command: process.execPath,
+      args: ["--no-warnings", runnerPath, resolved.wasmPath, ...resolved.args],
+      transport: TransportKind.stdio,
+      options: {
+        env: {
+          ...process.env,
+          ASP_LSP_WASI_PREOPENS: preopens,
+        },
+      },
+    };
+    return { run: exec, debug: exec };
+  }
+
+  const exec = {
+    command: resolved.command,
+    args: resolved.args,
+    transport: TransportKind.stdio,
   };
+  return { run: exec, debug: exec };
+}
+
+async function startClient(context: vscode.ExtensionContext): Promise<void> {
+  const serverOptions = buildServerOptions(context);
 
   const clientOptions: LanguageClientOptions = {
     documentSelector: [
@@ -50,6 +75,12 @@ async function startClient(context: vscode.ExtensionContext): Promise<void> {
     ],
     initializationOptions: {
       aspLsp: readAspLspSettings("aspLsp"),
+    },
+    synchronize: {
+      // Notify the server on file create/change/delete so network-drive & DB caches invalidate event-driven.
+      fileEvents: vscode.workspace.createFileSystemWatcher(
+        "**/*.{asp,asa,inc,vbs,vba,bas,cls,frm}",
+      ),
     },
     outputChannel,
   };

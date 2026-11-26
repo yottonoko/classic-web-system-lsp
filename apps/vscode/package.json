@@ -176,6 +176,27 @@
           "default": true,
           "markdownDescription": "%config.onTypeFormatting.description%"
         },
+        "aspLsp.io.networkMode": {
+          "type": "string",
+          "enum": [
+            "auto",
+            "always",
+            "never"
+          ],
+          "default": "auto",
+          "markdownDescription": "%config.io.networkMode.description%"
+        },
+        "aspLsp.io.statTtlMs": {
+          "type": "number",
+          "default": 5000,
+          "minimum": 0,
+          "markdownDescription": "%config.io.statTtlMs.description%"
+        },
+        "aspLsp.io.diskCache": {
+          "type": "boolean",
+          "default": true,
+          "markdownDescription": "%config.io.diskCache.description%"
+        },
         "aspLsp.trace.server": {
           "type": "string",
           "enum": [

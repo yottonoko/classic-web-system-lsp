@@ -1,10 +1,10 @@
 {
-  "extension.description": "Classic ASP & VBScript language support powered by Mixin (`mixin lsp --asp-only`).",
+  "extension.description": "Classic ASP & VBScript language support powered by the standalone `classic-asp-lsp` server (native Windows / WASM Any OS).",
   "configuration.title": "Classic ASP LSP",
   "command.restartServer.title": "Classic ASP LSP: Restart Language Server",
   "command.showReferences.title": "Classic ASP LSP: Show References",
-  "config.server.path.description": "Path to the `mixin` executable used to run `mixin lsp --asp-only`. Leave empty to use a bundled `server/mixin` binary or `mixin` from `PATH`.",
-  "config.server.extraArgs.description": "Extra arguments passed to `mixin lsp --asp-only`.",
+  "config.server.path.description": "Path to the standalone `classic-asp-lsp` executable or `.wasm` module. Leave empty to use a bundled `server/classic-asp-lsp(.exe|.wasm)` or `classic-asp-lsp` from `PATH`.",
+  "config.server.extraArgs.description": "Extra arguments passed to the standalone `classic-asp-lsp` server.",
   "config.codeLens.references.description": "Show reference-count CodeLens above Classic ASP / VBScript procedures, classes, and top-level declarations.",
   "config.codeLens.includes.description": "Show clickable CodeLens above Classic ASP `<!-- #include -->` directives.",
   "config.inlayHints.variableTypes.description": "Show inferred variable type inlay hints (`As Type`) on Classic ASP / VBScript `Dim` and `Const` declarations.",
@@ -12,5 +12,8 @@
   "config.inlayHints.parameterNames.description": "Show parameter name inlay hints (`param:`) on calls to user-defined Classic ASP / VBScript procedures.",
   "config.inlayHints.scopeMarkers.description": "Include `(local)` / `(global)` scope markers in Classic ASP / VBScript variable type inlay hints.",
   "config.onTypeFormatting.description": "Enable automatic indentation on Enter and `%>` inside Classic ASP / VBScript regions.",
+  "config.io.networkMode.description": "Network-drive / antivirus I/O reduction mode for `#include` files (`auto` detects UNC/network shares and switches to event-driven revalidation, `always` avoids polling `stat()`, `never` uses local TTL only).",
+  "config.io.statTtlMs.description": "Milliseconds to trust cached local `#include` file metadata before re-checking `stat()` (reduces antivirus scan overhead).",
+  "config.io.diskCache.description": "Persist `#include` file cache in a local database under `~/.mixinlang/asp-lsp-cache/` to avoid re-reading unchanged files over slow network shares.",
   "config.trace.server.description": "Trace communication between VS Code and the Classic ASP language server."
 }
