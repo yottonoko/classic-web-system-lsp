@@ -9,6 +9,7 @@ import {
   TransportKind,
 } from "vscode-languageclient/node";
 import { readAspLspSettings } from "./aspConfig.js";
+import { findAutoCloseTagName } from "./autoCloseTag.js";
 import { createRestartPolicy } from "./restartPolicy.js";
 import { resolveAspLspServer } from "./serverPath.js";
 
@@ -234,6 +235,32 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
           settings: { aspLsp: readAspLspSettings("aspLsp") },
         });
       }
+    }),
+    vscode.workspace.onDidChangeTextDocument((event) => {
+      if (event.document.languageId !== "classic-asp" || event.contentChanges.length !== 1) {
+        return;
+      }
+      const change = event.contentChanges[0];
+      if (change.text !== ">") {
+        return;
+      }
+      const autoClosingTags = vscode.workspace
+        .getConfiguration("html", event.document.uri)
+        .get<boolean>("autoClosingTags", true);
+      if (!autoClosingTags) {
+        return;
+      }
+      const editor = vscode.window.activeTextEditor;
+      if (!editor || editor.document !== event.document) {
+        return;
+      }
+      const offsetAfterGt = change.rangeOffset + change.text.length;
+      const tagName = findAutoCloseTagName(event.document.getText(), offsetAfterGt);
+      if (!tagName) {
+        return;
+      }
+      const pos = event.document.positionAt(offsetAfterGt);
+      void editor.insertSnippet(new vscode.SnippetString(`$0</${tagName}>`), pos);
     }),
   );
 

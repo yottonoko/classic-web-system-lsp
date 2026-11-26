@@ -1,5 +1,27 @@
 import * as vscode from "vscode";
 
+export type LintRuleSeverity = "default" | "off" | "hint" | "info" | "warning" | "error";
+
+export interface AspLspLintSettings {
+  enabled: boolean;
+  groups: {
+    security: boolean;
+    correctness: boolean;
+    style: boolean;
+  };
+  rules: {
+    "asp/unencoded-output": LintRuleSeverity;
+    "asp/sql-concat": LintRuleSeverity;
+    "vb/undeclared-var": LintRuleSeverity;
+    "vb/missing-set": LintRuleSeverity;
+    "vb/unreachable": LintRuleSeverity;
+    "vb/on-error-resume-next": LintRuleSeverity;
+    "vb/option-explicit": LintRuleSeverity;
+    "vb/unused-var": LintRuleSeverity;
+    "vb/goto-legacy": LintRuleSeverity;
+  };
+}
+
 /**
  * Shared Classic ASP / VBScript LSP feature settings passed to the standalone
  * `classic-asp-lsp` server via `initializationOptions.aspLsp` and
@@ -29,6 +51,7 @@ export interface AspLspSettings {
     excludes: string[];
     respectGitIgnore: boolean;
   };
+  lint: AspLspLintSettings;
 }
 
 export function readAspLspSettings(section = "aspLsp"): AspLspSettings {
@@ -54,6 +77,31 @@ export function readAspLspSettings(section = "aspLsp"): AspLspSettings {
       includes: cfg.get<string[]>("workspace.includes", ["**/*.{asp,asa,inc,vbs}"]),
       excludes: cfg.get<string[]>("workspace.excludes", []),
       respectGitIgnore: cfg.get<boolean>("workspace.respectGitIgnore", false),
+    },
+    lint: {
+      enabled: cfg.get<boolean>("lint.enabled", true),
+      groups: {
+        security: cfg.get<boolean>("lint.groups.security", true),
+        correctness: cfg.get<boolean>("lint.groups.correctness", true),
+        style: cfg.get<boolean>("lint.groups.style", true),
+      },
+      rules: {
+        "asp/unencoded-output": cfg.get<LintRuleSeverity>(
+          "lint.rules.asp/unencoded-output",
+          "default",
+        ),
+        "asp/sql-concat": cfg.get<LintRuleSeverity>("lint.rules.asp/sql-concat", "default"),
+        "vb/undeclared-var": cfg.get<LintRuleSeverity>("lint.rules.vb/undeclared-var", "default"),
+        "vb/missing-set": cfg.get<LintRuleSeverity>("lint.rules.vb/missing-set", "default"),
+        "vb/unreachable": cfg.get<LintRuleSeverity>("lint.rules.vb/unreachable", "default"),
+        "vb/on-error-resume-next": cfg.get<LintRuleSeverity>(
+          "lint.rules.vb/on-error-resume-next",
+          "default",
+        ),
+        "vb/option-explicit": cfg.get<LintRuleSeverity>("lint.rules.vb/option-explicit", "default"),
+        "vb/unused-var": cfg.get<LintRuleSeverity>("lint.rules.vb/unused-var", "default"),
+        "vb/goto-legacy": cfg.get<LintRuleSeverity>("lint.rules.vb/goto-legacy", "default"),
+      },
     },
   };
 }

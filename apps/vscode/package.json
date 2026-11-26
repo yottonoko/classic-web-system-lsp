@@ -254,6 +254,143 @@
           "default": false,
           "description": "%config.workspace.respectGitIgnore.description%"
         },
+        "aspLsp.lint.enabled": {
+          "type": "boolean",
+          "default": true,
+          "description": "%config.lint.enabled.description%"
+        },
+        "aspLsp.lint.groups.security": {
+          "type": "boolean",
+          "default": true,
+          "description": "%config.lint.groups.security.description%"
+        },
+        "aspLsp.lint.groups.correctness": {
+          "type": "boolean",
+          "default": true,
+          "description": "%config.lint.groups.correctness.description%"
+        },
+        "aspLsp.lint.groups.style": {
+          "type": "boolean",
+          "default": true,
+          "description": "%config.lint.groups.style.description%"
+        },
+        "aspLsp.lint.rules.asp/unencoded-output": {
+          "type": "string",
+          "enum": [
+            "default",
+            "off",
+            "hint",
+            "info",
+            "warning",
+            "error"
+          ],
+          "default": "default",
+          "description": "%config.lint.rules.asp.unencoded-output.description%"
+        },
+        "aspLsp.lint.rules.asp/sql-concat": {
+          "type": "string",
+          "enum": [
+            "default",
+            "off",
+            "hint",
+            "info",
+            "warning",
+            "error"
+          ],
+          "default": "default",
+          "description": "%config.lint.rules.asp.sql-concat.description%"
+        },
+        "aspLsp.lint.rules.vb/undeclared-var": {
+          "type": "string",
+          "enum": [
+            "default",
+            "off",
+            "hint",
+            "info",
+            "warning",
+            "error"
+          ],
+          "default": "default",
+          "description": "%config.lint.rules.vb.undeclared-var.description%"
+        },
+        "aspLsp.lint.rules.vb/missing-set": {
+          "type": "string",
+          "enum": [
+            "default",
+            "off",
+            "hint",
+            "info",
+            "warning",
+            "error"
+          ],
+          "default": "default",
+          "description": "%config.lint.rules.vb.missing-set.description%"
+        },
+        "aspLsp.lint.rules.vb/unreachable": {
+          "type": "string",
+          "enum": [
+            "default",
+            "off",
+            "hint",
+            "info",
+            "warning",
+            "error"
+          ],
+          "default": "default",
+          "description": "%config.lint.rules.vb.unreachable.description%"
+        },
+        "aspLsp.lint.rules.vb/on-error-resume-next": {
+          "type": "string",
+          "enum": [
+            "default",
+            "off",
+            "hint",
+            "info",
+            "warning",
+            "error"
+          ],
+          "default": "default",
+          "description": "%config.lint.rules.vb.on-error-resume-next.description%"
+        },
+        "aspLsp.lint.rules.vb/option-explicit": {
+          "type": "string",
+          "enum": [
+            "default",
+            "off",
+            "hint",
+            "info",
+            "warning",
+            "error"
+          ],
+          "default": "default",
+          "description": "%config.lint.rules.vb.option-explicit.description%"
+        },
+        "aspLsp.lint.rules.vb/unused-var": {
+          "type": "string",
+          "enum": [
+            "default",
+            "off",
+            "hint",
+            "info",
+            "warning",
+            "error"
+          ],
+          "default": "default",
+          "description": "%config.lint.rules.vb.unused-var.description%"
+        },
+        "aspLsp.lint.rules.vb/goto-legacy": {
+          "type": "string",
+          "enum": [
+            "default",
+            "off",
+            "hint",
+            "info",
+            "warning",
+            "error"
+          ],
+          "default": "default",
+          "description": "%config.lint.rules.vb.goto-legacy.description%"
+        },
         "aspLsp.trace.server": {
           "type": "string",
           "enum": [

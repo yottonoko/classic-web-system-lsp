@@ -20,5 +20,18 @@
   "config.workspace.includes.description": "ワークスペース解析の対象に含める Classic ASP / VBScript ファイルの glob パターン。",
   "config.workspace.excludes.description": "Classic ASP / VBScript の診断・`#include` 解決・ワークスペースシンボルから除外するファイル/ディレクトリの glob パターン。",
   "config.workspace.respectGitIgnore.description": "Classic ASP / VBScript 解析でワークスペースルートの `.gitignore` ルールを適用してファイルを除外します。",
+  "config.lint.enabled.description": "Classic ASP / VBScript の Lint 診断を有効にします。",
+  "config.lint.groups.security.description": "セキュリティ系 Lint ルールグループ（`asp/unencoded-output`、`asp/sql-concat`）を有効にします。",
+  "config.lint.groups.correctness.description": "正確性系 Lint ルールグループ（`vb/undeclared-var`、`vb/missing-set`、`vb/unreachable`、`vb/on-error-resume-next`）を有効にします。",
+  "config.lint.groups.style.description": "スタイル系 Lint ルールグループ（`vb/option-explicit`、`vb/unused-var`、`vb/goto-legacy`）を有効にします。",
+  "config.lint.rules.asp.unencoded-output.description": "`asp/unencoded-output`（未エンコードの `<%= ... %>` / `Response.Write` 出力）の重大度上書き。",
+  "config.lint.rules.asp.sql-concat.description": "`asp/sql-concat`（SQL クエリ内の文字列連結）の重大度上書き。",
+  "config.lint.rules.vb.undeclared-var.description": "`vb/undeclared-var`（未宣言変数の使用）の重大度上書き。",
+  "config.lint.rules.vb.missing-set.description": "`vb/missing-set`（オブジェクト代入での `Set` 漏れ）の重大度上書き。",
+  "config.lint.rules.vb.unreachable.description": "`vb/unreachable`（`Exit` / `Response.End` 後の到達不能コード）の重大度上書き。",
+  "config.lint.rules.vb.on-error-resume-next.description": "`vb/on-error-resume-next`（広範な `On Error Resume Next` の使用）の重大度上書き。",
+  "config.lint.rules.vb.option-explicit.description": "`vb/option-explicit`（`Option Explicit` の欠落）の重大度上書き。",
+  "config.lint.rules.vb.unused-var.description": "`vb/unused-var`（宣言済み未使用変数）の重大度上書き。",
+  "config.lint.rules.vb.goto-legacy.description": "`vb/goto-legacy`（`On Error GoTo` 等のレガシー構文）の重大度上書き。",
   "config.trace.server.description": "VS Code と Classic ASP 言語サーバー間の通信トレースレベル。"
 }

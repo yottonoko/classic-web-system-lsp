@@ -20,5 +20,18 @@
   "config.workspace.includes.description": "Glob patterns for Classic ASP / VBScript files included in workspace analysis.",
   "config.workspace.excludes.description": "Glob patterns for files or directories excluded from Classic ASP / VBScript diagnostics, `#include` merging, and workspace symbols.",
   "config.workspace.respectGitIgnore.description": "Ignore files matched by `.gitignore` in the workspace root during Classic ASP / VBScript analysis.",
+  "config.lint.enabled.description": "Enable Classic ASP / VBScript lint diagnostics.",
+  "config.lint.groups.security.description": "Enable security lint rules (`asp/unencoded-output`, `asp/sql-concat`).",
+  "config.lint.groups.correctness.description": "Enable correctness lint rules (`vb/undeclared-var`, `vb/missing-set`, `vb/unreachable`, `vb/on-error-resume-next`).",
+  "config.lint.groups.style.description": "Enable style lint rules (`vb/option-explicit`, `vb/unused-var`, `vb/goto-legacy`).",
+  "config.lint.rules.asp.unencoded-output.description": "Severity override for `asp/unencoded-output` (unencoded `<%= ... %>` or `Response.Write` output).",
+  "config.lint.rules.asp.sql-concat.description": "Severity override for `asp/sql-concat` (string concatenation in SQL queries).",
+  "config.lint.rules.vb.undeclared-var.description": "Severity override for `vb/undeclared-var` (use of undeclared variable).",
+  "config.lint.rules.vb.missing-set.description": "Severity override for `vb/missing-set` (object assignment missing `Set`).",
+  "config.lint.rules.vb.unreachable.description": "Severity override for `vb/unreachable` (unreachable statements after `Exit` / `Response.End`).",
+  "config.lint.rules.vb.on-error-resume-next.description": "Severity override for `vb/on-error-resume-next` (broad `On Error Resume Next` usage).",
+  "config.lint.rules.vb.option-explicit.description": "Severity override for `vb/option-explicit` (missing `Option Explicit`).",
+  "config.lint.rules.vb.unused-var.description": "Severity override for `vb/unused-var` (declared but unused variable).",
+  "config.lint.rules.vb.goto-legacy.description": "Severity override for `vb/goto-legacy` (`On Error GoTo` / legacy label usage).",
   "config.trace.server.description": "Trace communication between VS Code and the Classic ASP language server."
 }

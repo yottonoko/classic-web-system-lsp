@@ -9,6 +9,7 @@
     { "include": "#asp-expression" },
     { "include": "#asp-directive" },
     { "include": "#asp-block" },
+    { "include": "#asp-vb-script-tag" },
     { "include": "text.html.basic" }
   ],
   "injections": {
@@ -180,6 +181,24 @@
       "endCaptures": {
         "0": { "name": "punctuation.section.embedded.end.asp" }
       },
+      "patterns": [{ "include": "#asp-vbscript" }]
+    },
+    "asp-vb-script-tag": {
+      "name": "meta.tag.script.vbscript.asp",
+      "begin": "(?i)(<)(script)\\b(?![^>]*\\blanguage\\s*=\\s*[\"']?(?:jscript|javascript)\\b)(?![^>]*\\btype\\s*=\\s*[\"']?(?:text|application)/(?:jscript|javascript)\\b)(?=[^>]*\\b(?:language\\s*=\\s*[\"']?(?:vbscript|vb|vbs)(?:[\"']|\\b)|type\\s*=\\s*[\"']?text/vbscript(?:[\"']|\\b)|runat\\s*=\\s*[\"']?server(?:[\"']|\\b)))([^>]*)(>)",
+      "beginCaptures": {
+        "1": { "name": "punctuation.definition.tag.begin.html" },
+        "2": { "name": "entity.name.tag.script.html" },
+        "3": { "name": "meta.tag.attributes.html" },
+        "4": { "name": "punctuation.definition.tag.end.html" }
+      },
+      "end": "(?i)(</)(script)(\\s*)(>)",
+      "endCaptures": {
+        "1": { "name": "punctuation.definition.tag.begin.html" },
+        "2": { "name": "entity.name.tag.script.html" },
+        "4": { "name": "punctuation.definition.tag.end.html" }
+      },
+      "contentName": "source.vbscript.embedded.asp",
       "patterns": [{ "include": "#asp-vbscript" }]
     },
     "asp-vbscript": {
