@@ -44,6 +44,9 @@ export interface AspLspSettings {
   html: {
     linkedEditing: boolean;
   };
+  js: {
+    jsdocTypeStyle: "typescript" | "jsdoc";
+  };
   io: {
     networkMode: "auto" | "always" | "never";
     statTtlMs: number;
@@ -73,6 +76,9 @@ export function readAspLspSettings(section = "aspLsp"): AspLspSettings {
     onTypeFormatting: cfg.get<boolean>("onTypeFormatting", true),
     html: {
       linkedEditing: cfg.get<boolean>("html.linkedEditing", true),
+    },
+    js: {
+      jsdocTypeStyle: cfg.get<"typescript" | "jsdoc">("js.jsdocTypeStyle", "typescript"),
     },
     io: {
       networkMode: cfg.get<"auto" | "always" | "never">("io.networkMode", "auto"),

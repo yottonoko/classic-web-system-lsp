@@ -215,6 +215,15 @@
           "default": true,
           "markdownDescription": "%config.html.linkedEditing.description%"
         },
+        "aspLsp.js.jsdocTypeStyle": {
+          "type": "string",
+          "enum": [
+            "typescript",
+            "jsdoc"
+          ],
+          "default": "typescript",
+          "markdownDescription": "%config.js.jsdocTypeStyle.description%"
+        },
         "aspLsp.io.networkMode": {
           "type": "string",
           "enum": [
