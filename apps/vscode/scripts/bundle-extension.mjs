@@ -1,24 +1,15 @@
-import { builtinModules } from "node:module";
-import path from "node:path";
-import { rolldown } from "rolldown";
+import * as path from "node:path";
+import { build } from "rolldown";
 
-const extensionRoot = path.resolve(import.meta.dirname, "..");
-const nodeBuiltins = new Set([...builtinModules, ...builtinModules.map((name) => `node:${name}`)]);
+const rootDir = path.resolve(import.meta.dirname, "..");
 
-const bundle = await rolldown({
-  input: path.join(extensionRoot, "src", "extension.ts"),
+await build({
+  input: path.join(rootDir, "src", "extension.ts"),
+  external: ["vscode"],
   platform: "node",
-  external: (id) => id === "vscode" || nodeBuiltins.has(id),
-});
-
-try {
-  await bundle.write({
-    file: path.join(extensionRoot, "dist", "extension.js"),
+  output: {
+    file: path.join(rootDir, "dist", "extension.js"),
     format: "cjs",
-    sourcemap: false,
-    minify: true,
-    exports: "named",
-  });
-} finally {
-  await bundle.close();
-}
+    sourcemap: true,
+  },
+});
