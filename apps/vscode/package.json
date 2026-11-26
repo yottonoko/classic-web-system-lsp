@@ -208,6 +208,14 @@
           "description": "%config.trace.server.description%"
         }
       }
+    },
+    "configurationDefaults": {
+      "[classic-asp]": {
+        "files.autoGuessEncoding": true
+      },
+      "[vbscript]": {
+        "files.autoGuessEncoding": true
+      }
     }
   },
   "activationEvents": [
