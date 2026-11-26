@@ -1,12 +1,15 @@
 import * as path from "node:path";
 import * as vscode from "vscode";
 import {
+  CloseAction,
+  ErrorAction,
   LanguageClient,
   type LanguageClientOptions,
   type ServerOptions,
   TransportKind,
 } from "vscode-languageclient/node";
 import { readAspLspSettings } from "./aspConfig.js";
+import { createRestartPolicy } from "./restartPolicy.js";
 import { resolveAspLspServer } from "./serverPath.js";
 
 interface LspPosition {
@@ -14,16 +17,25 @@ interface LspPosition {
   character: number;
 }
 
+interface LspRange {
+  start: LspPosition;
+  end: LspPosition;
+}
+
+interface LspTextEdit {
+  range: LspRange;
+  newText: string;
+}
+
 interface LspLocation {
   uri: string;
-  range: {
-    start: LspPosition;
-    end: LspPosition;
-  };
+  range: LspRange;
 }
 
 let client: LanguageClient | undefined;
 let outputChannel: vscode.LogOutputChannel | undefined;
+let isStoppingClient = false;
+const restartPolicy = createRestartPolicy();
 
 function toVscodePosition(pos: LspPosition): vscode.Position {
   return new vscode.Position(pos.line, pos.character);
@@ -65,6 +77,8 @@ function buildServerOptions(context: vscode.ExtensionContext): ServerOptions {
 }
 
 async function startClient(context: vscode.ExtensionContext): Promise<void> {
+  isStoppingClient = false;
+  restartPolicy.reset();
   const serverOptions = buildServerOptions(context);
 
   const clientOptions: LanguageClientOptions = {
@@ -83,6 +97,30 @@ async function startClient(context: vscode.ExtensionContext): Promise<void> {
       ),
     },
     outputChannel,
+    errorHandler: {
+      error(error, _message, count) {
+        outputChannel?.warn(
+          `Classic ASP LSP transport error (count=${count ?? 0}): ${error.message}`,
+        );
+        return { action: ErrorAction.Continue };
+      },
+      async closed() {
+        if (isStoppingClient) {
+          return { action: CloseAction.DoNotRestart, handled: true };
+        }
+        const { attempt, delayMs } = restartPolicy.nextRestart();
+        outputChannel?.warn(
+          `Classic ASP LSP server closed unexpectedly (attempt=${attempt}); restarting in ${delayMs}ms.`,
+        );
+        if (delayMs > 0) {
+          await new Promise<void>((resolve) => setTimeout(resolve, delayMs));
+        }
+        if (isStoppingClient) {
+          return { action: CloseAction.DoNotRestart, handled: true };
+        }
+        return { action: CloseAction.Restart, handled: true };
+      },
+    },
   };
 
   const nextClient = new LanguageClient(
@@ -96,10 +134,60 @@ async function startClient(context: vscode.ExtensionContext): Promise<void> {
 }
 
 async function stopClient(): Promise<void> {
+  isStoppingClient = true;
+  restartPolicy.reset();
   const current = client;
   client = undefined;
   if (current !== undefined) {
     await current.stop();
+  }
+}
+
+async function toggleAspComment(method: string, fallbackCommand: string): Promise<void> {
+  const editor = vscode.window.activeTextEditor;
+  if (!editor) {
+    return;
+  }
+  if (editor.document.languageId !== "classic-asp" || client === undefined) {
+    await vscode.commands.executeCommand(fallbackCommand);
+    return;
+  }
+
+  const document = editor.document;
+  const documentVersion = document.version;
+  const selections: LspRange[] = editor.selections.map((sel) => ({
+    start: { line: sel.start.line, character: sel.start.character },
+    end: { line: sel.end.line, character: sel.end.character },
+  }));
+
+  try {
+    const edits = await client.sendRequest<LspTextEdit[] | null>(method, {
+      textDocument: { uri: document.uri.toString() },
+      selections,
+    });
+    if (document.version !== documentVersion || vscode.window.activeTextEditor !== editor) {
+      return;
+    }
+    if (!Array.isArray(edits)) {
+      await vscode.commands.executeCommand(fallbackCommand);
+      return;
+    }
+    if (edits.length === 0) {
+      return;
+    }
+    const workspaceEdit = new vscode.WorkspaceEdit();
+    for (const edit of edits) {
+      workspaceEdit.replace(
+        document.uri,
+        new vscode.Range(toVscodePosition(edit.range.start), toVscodePosition(edit.range.end)),
+        edit.newText,
+      );
+    }
+    await vscode.workspace.applyEdit(workspaceEdit);
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    outputChannel?.warn(`${method} failed (${message}); falling back to ${fallbackCommand}.`);
+    await vscode.commands.executeCommand(fallbackCommand);
   }
 }
 
@@ -111,6 +199,12 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     vscode.commands.registerCommand("aspLsp.restartServer", async () => {
       await stopClient();
       await startClient(context);
+    }),
+    vscode.commands.registerCommand("aspLsp.toggleLineComment", async () => {
+      await toggleAspComment("asp/toggleLineComment", "editor.action.commentLine");
+    }),
+    vscode.commands.registerCommand("aspLsp.toggleBlockComment", async () => {
+      await toggleAspComment("asp/toggleBlockComment", "editor.action.blockComment");
     }),
     vscode.commands.registerCommand(
       "mixin.showReferences",

@@ -1,6 +1,7 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
 import { describe, expect, it } from "vitest";
+import { createRestartPolicy } from "../src/restartPolicy.js";
 import { resolveAspLspServer } from "../src/serverPath.js";
 
 const extensionRoot = path.resolve(import.meta.dirname, "..");
@@ -109,5 +110,73 @@ describe("extension manifest & localization", () => {
       expect(nlsEn[key], `missing EN NLS key: ${key}`).toBeTypeOf("string");
       expect(nlsJa[key], `missing JA NLS key: ${key}`).toBeTypeOf("string");
     }
+  });
+
+  it("registers classic-asp comment toggle commands and keybindings", () => {
+    const commands = pkg.contributes.commands.map((c: { command: string }) => c.command);
+    expect(commands).toContain("aspLsp.toggleLineComment");
+    expect(commands).toContain("aspLsp.toggleBlockComment");
+
+    const lineBinding = pkg.contributes.keybindings.find(
+      (k: { command: string }) => k.command === "aspLsp.toggleLineComment",
+    );
+    expect(lineBinding).toEqual({
+      command: "aspLsp.toggleLineComment",
+      key: "ctrl+/",
+      mac: "cmd+/",
+      when: "editorTextFocus && editorLangId == classic-asp",
+    });
+
+    const blockBinding = pkg.contributes.keybindings.find(
+      (k: { command: string }) => k.command === "aspLsp.toggleBlockComment",
+    );
+    expect(blockBinding).toMatchObject({
+      command: "aspLsp.toggleBlockComment",
+      when: "editorTextFocus && editorLangId == classic-asp",
+    });
+  });
+});
+
+describe("createRestartPolicy", () => {
+  it("recovers beyond 5 consecutive crashes with bounded exponential backoff", () => {
+    let clock = 1_000;
+    const policy = createRestartPolicy({
+      baseDelayMs: 500,
+      maxDelayMs: 10_000,
+      resetWindowMs: 60_000,
+      now: () => clock,
+    });
+
+    const delays: number[] = [];
+    for (let i = 1; i <= 8; i++) {
+      clock += 1_000;
+      const decision = policy.nextRestart();
+      expect(decision.attempt).toBe(i);
+      delays.push(decision.delayMs);
+    }
+
+    expect(delays).toEqual([0, 500, 1000, 2000, 4000, 8000, 10_000, 10_000]);
+  });
+
+  it("resets backoff after the reset window or explicit reset", () => {
+    let clock = 0;
+    const policy = createRestartPolicy({
+      baseDelayMs: 500,
+      maxDelayMs: 10_000,
+      resetWindowMs: 60_000,
+      now: () => clock,
+    });
+
+    expect(policy.nextRestart()).toEqual({ attempt: 1, delayMs: 0 });
+    clock += 1_000;
+    expect(policy.nextRestart()).toEqual({ attempt: 2, delayMs: 500 });
+
+    clock += 60_001;
+    expect(policy.nextRestart()).toEqual({ attempt: 1, delayMs: 0 });
+
+    clock += 1_000;
+    expect(policy.nextRestart()).toEqual({ attempt: 2, delayMs: 500 });
+    policy.reset();
+    expect(policy.nextRestart()).toEqual({ attempt: 1, delayMs: 0 });
   });
 });

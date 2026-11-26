@@ -113,8 +113,30 @@
         "title": "%command.restartServer.title%"
       },
       {
+        "command": "aspLsp.toggleLineComment",
+        "title": "%command.toggleLineComment.title%"
+      },
+      {
+        "command": "aspLsp.toggleBlockComment",
+        "title": "%command.toggleBlockComment.title%"
+      },
+      {
         "command": "mixin.showReferences",
         "title": "%command.showReferences.title%"
+      }
+    ],
+    "keybindings": [
+      {
+        "command": "aspLsp.toggleLineComment",
+        "key": "ctrl+/",
+        "mac": "cmd+/",
+        "when": "editorTextFocus && editorLangId == classic-asp"
+      },
+      {
+        "command": "aspLsp.toggleBlockComment",
+        "key": "shift+alt+a",
+        "mac": "shift+alt+a",
+        "when": "editorTextFocus && editorLangId == classic-asp"
       }
     ],
     "menus": {
@@ -122,6 +144,18 @@
         {
           "command": "mixin.showReferences",
           "when": "false"
+        }
+      ],
+      "editor/context": [
+        {
+          "command": "aspLsp.toggleLineComment",
+          "when": "editorTextFocus && editorLangId == classic-asp",
+          "group": "1_modification"
+        },
+        {
+          "command": "aspLsp.toggleBlockComment",
+          "when": "editorTextFocus && editorLangId == classic-asp",
+          "group": "1_modification"
         }
       ]
     },

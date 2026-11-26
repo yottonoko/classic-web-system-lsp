@@ -2,6 +2,8 @@
   "extension.description": "独立版 `classic-asp-lsp` サーバー（Windows ネイティブ版 / WASM 汎用版）で動作する Classic ASP / VBScript 向け言語サポート拡張機能。",
   "configuration.title": "Classic ASP LSP",
   "command.restartServer.title": "Classic ASP LSP: 言語サーバーを再起動",
+  "command.toggleLineComment.title": "Classic ASP LSP: 行コメントの切り替え",
+  "command.toggleBlockComment.title": "Classic ASP LSP: ブロックコメントの切り替え",
   "command.showReferences.title": "Classic ASP LSP: 参照を表示",
   "config.server.path.description": "独立版 `classic-asp-lsp` 実行ファイルまたは `.wasm` モジュールのパス。空の場合は同梱の `server/classic-asp-lsp(.exe|.wasm)` または `PATH` 上の `classic-asp-lsp` を使用します。",
   "config.server.extraArgs.description": "独立版 `classic-asp-lsp` サーバーに渡す追加引数。",

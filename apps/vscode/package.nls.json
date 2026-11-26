@@ -2,6 +2,8 @@
   "extension.description": "Classic ASP & VBScript language support powered by the standalone `classic-asp-lsp` server (native Windows / WASM Any OS).",
   "configuration.title": "Classic ASP LSP",
   "command.restartServer.title": "Classic ASP LSP: Restart Language Server",
+  "command.toggleLineComment.title": "Classic ASP LSP: Toggle Line Comment",
+  "command.toggleBlockComment.title": "Classic ASP LSP: Toggle Block Comment",
   "command.showReferences.title": "Classic ASP LSP: Show References",
   "config.server.path.description": "Path to the standalone `classic-asp-lsp` executable or `.wasm` module. Leave empty to use a bundled `server/classic-asp-lsp(.exe|.wasm)` or `classic-asp-lsp` from `PATH`.",
   "config.server.extraArgs.description": "Extra arguments passed to the standalone `classic-asp-lsp` server.",
