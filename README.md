@@ -26,7 +26,7 @@ The full Mixin compiler is not required or bundled—only the standalone ASP LSP
 | `aspLsp.server.extraArgs`             | `[]`     | Extra arguments passed to `classic-asp-lsp`.                                                           |
 | `aspLsp.codeLens.references`          | `true`   | Show reference-count CodeLens on declarations.                                                         |
 | `aspLsp.codeLens.includes`            | `true`   | Show clickable CodeLens on `#include` directives.                                                      |
-| `aspLsp.codeLens.crossFileReferences` | `true`   | Include references from other workspace files in CodeLens and reference lists.                         |
+| `aspLsp.codeLens.crossFileReferences` | `false`  | Include references from other workspace files in CodeLens and reference lists.                         |
 | `aspLsp.inlayHints.variableTypes`     | `true`   | Show inferred variable type hints (`As Type`).                                                         |
 | `aspLsp.inlayHints.returnTypes`       | `true`   | Show inferred function/property return type hints.                                                     |
 | `aspLsp.inlayHints.parameterNames`    | `true`   | Show parameter name hints on user procedure calls.                                                     |

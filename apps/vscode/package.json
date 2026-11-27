@@ -191,7 +191,7 @@
         },
         "aspLsp.codeLens.crossFileReferences": {
           "type": "boolean",
-          "default": true,
+          "default": false,
           "markdownDescription": "%config.codeLens.crossFileReferences.description%"
         },
         "aspLsp.inlayHints.variableTypes": {

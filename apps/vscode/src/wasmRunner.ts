@@ -3,7 +3,7 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import { WASI } from "node:wasi";
 
-export type LspMethodKind = "Control" | "Heavy" | "Interactive";
+export type LspMethodKind = "Control" | "Heavy" | "Refs" | "Interactive";
 
 const CONTROL_METHODS = new Set<string>([
   "initialize",
@@ -20,16 +20,19 @@ const CONTROL_METHODS = new Set<string>([
   "$/setTrace",
 ]);
 
+const REFS_METHODS = new Set<string>([
+  "textDocument/codeLens",
+  "codeLens/resolve",
+  "textDocument/references",
+]);
+
 const HEAVY_METHODS = new Set<string>([
   "textDocument/semanticTokens/full",
   "textDocument/semanticTokens/full/delta",
   "textDocument/semanticTokens/range",
-  "textDocument/codeLens",
-  "codeLens/resolve",
   "textDocument/inlayHint",
   "inlayHint/resolve",
   "textDocument/documentSymbol",
-  "textDocument/references",
   "textDocument/rename",
   "textDocument/prepareRename",
   "textDocument/foldingRange",
@@ -43,11 +46,14 @@ const HEAVY_METHODS = new Set<string>([
 ]);
 
 /**
- * Classifies an LSP JSON-RPC method into `Control`, `Heavy`, or `Interactive`.
+ * Classifies an LSP JSON-RPC method into `Control`, `Heavy`, `Refs`, or `Interactive`.
  */
 export function classifyLspMethod(method: string): LspMethodKind {
   if (CONTROL_METHODS.has(method)) {
     return "Control";
+  }
+  if (REFS_METHODS.has(method)) {
+    return "Refs";
   }
   if (HEAVY_METHODS.has(method)) {
     return "Heavy";
@@ -165,7 +171,7 @@ interface JsonRpcMessage {
   params?: { id?: string | number | null } | null;
 }
 
-type WorkerRole = "interactive" | "heavy";
+type WorkerRole = "interactive" | "heavy" | "refs";
 
 function spawnWorkerProcess(wasmPath: string, extraArgs: string[]): ChildProcess {
   const entryScript = process.argv[1];
@@ -182,17 +188,19 @@ function spawnWorkerProcess(wasmPath: string, extraArgs: string[]): ChildProcess
 function runDualWorkerCoordinator(wasmPath: string, extraArgs: string[]): void {
   const interactive = spawnWorkerProcess(wasmPath, extraArgs);
   const heavy = spawnWorkerProcess(wasmPath, ["--no-publish", ...extraArgs]);
+  const refs = spawnWorkerProcess(wasmPath, ["--no-publish", ...extraArgs]);
 
   const clientParser = new FrameParser();
   const interactiveParser = new FrameParser();
   const heavyParser = new FrameParser();
+  const refsParser = new FrameParser();
 
-  const controlRequestIds = new Set<string | number>();
+  const suppressedControlReplies = new Map<string | number, number>();
   const pendingClientRequests = new Map<string | number, WorkerRole>();
   const pendingServerRequests = new Map<string | number, WorkerRole>();
 
   const sendToWorker = (role: WorkerRole, body: Buffer): void => {
-    const target = role === "interactive" ? interactive : heavy;
+    const target = role === "interactive" ? interactive : role === "heavy" ? heavy : refs;
     if (target.stdin && !target.stdin.destroyed && target.stdin.writable) {
       writeFrameAtomic(target.stdin, body);
     }
@@ -214,11 +222,12 @@ function runDualWorkerCoordinator(wasmPath: string, extraArgs: string[]): void {
           cancelId !== undefined && cancelId !== null
             ? pendingClientRequests.get(cancelId)
             : undefined;
-        if (owner === "interactive" || owner === "heavy") {
+        if (owner === "interactive" || owner === "heavy" || owner === "refs") {
           sendToWorker(owner, body);
         } else {
           sendToWorker("interactive", body);
           sendToWorker("heavy", body);
+          sendToWorker("refs", body);
         }
         return;
       }
@@ -226,14 +235,16 @@ function runDualWorkerCoordinator(wasmPath: string, extraArgs: string[]): void {
       const kind = classifyLspMethod(msg.method);
       if (kind === "Control") {
         if (msg.id !== undefined && msg.id !== null) {
-          controlRequestIds.add(msg.id);
+          suppressedControlReplies.set(msg.id, 2);
         }
         sendToWorker("interactive", body);
         sendToWorker("heavy", body);
+        sendToWorker("refs", body);
         return;
       }
 
-      const role: WorkerRole = kind === "Heavy" ? "heavy" : "interactive";
+      const role: WorkerRole =
+        kind === "Heavy" ? "heavy" : kind === "Refs" ? "refs" : "interactive";
       if (msg.id !== undefined && msg.id !== null) {
         pendingClientRequests.set(msg.id, role);
       }
@@ -261,18 +272,20 @@ function runDualWorkerCoordinator(wasmPath: string, extraArgs: string[]): void {
       return;
     }
 
-    if (role === "heavy") {
+    if (role !== "interactive") {
       if (msg.method === "textDocument/publishDiagnostics") {
         return;
       }
-      if (
-        msg.method === undefined &&
-        msg.id !== undefined &&
-        msg.id !== null &&
-        controlRequestIds.has(msg.id)
-      ) {
-        controlRequestIds.delete(msg.id);
-        return;
+      if (msg.method === undefined && msg.id !== undefined && msg.id !== null) {
+        const remaining = suppressedControlReplies.get(msg.id);
+        if (remaining !== undefined && remaining > 0) {
+          if (remaining <= 1) {
+            suppressedControlReplies.delete(msg.id);
+          } else {
+            suppressedControlReplies.set(msg.id, remaining - 1);
+          }
+          return;
+        }
       }
     }
 
@@ -294,6 +307,7 @@ function runDualWorkerCoordinator(wasmPath: string, extraArgs: string[]): void {
   process.stdin.on("end", () => {
     interactive.stdin?.end();
     heavy.stdin?.end();
+    refs.stdin?.end();
   });
 
   interactive.stdout?.on("data", (chunk: Buffer) => {
@@ -308,9 +322,18 @@ function runDualWorkerCoordinator(wasmPath: string, extraArgs: string[]): void {
     }
   });
 
+  refs.stdout?.on("data", (chunk: Buffer) => {
+    for (const body of refsParser.push(chunk)) {
+      handleWorkerFrame("refs", body);
+    }
+  });
+
   interactive.on("exit", (code, signal) => {
     if (!heavy.killed) {
       heavy.kill();
+    }
+    if (!refs.killed) {
+      refs.kill();
     }
     if (signal) {
       process.exit(1);
@@ -323,6 +346,14 @@ function runDualWorkerCoordinator(wasmPath: string, extraArgs: string[]): void {
       process.stderr.write(`classic-asp-lsp heavy worker exited with code ${code}\n`);
     } else if (signal) {
       process.stderr.write(`classic-asp-lsp heavy worker exited on signal ${signal}\n`);
+    }
+  });
+
+  refs.on("exit", (code, signal) => {
+    if (code !== 0 && code !== null) {
+      process.stderr.write(`classic-asp-lsp refs worker exited with code ${code}\n`);
+    } else if (signal) {
+      process.stderr.write(`classic-asp-lsp refs worker exited on signal ${signal}\n`);
     }
   });
 }
