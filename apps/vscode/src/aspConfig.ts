@@ -67,7 +67,7 @@ export function readAspLspSettings(section = "aspLsp"): AspLspSettings {
     codeLens: {
       references: cfg.get<boolean>("codeLens.references", true),
       includes: cfg.get<boolean>("codeLens.includes", true),
-      crossFileReferences: cfg.get<boolean>("codeLens.crossFileReferences", true),
+      crossFileReferences: cfg.get<boolean>("codeLens.crossFileReferences", false),
     },
     inlayHints: {
       variableTypes: cfg.get<boolean>("inlayHints.variableTypes", true),

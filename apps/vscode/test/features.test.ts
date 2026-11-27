@@ -27,15 +27,19 @@ describe("classifyLspMethod", () => {
   it("classifies expensive analysis requests as Heavy", () => {
     for (const method of [
       "textDocument/semanticTokens/full",
-      "textDocument/codeLens",
       "textDocument/inlayHint",
       "textDocument/documentSymbol",
-      "textDocument/references",
       "textDocument/rename",
       "textDocument/formatting",
       "workspace/symbol",
     ]) {
       expect(classifyLspMethod(method)).toBe("Heavy");
+    }
+  });
+
+  it("classifies cross-file reference and CodeLens requests as Refs", () => {
+    for (const method of ["textDocument/codeLens", "codeLens/resolve", "textDocument/references"]) {
+      expect(classifyLspMethod(method)).toBe("Refs");
     }
   });
 
