@@ -94,7 +94,7 @@ describe("extension manifest & localization", () => {
   );
 
   it("registers classic-asp and vbscript languages and grammars", () => {
-    expect(pkg.version).toBe("0.12.2");
+    expect(pkg.version).toBe("0.12.3");
     const langIds = pkg.contributes.languages.map((l: { id: string }) => l.id);
     expect(langIds).toEqual(["classic-asp", "vbscript"]);
     for (const grammar of pkg.contributes.grammars) {
