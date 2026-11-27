@@ -38,10 +38,47 @@
           }
         },
         {
-          "match": "(?i)\\b(As)\\s+(String|Variant|Number|Currency|Decimal|Error|Array|Boolean|Date|Object|Byte|Integer|Long|Single|Double)\\b",
+          "begin": "(?i)\\b(As)\\b",
+          "beginCaptures": {
+            "1": { "name": "keyword.control.vbscript" }
+          },
+          "end": "(?=[,)=:\\r\\n']|\\b(?:Then|Else|To|Step|In|Do|Loop|End)\\b|$)",
+          "patterns": [
+            {
+              "match": "\\(\\)",
+              "name": "punctuation.brackets.array.vbscript"
+            },
+            {
+              "match": "\\|",
+              "name": "keyword.operator.type.vbscript"
+            },
+            {
+              "match": "\"[^\"]*\"",
+              "name": "string.quoted.double.vbscript"
+            },
+            {
+              "match": "'[^']*'",
+              "name": "string.quoted.single.vbscript"
+            },
+            {
+              "match": "`[^`]*`",
+              "name": "string.template.vbscript"
+            },
+            {
+              "match": "(?i)\\b(?:String|Variant|Number|Currency|Decimal|Error|Array|Boolean|Date|Object|Byte|Integer|LongLong|Long|Single|Double|Null|Nothing|Empty)\\b",
+              "name": "support.type.vbscript"
+            },
+            {
+              "match": "[A-Za-z_][A-Za-z0-9_]*(?:\\.[A-Za-z_][A-Za-z0-9_]*)*",
+              "name": "entity.name.type.vbscript"
+            }
+          ]
+        },
+        {
+          "match": "(?i)\\b(New)\\s+([A-Za-z_][A-Za-z0-9_]*(?:\\.[A-Za-z_][A-Za-z0-9_]*)*)",
           "captures": {
             "1": { "name": "keyword.control.vbscript" },
-            "2": { "name": "support.type.vbscript" }
+            "2": { "name": "entity.name.type.vbscript" }
           }
         },
         {

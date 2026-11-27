@@ -14,6 +14,12 @@ This repository contains the **Classic ASP LSP** VS Code extension (`v0.12.0+`),
   - Launches the standalone `classic-asp-lsp` server (native binary or `.wasm` via `dist/wasm-runner.js`) over stdio, watches ASP/VB files for event-driven cache invalidation, and synchronizes `aspLsp.*` settings (mirroring `editors/vscode/src/aspConfig.ts` in `mixin-lang`).
   - Hosts any specialized Classic ASP-only VS Code integration features if needed in the future.
 
+## Cache Storage Policy
+
+- **Never** write Classic ASP LSP caches to the user's `~/.mixinlang` (Mixin home) directory.
+- All persistent caches (such as `asp-lsp-cache/` `.mdb` files and `ws_idx_*.dat` workspace index caches) **must** be stored under VS Code's managed extension storage (`context.globalStorageUri.fsPath`).
+- `apps/vscode/src/extension.ts` passes `MIXIN_HOME: context.globalStorageUri.fsPath` to both native and WASM server processes, and `apps/vscode/src/wasmRunner.ts` preopens `MIXIN_HOME` for WASI so all cache I/O stays inside VS Code's extension storage.
+
 ## Project Layout
 
 - `apps/vscode/src`: VS Code extension entrypoint (`extension.ts`), standalone server resolver (`serverPath.ts`), Node.js WASI runner (`wasmRunner.ts`), and shared ASP LSP settings (`aspConfig.ts`).
