@@ -106,7 +106,7 @@
       ]
     },
     "asp-expression": {
-      "name": "source.vbscript.embedded.asp.expression",
+      "name": "meta.embedded.inline.asp source.vbscript.embedded.asp.expression",
       "begin": "<%=",
       "beginCaptures": {
         "0": { "name": "punctuation.section.embedded.begin.asp" }
@@ -172,7 +172,7 @@
       ]
     },
     "asp-block": {
-      "name": "source.vbscript.embedded.asp",
+      "name": "meta.embedded.block.asp source.vbscript.embedded.asp",
       "begin": "<%",
       "beginCaptures": {
         "0": { "name": "punctuation.section.embedded.begin.asp" }

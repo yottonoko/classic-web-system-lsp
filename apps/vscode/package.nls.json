@@ -10,6 +10,7 @@
   "config.server.extraArgs.description": "Extra arguments passed to the standalone `classic-asp-lsp` server.",
   "config.codeLens.references.description": "Show reference-count CodeLens above Classic ASP / VBScript procedures, classes, and top-level declarations.",
   "config.codeLens.includes.description": "Show clickable CodeLens above Classic ASP `<!-- #include -->` directives.",
+  "config.codeLens.crossFileReferences.description": "Include references from other workspace Classic ASP / VBScript files in reference CodeLens counts and reference lists (disable for single-file counting only).",
   "config.inlayHints.variableTypes.description": "Show inferred variable type inlay hints (`As Type`) on Classic ASP / VBScript `Dim` and `Const` declarations.",
   "config.inlayHints.returnTypes.description": "Show inferred return type inlay hints (`As Type`) on Classic ASP / VBScript `Function` and `Property` declarations.",
   "config.inlayHints.parameterNames.description": "Show parameter name inlay hints (`param:`) on calls to user-defined Classic ASP / VBScript procedures.",
