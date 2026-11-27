@@ -33,6 +33,7 @@ export interface AspLspSettings {
   codeLens: {
     references: boolean;
     includes: boolean;
+    crossFileReferences: boolean;
   };
   inlayHints: {
     variableTypes: boolean;
@@ -66,6 +67,7 @@ export function readAspLspSettings(section = "aspLsp"): AspLspSettings {
     codeLens: {
       references: cfg.get<boolean>("codeLens.references", true),
       includes: cfg.get<boolean>("codeLens.includes", true),
+      crossFileReferences: cfg.get<boolean>("codeLens.crossFileReferences", true),
     },
     inlayHints: {
       variableTypes: cfg.get<boolean>("inlayHints.variableTypes", true),

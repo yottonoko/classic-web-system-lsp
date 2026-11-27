@@ -1,7 +1,7 @@
 {
   "name": "classic-asp-lsp",
   "displayName": "Classic ASP LSP",
-  "version": "0.12.1",
+  "version": "0.12.2",
   "private": true,
   "description": "%extension.description%",
   "categories": [
@@ -188,6 +188,11 @@
           "type": "boolean",
           "default": true,
           "markdownDescription": "%config.codeLens.includes.description%"
+        },
+        "aspLsp.codeLens.crossFileReferences": {
+          "type": "boolean",
+          "default": true,
+          "markdownDescription": "%config.codeLens.crossFileReferences.description%"
         },
         "aspLsp.inlayHints.variableTypes": {
           "type": "boolean",

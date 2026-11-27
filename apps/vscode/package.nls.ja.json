@@ -10,6 +10,7 @@
   "config.server.extraArgs.description": "独立版 `classic-asp-lsp` サーバーに渡す追加引数。",
   "config.codeLens.references.description": "Classic ASP / VBScript のプロシージャ・クラス・トップレベル宣言の上に参照数 CodeLens を表示します。",
   "config.codeLens.includes.description": "Classic ASP の `<!-- #include -->` ディレクティブの上にファイルを開く CodeLens を表示します。",
+  "config.codeLens.crossFileReferences.description": "参照数 CodeLens および参照検索にワークスペース内の他ファイルからの参照も含めます（オフにすると単一ファイル内のみをカウントします）。",
   "config.inlayHints.variableTypes.description": "Classic ASP / VBScript の `Dim` / `Const` 宣言に推論された型インレイヒント（`As Type`）を表示します。",
   "config.inlayHints.returnTypes.description": "Classic ASP / VBScript の `Function` / `Property` 宣言に推論された戻り値型インレイヒント（`As Type`）を表示します。",
   "config.inlayHints.parameterNames.description": "ユーザー定義の Classic ASP / VBScript プロシージャ呼び出しに引数名インレイヒント（`param:`）を表示します。",
