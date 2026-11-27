@@ -147,6 +147,17 @@ describe("lint settings in package.json", () => {
     });
     const commands = pkg.contributes.commands as Array<{ command: string; title: string }>;
     expect(commands.some((c) => c.command === "aspLsp.clearCache")).toBe(true);
+    expect(commands.some((c) => c.command === "aspLsp.clearIndexCache")).toBe(true);
+    expect(props["aspLsp.cache.maxAgeDays"]).toMatchObject({
+      type: "number",
+      default: 14,
+      minimum: 0,
+    });
+    expect(props["aspLsp.cache.maxSizeMb"]).toMatchObject({
+      type: "number",
+      default: 256,
+      minimum: 0,
+    });
     expect(pkg.contributes.configurationDefaults["[classic-asp]"]["editor.linkedEditing"]).toBe(
       true,
     );

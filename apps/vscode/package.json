@@ -1,7 +1,7 @@
 {
   "name": "classic-asp-lsp",
   "displayName": "Classic ASP LSP",
-  "version": "0.12.9",
+  "version": "0.12.10",
   "private": true,
   "description": "%extension.description%",
   "categories": [
@@ -115,6 +115,10 @@
       {
         "command": "aspLsp.clearCache",
         "title": "%command.clearCache.title%"
+      },
+      {
+        "command": "aspLsp.clearIndexCache",
+        "title": "%command.clearIndexCache.title%"
       },
       {
         "command": "aspLsp.toggleLineComment",
@@ -253,6 +257,18 @@
           "type": "boolean",
           "default": true,
           "markdownDescription": "%config.io.diskCache.description%"
+        },
+        "aspLsp.cache.maxAgeDays": {
+          "type": "number",
+          "default": 14,
+          "minimum": 0,
+          "description": "%config.cache.maxAgeDays.description%"
+        },
+        "aspLsp.cache.maxSizeMb": {
+          "type": "number",
+          "default": 256,
+          "minimum": 0,
+          "description": "%config.cache.maxSizeMb.description%"
         },
         "aspLsp.workspace.includes": {
           "type": "array",

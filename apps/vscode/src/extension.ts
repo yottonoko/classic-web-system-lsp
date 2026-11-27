@@ -11,6 +11,7 @@ import {
 } from "vscode-languageclient/node";
 import { readAspLspSettings } from "./aspConfig.js";
 import { findAutoCloseTagName } from "./autoCloseTag.js";
+import { clearCacheFiles, pruneCacheDir } from "./cacheManager.js";
 import { formatIndexProgressStatus, type IndexProgressParams } from "./indexStatus.js";
 import { createRestartPolicy } from "./restartPolicy.js";
 import { resolveAspLspServer } from "./serverPath.js";
@@ -242,19 +243,22 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     }),
     vscode.commands.registerCommand("aspLsp.clearCache", async () => {
       await stopClient();
-      const cacheDir = resolveCacheDir(context);
-      let removed = 0;
-      if (fs.existsSync(cacheDir)) {
-        for (const entry of fs.readdirSync(cacheDir)) {
-          fs.rmSync(path.join(cacheDir, entry), { recursive: true, force: true });
-          removed += 1;
-        }
-      }
+      const removed = clearCacheFiles(resolveCacheDir(context), "all");
       await startClient(context);
       const isJa = vscode.env.language.startsWith("ja");
       const msg = isJa
         ? `Classic ASP LSP: キャッシュを削除しました（${removed} 件）。`
         : `Classic ASP LSP: Cleared ${removed} cache file(s).`;
+      void vscode.window.showInformationMessage(msg);
+    }),
+    vscode.commands.registerCommand("aspLsp.clearIndexCache", async () => {
+      await stopClient();
+      const removed = clearCacheFiles(resolveCacheDir(context), "index");
+      await startClient(context);
+      const isJa = vscode.env.language.startsWith("ja");
+      const msg = isJa
+        ? `Classic ASP LSP: ワークスペースインデックスキャッシュを削除しました（${removed} 件）。`
+        : `Classic ASP LSP: Cleared ${removed} workspace index cache file(s).`;
       void vscode.window.showInformationMessage(msg);
     }),
     vscode.commands.registerCommand("aspLsp.toggleLineComment", async () => {
@@ -318,6 +322,27 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
       void editor.insertSnippet(new vscode.SnippetString(`$0</${tagName}>`), pos);
     }),
   );
+
+  try {
+    const cacheConfig = vscode.workspace.getConfiguration("aspLsp.cache");
+    const extensionVersion =
+      typeof context.extension?.packageJSON?.version === "string"
+        ? context.extension.packageJSON.version
+        : "0.12.10";
+    const pruned = pruneCacheDir(resolveCacheDir(context), {
+      extensionVersion,
+      maxAgeDays: cacheConfig.get<number>("maxAgeDays", 14),
+      maxSizeMb: cacheConfig.get<number>("maxSizeMb", 256),
+    });
+    if (pruned.versionCleared > 0 || pruned.expiredRemoved > 0 || pruned.sizePruned > 0) {
+      outputChannel.info(
+        `Classic ASP LSP cache auto-cleanup: versionCleared=${pruned.versionCleared}, expiredRemoved=${pruned.expiredRemoved}, sizePruned=${pruned.sizePruned}.`,
+      );
+    }
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    outputChannel.warn(`Classic ASP LSP cache auto-cleanup skipped: ${message}`);
+  }
 
   await startClient(context);
 }
