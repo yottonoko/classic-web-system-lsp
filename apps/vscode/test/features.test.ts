@@ -218,4 +218,26 @@ describe("classic-asp.tmLanguage.json #asp-vb-script-tag", () => {
     expect(re.test('<script type="text/javascript">')).toBe(false);
     expect(re.test('<script src="app.js">')).toBe(false);
   });
+
+  it("vbscript.tmLanguage.json highlights As literal numbers/booleans, T[], and case-insensitive intrinsics", () => {
+    const vbGrammar = JSON.parse(
+      fs.readFileSync(path.join(extensionRoot, "syntaxes", "vbscript.tmLanguage.json"), "utf8"),
+    );
+    const patterns = vbGrammar.repository["vbscript-basic"].patterns as Array<{
+      begin?: string;
+      match?: string;
+      name?: string;
+      patterns?: Array<{ match?: string; name?: string }>;
+    }>;
+    const asRule = patterns.find((p) => p.begin?.includes("(As)"));
+    expect(asRule).toBeDefined();
+    const asNames = (asRule?.patterns ?? []).map((p) => p.name);
+    expect(asNames).toContain("constant.numeric.vbscript");
+    expect(asNames).toContain("constant.language.boolean.vbscript");
+    expect(asNames).toContain("punctuation.brackets.array.vbscript");
+    const intrinsicRule = patterns.find((p) => p.name === "support.class.asp");
+    expect(intrinsicRule?.match).toContain("(?i)");
+    expect(intrinsicRule?.match).toContain("Session");
+    expect(intrinsicRule?.match).toContain("Request");
+  });
 });
