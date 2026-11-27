@@ -11,6 +11,7 @@ import {
 } from "vscode-languageclient/node";
 import { readAspLspSettings } from "./aspConfig.js";
 import { findAutoCloseTagName } from "./autoCloseTag.js";
+import { formatIndexProgressStatus, type IndexProgressParams } from "./indexStatus.js";
 import { createRestartPolicy } from "./restartPolicy.js";
 import { resolveAspLspServer } from "./serverPath.js";
 
@@ -36,6 +37,7 @@ interface LspLocation {
 
 let client: LanguageClient | undefined;
 let outputChannel: vscode.LogOutputChannel | undefined;
+let indexStatusBarItem: vscode.StatusBarItem | undefined;
 let isStoppingClient = false;
 const restartPolicy = createRestartPolicy();
 
@@ -122,6 +124,7 @@ async function startClient(context: vscode.ExtensionContext): Promise<void> {
         return { action: ErrorAction.Continue };
       },
       async closed() {
+        indexStatusBarItem?.hide();
         if (isStoppingClient) {
           return { action: CloseAction.DoNotRestart, handled: true };
         }
@@ -146,6 +149,19 @@ async function startClient(context: vscode.ExtensionContext): Promise<void> {
     serverOptions,
     clientOptions,
   );
+  nextClient.onNotification("asp/indexProgress", (payload: IndexProgressParams) => {
+    if (!indexStatusBarItem || !payload || typeof payload.state !== "string") {
+      return;
+    }
+    const status = formatIndexProgressStatus(payload, vscode.env.language);
+    if (!status.visible) {
+      indexStatusBarItem.hide();
+      return;
+    }
+    indexStatusBarItem.text = status.text;
+    indexStatusBarItem.tooltip = status.tooltip;
+    indexStatusBarItem.show();
+  });
   client = nextClient;
   await nextClient.start();
 }
@@ -153,6 +169,7 @@ async function startClient(context: vscode.ExtensionContext): Promise<void> {
 async function stopClient(): Promise<void> {
   isStoppingClient = true;
   restartPolicy.reset();
+  indexStatusBarItem?.hide();
   const current = client;
   client = undefined;
   if (current !== undefined) {
@@ -215,6 +232,8 @@ function resolveCacheDir(context: vscode.ExtensionContext): string {
 export async function activate(context: vscode.ExtensionContext): Promise<void> {
   outputChannel = vscode.window.createOutputChannel("Classic ASP LSP", { log: true });
   context.subscriptions.push(outputChannel);
+  indexStatusBarItem = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Left, 50);
+  context.subscriptions.push(indexStatusBarItem);
 
   context.subscriptions.push(
     vscode.commands.registerCommand("aspLsp.restartServer", async () => {
