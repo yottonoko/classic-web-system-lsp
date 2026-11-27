@@ -15,7 +15,7 @@ The full Mixin compiler is not required or bundled—only the standalone ASP LSP
 - **Inlay Hints**: Inferred variable types with `(local)` / `(global)` scope markers, function/property return types, and parameter names on user procedure calls.
 - **Code Actions**: Insert `Option Explicit`, add `Set`, wrap with `Server.HTMLEncode(...)`, remove unused `Dim`, split `Dim x = expr`, remove unsupported VBScript `As` types, fix VBScript `Call` syntax, generate `'''` XML documentation comments, and extract VBScript variables (`refactor.extract`).
 - **Navigation & Editing**: Go to definition / declaration (including across `#include` files), references, document highlights, rename, signature help, document symbols, document links, folding ranges, selection ranges, formatting, and on-type auto-indentation.
-- **Network-Drive & Antivirus I/O Optimization**: Automatic UNC/network-share detection with event-driven revalidation (`didChangeWatchedFiles` / `didSave`), local `stat()` TTL, negative caching for missing `#include` targets, open-buffer priority, and persistent local DB caching (`~/.mixinlang/asp-lsp-cache/`).
+- **Network-Drive & Antivirus I/O Optimization**: Automatic UNC/network-share detection with event-driven revalidation (`didChangeWatchedFiles` / `didSave`), local `stat()` TTL, negative caching for missing `#include` targets, open-buffer priority, and persistent local DB caching (`globalStorage/yottonoko.classic-asp-lsp/asp-lsp-cache/`).
 - **Embedded Web Languages**: Delegates HTML, CSS, and JavaScript regions outside `<% ... %>` to Mixin's built-in Web LSP.
 
 ## Settings
@@ -33,7 +33,7 @@ The full Mixin compiler is not required or bundled—only the standalone ASP LSP
 | `aspLsp.onTypeFormatting`          | `true`   | Auto-indent on Enter and `%>` inside VBScript regions.                                                 |
 | `aspLsp.io.networkMode`            | `"auto"` | Network-drive / antivirus I/O mode (`auto` \| `always` \| `never`).                                    |
 | `aspLsp.io.statTtlMs`              | `5000`   | Local `stat()` cache TTL in milliseconds.                                                              |
-| `aspLsp.io.diskCache`              | `true`   | Persist `#include` file cache in a local DB under `~/.mixinlang/asp-lsp-cache/`.                       |
+| `aspLsp.io.diskCache`              | `true`   | Persist `#include` file cache in a local DB under VS Code's extension global storage.                  |
 | `aspLsp.trace.server`              | `"off"`  | LSP communication trace level.                                                                         |
 
 ## Development
