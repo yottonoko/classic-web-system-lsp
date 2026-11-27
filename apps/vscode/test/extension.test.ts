@@ -1,6 +1,7 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
 import { describe, expect, it } from "vitest";
+import { formatIndexProgressStatus } from "../src/indexStatus.js";
 import { createRestartPolicy } from "../src/restartPolicy.js";
 import { resolveAspLspServer } from "../src/serverPath.js";
 
@@ -94,7 +95,7 @@ describe("extension manifest & localization", () => {
   );
 
   it("registers classic-asp and vbscript languages and grammars", () => {
-    expect(pkg.version).toBe("0.12.3");
+    expect(pkg.version).toBe("0.12.4");
     const langIds = pkg.contributes.languages.map((l: { id: string }) => l.id);
     expect(langIds).toEqual(["classic-asp", "vbscript"]);
     for (const grammar of pkg.contributes.grammars) {
@@ -178,5 +179,43 @@ describe("createRestartPolicy", () => {
     expect(policy.nextRestart()).toEqual({ attempt: 2, delayMs: 500 });
     policy.reset();
     expect(policy.nextRestart()).toEqual({ attempt: 1, delayMs: 0 });
+  });
+});
+
+describe("formatIndexProgressStatus", () => {
+  it("formats spinning indeterminate status during directory scan", () => {
+    expect(formatIndexProgressStatus({ state: "begin", done: 0, total: 0 }, "en")).toEqual({
+      visible: true,
+      text: "$(sync~spin) Classic ASP: Indexing...",
+      tooltip: "Building Classic ASP workspace cross-file reference index",
+    });
+    expect(formatIndexProgressStatus({ state: "begin", done: 0, total: 0 }, "ja")).toEqual({
+      visible: true,
+      text: "$(sync~spin) Classic ASP: インデックス構築中...",
+      tooltip: "Classic ASP ワークスペースのクロスファイル参照インデックスを構築しています",
+    });
+  });
+
+  it("formats progress count and percentage in English and Japanese", () => {
+    expect(formatIndexProgressStatus({ state: "progress", done: 12, total: 100 }, "en-US")).toEqual(
+      {
+        visible: true,
+        text: "$(sync~spin) Classic ASP: Indexing (12/100, 12%)",
+        tooltip: "Building Classic ASP workspace cross-file reference index",
+      },
+    );
+    expect(formatIndexProgressStatus({ state: "progress", done: 12, total: 100 }, "ja")).toEqual({
+      visible: true,
+      text: "$(sync~spin) Classic ASP: インデックス構築中 (12/100, 12%)",
+      tooltip: "Classic ASP ワークスペースのクロスファイル参照インデックスを構築しています",
+    });
+  });
+
+  it("hides status bar item when indexing ends", () => {
+    expect(formatIndexProgressStatus({ state: "end", done: 100, total: 100 }, "ja")).toEqual({
+      visible: false,
+      text: "",
+      tooltip: "",
+    });
   });
 });
