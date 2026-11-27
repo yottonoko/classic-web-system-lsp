@@ -19,7 +19,7 @@
   "config.js.jsdocTypeStyle.description": "Type syntax style used when generating JSDoc comments for JavaScript functions (`typescript` uses `@param {number}` / `any`; `jsdoc` uses Closure/JSDoc `@param {?string}` / `*`). TypeScript files omit `{Type}` automatically.",
   "config.io.networkMode.description": "Network-drive / antivirus I/O reduction mode for `#include` files (`auto` detects UNC/network shares and switches to event-driven revalidation, `always` avoids polling `stat()`, `never` uses local TTL only).",
   "config.io.statTtlMs.description": "Milliseconds to trust cached local `#include` file metadata before re-checking `stat()` (reduces antivirus scan overhead).",
-  "config.io.diskCache.description": "Persist `#include` file cache in a local database under `~/.mixinlang/asp-lsp-cache/` to avoid re-reading unchanged files over slow network shares.",
+  "config.io.diskCache.description": "Persist `#include` file cache in a local database inside VS Code's extension global storage to avoid re-reading unchanged files over slow network shares.",
   "config.workspace.includes.description": "Glob patterns for Classic ASP / VBScript files included in workspace analysis.",
   "config.workspace.excludes.description": "Glob patterns for files or directories excluded from Classic ASP / VBScript diagnostics, `#include` merging, and workspace symbols.",
   "config.workspace.respectGitIgnore.description": "Ignore files matched by `.gitignore` in the workspace root during Classic ASP / VBScript analysis.",

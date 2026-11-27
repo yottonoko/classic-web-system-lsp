@@ -1,6 +1,5 @@
 import { spawn, type ChildProcess } from "node:child_process";
 import * as fs from "node:fs";
-import * as os from "node:os";
 import * as path from "node:path";
 import { WASI } from "node:wasi";
 
@@ -131,12 +130,14 @@ function buildPreopens(): Record<string, string> {
   if (process.platform !== "win32" && fs.existsSync("/")) {
     preopens["/"] = "/";
   }
-  const mixinHome = process.env.MIXIN_HOME || path.join(os.homedir(), ".mixinlang");
-  try {
-    fs.mkdirSync(path.join(mixinHome, "asp-lsp-cache"), { recursive: true });
-    preopens[mixinHome] = mixinHome;
-  } catch {
-    // Ignore if home directory is not writable.
+  const mixinHome = process.env.MIXIN_HOME?.trim();
+  if (mixinHome) {
+    try {
+      fs.mkdirSync(path.join(mixinHome, "asp-lsp-cache"), { recursive: true });
+      preopens[mixinHome] = mixinHome;
+    } catch {
+      // Ignore if storage directory is not writable.
+    }
   }
   return preopens;
 }

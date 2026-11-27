@@ -1,6 +1,6 @@
 {
   "name": "classic-asp-lsp-workspace",
-  "version": "0.12.0",
+  "version": "0.12.1",
   "private": true,
   "description": "Classic ASP LSP VS Code extension powered by Mixin (`mixin lsp --asp-only`).",
   "license": "MIT OR Apache-2.0",

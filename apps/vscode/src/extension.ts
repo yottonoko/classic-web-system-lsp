@@ -1,5 +1,4 @@
 import * as fs from "node:fs";
-import * as os from "node:os";
 import * as path from "node:path";
 import * as vscode from "vscode";
 import {
@@ -52,6 +51,13 @@ function buildServerOptions(context: vscode.ExtensionContext): ServerOptions {
     extensionPath: context.extensionPath,
   });
 
+  const storageRoot = context.globalStorageUri.fsPath;
+  try {
+    fs.mkdirSync(path.join(storageRoot, "asp-lsp-cache"), { recursive: true });
+  } catch {
+    // Ignore if global storage directory is not writable.
+  }
+
   if (resolved.kind === "wasm") {
     const runnerPath = path.join(context.extensionPath, "dist", "wasm-runner.js");
     const preopens = (vscode.workspace.workspaceFolders ?? [])
@@ -64,6 +70,7 @@ function buildServerOptions(context: vscode.ExtensionContext): ServerOptions {
       options: {
         env: {
           ...process.env,
+          MIXIN_HOME: storageRoot,
           ASP_LSP_WASI_PREOPENS: preopens,
         },
       },
@@ -75,6 +82,12 @@ function buildServerOptions(context: vscode.ExtensionContext): ServerOptions {
     command: resolved.command,
     args: resolved.args,
     transport: TransportKind.stdio,
+    options: {
+      env: {
+        ...process.env,
+        MIXIN_HOME: storageRoot,
+      },
+    },
   };
   return { run: exec, debug: exec };
 }
@@ -195,9 +208,8 @@ async function toggleAspComment(method: string, fallbackCommand: string): Promis
   }
 }
 
-function resolveCacheDir(): string {
-  const mixinHome = process.env.MIXIN_HOME || path.join(os.homedir(), ".mixinlang");
-  return path.join(mixinHome, "asp-lsp-cache");
+function resolveCacheDir(context: vscode.ExtensionContext): string {
+  return path.join(context.globalStorageUri.fsPath, "asp-lsp-cache");
 }
 
 export async function activate(context: vscode.ExtensionContext): Promise<void> {
@@ -211,7 +223,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     }),
     vscode.commands.registerCommand("aspLsp.clearCache", async () => {
       await stopClient();
-      const cacheDir = resolveCacheDir();
+      const cacheDir = resolveCacheDir(context);
       let removed = 0;
       if (fs.existsSync(cacheDir)) {
         for (const entry of fs.readdirSync(cacheDir)) {
