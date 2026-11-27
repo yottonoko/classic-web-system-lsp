@@ -269,20 +269,47 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     }),
     vscode.commands.registerCommand(
       "mixin.showReferences",
-      async (uri: string, position: LspPosition | null, locations: LspLocation[]) => {
-        const locs = (locations ?? []).map(
-          (loc) =>
-            new vscode.Location(
-              vscode.Uri.parse(loc.uri),
-              new vscode.Range(toVscodePosition(loc.range.start), toVscodePosition(loc.range.end)),
-            ),
-        );
-        await vscode.commands.executeCommand(
-          "editor.action.showReferences",
-          vscode.Uri.parse(uri),
-          toVscodePosition(position ?? { line: 0, character: 0 }),
-          locs,
-        );
+      async (uri: vscode.Uri | string, position: LspPosition | null, locations: LspLocation[]) => {
+        const uriStr = typeof uri === "string" ? uri : uri.toString();
+        const activeDoc = vscode.window.activeTextEditor?.document;
+        const targetUri =
+          activeDoc && activeDoc.uri.toString() === uriStr
+            ? activeDoc.uri
+            : typeof uri === "string"
+              ? vscode.Uri.parse(uri)
+              : uri;
+        const pos = toVscodePosition(position ?? { line: 0, character: 0 });
+        let locs = (locations ?? [])
+          .filter((loc) => loc && typeof loc.uri === "string" && loc.range)
+          .map(
+            (loc) =>
+              new vscode.Location(
+                loc.uri === uriStr ? targetUri : vscode.Uri.parse(loc.uri),
+                new vscode.Range(
+                  toVscodePosition(loc.range.start),
+                  toVscodePosition(loc.range.end),
+                ),
+              ),
+          );
+        const isOnlySelf =
+          locs.length === 1 &&
+          locs[0].uri.toString() === targetUri.toString() &&
+          locs[0].range.start.line === pos.line &&
+          locs[0].range.start.character === pos.character;
+        if (locs.length === 0 || isOnlySelf) {
+          const providerLocs = await vscode.commands.executeCommand<vscode.Location[]>(
+            "vscode.executeReferenceProvider",
+            targetUri,
+            pos,
+          );
+          if (Array.isArray(providerLocs) && providerLocs.length > 0) {
+            locs = providerLocs;
+          }
+        }
+        if (!activeDoc || activeDoc.uri.toString() !== targetUri.toString()) {
+          await vscode.window.showTextDocument(targetUri, { preview: false });
+        }
+        await vscode.commands.executeCommand("editor.action.showReferences", targetUri, pos, locs);
       },
     ),
     vscode.workspace.onDidChangeConfiguration(async (event) => {
